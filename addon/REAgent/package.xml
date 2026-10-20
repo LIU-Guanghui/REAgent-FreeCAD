@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
+    <name>REAgent</name>
+    <description>An isolated, feature-by-feature STEP reconstruction bridge.</description>
+    <version>0.0.1</version>
+    <date>2026-09-26</date>
+    <maintainer>REAgentFreeCAD contributors</maintainer>
+    <license>MIT</license>
+    <freecadmin>1.1</freecadmin>
+    <tag>workbench</tag>
+    <tag>MCP</tag>
+    <tag>automation</tag>
+    <content>
+        <workbench>
+            <name>REAgent</name>
+            <version>0.0.1</version>
+            <description>Bind this visible window as Source or Target for STEP reconstruction.</description>
+            <classname>REAgentWorkbench</classname>
+            <subdirectory>./</subdirectory>
+            <freecadmin>1.1</freecadmin>
+        </workbench>
+    </content>
+</package>
