@@ -172,7 +172,6 @@ def _geometry_evidence(shape, contract, *, include_relations=True, include_repet
         "edge_to_faces": edge_face_names,
     }
     stable_selection = {
-        "schema_version": 1,
         "model_revision": model_revision,
         "revision_basis": "quantized_geometry_adjacency",
         "transient_handles": "FaceN/EdgeN names are valid only for this response",
@@ -282,7 +281,6 @@ def _semantic_regions(shape, evidence, contract):
 
     tangent_groups = _tangent_region_groups(evidence, face_to_group, revision)
     return {
-        "schema_version": 1,
         "model_revision": revision,
         "regions": regions,
         "tangent_groups": tangent_groups,

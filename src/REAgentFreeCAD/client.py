@@ -8,7 +8,6 @@ import uuid
 from typing import Any
 
 from .contract import (
-    BRIDGE_PROTOCOL_VERSION,
     PRODUCT_ID,
     ROLE_PORTS,
     RequestValidationError,
@@ -81,7 +80,7 @@ class BridgeClient:
     def install_operation_contract(self, contract: Any) -> None:
         """Cache transport policy and input schemas from the Bridge capability source."""
 
-        if not isinstance(contract, dict) or contract.get("schema_version") != 1:
+        if not isinstance(contract, dict):
             raise ValueError("Bridge operation contract is invalid")
         operations = contract.get("operations")
         if not isinstance(operations, dict):
@@ -358,7 +357,6 @@ class BridgeClient:
             side_effect=str(operation["side_effect"]),
             retry_action=str(operation["retry_action"]),
             evidence=operation["evidence"],
-            protocol_version=int(operation["schema_version"]),
         )
 
     @staticmethod
@@ -368,8 +366,6 @@ class BridgeClient:
         if not isinstance(value, dict):
             raise ValueError("operation must be an object")
         required = {
-            "schema_version",
-            "bridge_protocol_version",
             "product_id",
             "method",
             "side_effect",
@@ -383,10 +379,6 @@ class BridgeClient:
             raise ValueError(
                 "operation is missing fields: " + ", ".join(missing)
             )
-        if value["schema_version"] != 1:
-            raise ValueError("operation.schema_version must be 1")
-        if value["bridge_protocol_version"] != BRIDGE_PROTOCOL_VERSION:
-            raise ValueError("operation.bridge_protocol_version is unsupported")
         if value["product_id"] != PRODUCT_ID:
             raise ValueError("operation.product_id is invalid")
         if value["method"] != method:

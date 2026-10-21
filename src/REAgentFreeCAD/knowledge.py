@@ -112,7 +112,6 @@ def read_knowledge(knowledge_id: str) -> dict[str, Any]:
         raise ValueError("Unknown knowledge_id. Call agent_get_guidance for the catalog.") from exc
     content = _read_relative_asset(asset.relative_path)
     return {
-        "schema_version": 1,
         "knowledge_id": asset.knowledge_id,
         "purpose": asset.purpose,
         "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
@@ -130,7 +129,6 @@ def reconstruction_guidance(
     """Expose discoverable knowledge IDs without injecting Skill text."""
 
     return {
-        "schema_version": 1,
         "mode": "agent_driven",
         "task": {
             "source_path": source_path,

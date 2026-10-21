@@ -4,7 +4,7 @@ import os
 import xml.etree.ElementTree as ET
 
 from ..runtime import ADDON_PATH
-from .contract import CAPABILITY_SCHEMA_VERSION, OPERATION_SPECS, PRODUCT_ID
+from .contract import OPERATION_SPECS, PRODUCT_ID
 from .logs import native_log_source
 
 
@@ -24,11 +24,11 @@ def capability_response(*, view, operation, role, port, registered_handlers):
     if set(registered_handlers) != set(OPERATION_SPECS):
         raise RuntimeError("Bridge handlers differ from the shared operation contract")
     if view == "status":
-        return {"schema_version": CAPABILITY_SCHEMA_VERSION, "available": True,
+        return {"available": True,
                 "product_id": PRODUCT_ID, "role": role, "port": port,
                 "product_version": _addon_version(),
                 "native_log_source": native_log_source(),
-                "operation_contract": {"schema_version": 1, "operations": OPERATION_SPECS}}
+                "operation_contract": {"operations": OPERATION_SPECS}}
     if view == "operation":
         if operation is None:
             raise ValueError("view=operation requires operation")

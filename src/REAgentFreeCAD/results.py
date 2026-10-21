@@ -13,7 +13,6 @@ from typing import Any, Mapping
 
 from .contract import RETRY_ACTIONS
 
-CONTRACT_SCHEMA_VERSION = 1
 ERROR_CLASSES = frozenset(
     {
         "connection",
@@ -111,7 +110,7 @@ class OperationError:
 
 @dataclass(frozen=True)
 class OperationResult:
-    """One versioned result from the canonical Bridge response contract."""
+    """One result from the canonical Bridge response contract."""
 
     ok: bool
     method: str
@@ -120,7 +119,6 @@ class OperationResult:
     retry_action: str = "do_not_retry"
     evidence: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     error: OperationError | None = None
-    protocol_version: int = CONTRACT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if not isinstance(self.ok, bool):
@@ -136,12 +134,6 @@ class OperationResult:
             raise NeutralContractError("successful results cannot contain an error")
         if self.error is not None and not isinstance(self.error, OperationError):
             raise NeutralContractError("operation error must use OperationError")
-        if (
-            isinstance(self.protocol_version, bool)
-            or not isinstance(self.protocol_version, int)
-            or self.protocol_version < 1
-        ):
-            raise NeutralContractError("protocol_version must be a positive integer")
 
     @classmethod
     def success(
@@ -157,7 +149,6 @@ class OperationResult:
             side_effect=str(metadata["side_effect"]),
             retry_action=str(metadata["retry_action"]),
             evidence=_evidence(metadata["evidence"]),
-            protocol_version=int(metadata["schema_version"]),
         )
 
     @classmethod
@@ -171,7 +162,6 @@ class OperationResult:
         side_effect: str,
         retry_action: str,
         evidence: Any = None,
-        protocol_version: int = CONTRACT_SCHEMA_VERSION,
     ) -> "OperationResult":
         normalized_evidence = _evidence(evidence)
         error = OperationError(
@@ -189,12 +179,10 @@ class OperationResult:
             retry_action=retry_action,
             evidence=normalized_evidence,
             error=error,
-            protocol_version=protocol_version,
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "protocol_version": self.protocol_version,
             "ok": self.ok,
             "method": self.method,
             "value": to_json_value(self.value),
@@ -225,7 +213,6 @@ def _evidence(value: Any) -> tuple[dict[str, Any], ...]:
 
 
 __all__ = [
-    "CONTRACT_SCHEMA_VERSION",
     "ERROR_CLASSES",
     "NeutralContractError",
     "OperationError",

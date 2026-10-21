@@ -9,7 +9,6 @@ feature."""
 
 import math
 
-SCHEMA_VERSION = 1
 _AXES = ("x", "y", "z")
 _BLEND_SURFACES = {"Cylinder", "Sphere", "Toroid"}
 
@@ -89,7 +88,6 @@ def infer_virtual_predecessor_bounds(
     if not candidates:
         warnings.append("no_complete_fillet_transition_group_detected")
     return {
-        "schema_version": SCHEMA_VERSION,
         "mode": "read_only_virtual_predecessor",
         "feature_family": "fillet",
         "model_revision": revision,

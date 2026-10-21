@@ -3,10 +3,8 @@
 import math
 
 PRODUCT_ID = "REAgentFreeCAD"
-BRIDGE_PROTOCOL_VERSION = 1
 ROLE_PORTS = {"source": 9876, "rebuild": 9877}
 
-CAPABILITY_SCHEMA_VERSION = 1
 CAPABILITY_VIEWS = ("status", "catalog", "operation")
 DRESSUP_SCOPE = {
     "edge_limit": 64, "explicit_complete_edge_set": True, "implicit_all_edges": False,
@@ -451,7 +449,6 @@ EDGE_QUERY_SCHEMA = _schema({
 }, ("center_mm", "direction", "length_mm"))
 _EDGE_ROLES = ("dressup_edge", "pattern_axis")
 EDGE_REF_SCHEMA = _schema({
-    "schema_version": {"type": "integer", "enum": [1]},
     "entity_kind": _string("Referenced kind", ("edge",)),
     "intended_role": _string("Intended use", _EDGE_ROLES),
     "owner": _schema({"role": _string("Target role", ("rebuild",)),
@@ -463,7 +460,7 @@ EDGE_REF_SCHEMA = _schema({
     "fallback": {"type": "null"},
     "ambiguity": _string("Never choose an ambiguous match automatically", ("reject",)),
     "last_resolution": _object("Optional diagnostic returned with semantic_ref; copy unchanged"),
-}, ("schema_version", "entity_kind", "intended_role", "owner", "signatures"))
+}, ("entity_kind", "intended_role", "owner", "signatures"))
 
 
 def _edge_ref_schema(role):
@@ -474,7 +471,6 @@ def _edge_ref_schema(role):
 
 _FACE_ROLES = ("draft_target", "draft_neutral", "thickness_opening", "mirror_plane")
 FACE_REF_SCHEMA = _schema({
-    "schema_version": {"type": "integer", "enum": [1]},
     "entity_kind": _string("Referenced kind", ("face",)),
     "intended_role": _string("Explicit face use", _FACE_ROLES),
     "owner": _schema({"role": _string("Target role", ("rebuild",)),
@@ -489,7 +485,7 @@ FACE_REF_SCHEMA = _schema({
     "fallback": {"type": "null"},
     "ambiguity": _string("Reject ambiguous matches", ("reject",)),
     "last_resolution": _object("Optional diagnostic returned with face reference"),
-}, ("schema_version", "entity_kind", "intended_role", "owner", "signatures"))
+}, ("entity_kind", "intended_role", "owner", "signatures"))
 
 
 def _face_ref_schema(role):
@@ -570,7 +566,7 @@ SELECTION_RESOLUTION_QUERY_SCHEMA = _schema(
 OPERATION_SPECS = {
     "agent_ping": _operation(
         "adapter",
-        "Report adapter health, role, host version, port, process, and active document.",
+        "Report adapter health, role, port, process, and active document.",
         ("source", "rebuild"),
         "none",
         required_for=("reconstruct",),
@@ -626,7 +622,7 @@ OPERATION_SPECS = {
     ),
     "agent_observe": _operation(
         "observation",
-        "Run one versioned role-local evidence query with native display-chain and presentation recovery checks.",
+        "Run one role-local evidence query with native display-chain and presentation recovery checks.",
         ("source", "rebuild"),
         "none",
         {
@@ -1499,7 +1495,7 @@ def _example_value(check_value, en, zh):
 
 def _example_reference(kind, role):
     # These declaration-only values are never rendered into cards or issued as evidence.
-    return {"schema_version": 1, "entity_kind": kind, "intended_role": role,
+    return {"entity_kind": kind, "intended_role": role,
             "owner": {"role": "rebuild", "revision": "declaration-only", "object_name": "Predecessor"},
             "signatures": {"geometry": "declaration-only", "topology": "declaration-only"}}
 
@@ -1682,8 +1678,6 @@ for _schema_value in (OBSERVATION_REQUEST_SCHEMA,):
 __all__ = [
     'ARTIFACT_NUMBER_LIMIT',
     'ARTIFACT_SUFFIXES',
-    'BRIDGE_PROTOCOL_VERSION',
-    'CAPABILITY_SCHEMA_VERSION',
     'CAPABILITY_VIEWS',
     'DOMAIN_EVIDENCE_SCHEMA',
     'DOMAIN_MODE_GAPS',

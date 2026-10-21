@@ -1,6 +1,6 @@
 """Public discovery lists only registered and currently callable flow tools."""
 
-from ..contract import CAPABILITY_SCHEMA_VERSION, DOMAIN_MODE_GAPS, DRESSUP_SCOPE, OPERATION_SPECS
+from ..contract import DOMAIN_MODE_GAPS, DRESSUP_SCOPE, OPERATION_SPECS
 from ..errors import error_payload
 from ..knowledge import read_knowledge, reconstruction_guidance
 from ..tools_schema import EXECUTION_POLICY, TOOLS
@@ -14,8 +14,6 @@ def runtime(role, clients):
             ping = clients[name].call("agent_ping")
             contract = clients[name].call("agent_get_capabilities", view="status")
             operations = contract.get("operation_contract", {}).get("operations", {})
-            if contract.get("schema_version") != CAPABILITY_SCHEMA_VERSION:
-                raise ValueError("Installed adapter does not expose the native contract; update the addon")
             if operations != OPERATION_SPECS:
                 raise ValueError("Installed Bridge contract differs from the MCP contract")
             clients[name].install_operation_contract(contract["operation_contract"])

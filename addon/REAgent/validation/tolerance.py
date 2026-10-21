@@ -7,7 +7,6 @@ from ..runtime import (
     _DEFAULT_ANGULAR_TOLERANCE_DEG,
     _DEFAULT_LINEAR_TOLERANCE_MM,
     _MAX_SURFACE_SAMPLES,
-    _TOLERANCE_SCHEMA_VERSION,
     _positive_finite_number,
     _positive_number,
 )
@@ -50,7 +49,6 @@ def _resolve_tolerance_contract(params, source_summary):
         numeric_linear * 10.0, linear_tolerance / 2.0
     )
     return {
-        "schema_version": _TOLERANCE_SCHEMA_VERSION,
         "units": {"linear": "mm", "angular": "deg"},
         "linear_tolerance_mm": linear_tolerance,
         "angular_tolerance_deg": angular_tolerance,
@@ -98,8 +96,6 @@ def _parse_tolerance_contract(raw_value):
             raise ValueError(
                 "ToleranceContractJSON is missing property: %s" % name
             )
-    if contract.get("schema_version") != _TOLERANCE_SCHEMA_VERSION:
-        raise ValueError("Unsupported tolerance contract schema version")
     for name in required[:-1]:
         _positive_finite_number(contract[name], name)
     maximum = contract["max_surface_samples_per_direction"]
@@ -112,7 +108,11 @@ def _parse_tolerance_contract(raw_value):
         raise ValueError(
             "max_surface_samples_per_direction must be an integer from 2 to 5000"
         )
-    return contract
+    return {
+        name: contract[name]
+        for name in (*required, "units", "numeric_area_epsilon_mm2", "origins")
+        if name in contract
+    }
 
 
 def _ir_tolerance_contract(reconstruction_ir):

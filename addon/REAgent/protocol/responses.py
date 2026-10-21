@@ -1,6 +1,6 @@
-"""Versioned metadata for canonical core success and failure responses."""
+"""Metadata for canonical core success and failure responses."""
 
-from .contract import BRIDGE_PROTOCOL_VERSION, PRODUCT_ID, request_side_effect, resolve_retry_action
+from .contract import PRODUCT_ID, request_side_effect, resolve_retry_action
 
 
 def _operation_success(method, result, params):
@@ -19,8 +19,6 @@ def _operation_success(method, result, params):
         if checkpoint:
             evidence.append({"kind": "checkpoint", "path": checkpoint})
     return {
-        "schema_version": 1,
-        "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
         "product_id": PRODUCT_ID,
         "method": method,
         "side_effect": side_effect,
@@ -86,8 +84,6 @@ def _operation_failure(method, exc, code):
     if isinstance(diagnostics, dict):
         evidence.append(diagnostics)
     return {
-        "schema_version": 1,
-        "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
         "product_id": PRODUCT_ID,
         "method": method,
         "stage": stage, "code": code,

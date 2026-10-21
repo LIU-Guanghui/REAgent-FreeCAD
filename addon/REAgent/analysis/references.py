@@ -2,7 +2,6 @@
 
 import re
 
-_SEMANTIC_ENTITY_REF_SCHEMA_VERSION = 1
 _SEMANTIC_ENTITY_KINDS = {"face", "edge"}
 _SEMANTIC_AMBIGUITY_POLICIES = {"reject"}
 
@@ -17,7 +16,6 @@ def _normalize_semantic_entity_ref(
     if not isinstance(value, dict):
         raise ValueError(prefix + " must be an object")
     allowed = {
-        "schema_version",
         "entity_kind",
         "intended_role",
         "owner",
@@ -30,8 +28,6 @@ def _normalize_semantic_entity_ref(
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise ValueError(prefix + " has unknown fields: " + ", ".join(unknown))
-    if value.get("schema_version") != _SEMANTIC_ENTITY_REF_SCHEMA_VERSION:
-        raise ValueError(prefix + ".schema_version must be 1")
 
     entity_kind = value.get("entity_kind")
     if entity_kind not in _SEMANTIC_ENTITY_KINDS:
@@ -106,7 +102,6 @@ def _normalize_semantic_entity_ref(
         raise ValueError(prefix + ".last_resolution must be an object")
 
     normalized = {
-        "schema_version": _SEMANTIC_ENTITY_REF_SCHEMA_VERSION,
         "entity_kind": entity_kind,
         "intended_role": intended_role,
         "owner": {"role": owner_role, "revision": owner_revision,
@@ -140,7 +135,6 @@ def _semantic_entity_ref_from_detail(
 ):
     return _normalize_semantic_entity_ref(
         {
-            "schema_version": _SEMANTIC_ENTITY_REF_SCHEMA_VERSION,
             "entity_kind": entity_kind,
             "intended_role": intended_role,
             "owner": {"role": "rebuild", "revision": model_revision,

@@ -235,7 +235,7 @@ def _residual_regions(source_shape, rebuild_shape, contract):
     missing = [item for item in residuals if item["kind"] == "missing"]
     excess = [item for item in residuals if item["kind"] == "excess"]
     available = all(row["available"] for row in operations.values())
-    return {"schema_version": 1, "geometry_scope": "body_result", "operations": operations,
+    return {"geometry_scope": "body_result", "operations": operations,
             "source_model_revision": source_evidence["stable_selection"]["model_revision"],
             "missing": missing, "excess": excess, "regions": residuals,
             "summary": {"missing_count": len(missing), "excess_count": len(excess),

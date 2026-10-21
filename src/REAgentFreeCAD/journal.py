@@ -47,7 +47,7 @@ class JournalRecorder:
                 and not self.residual_files and self.persisted_sequence == self.sequence)
 
     def _payload(self):
-        return json.dumps({"schema_version": 1, "task": self.task, "artifacts": self.artifacts,
+        return json.dumps({"task": self.task, "artifacts": self.artifacts,
                            "recording": {"latest_sequence": self.sequence, "dropped_events": self.dropped_events,
                                          "complete": not self.dropped_events and self.recording_error is None},
                            "events": self.events}, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
@@ -197,7 +197,7 @@ class JournalRecorder:
     def read(self, after_sequence=0, limit=100):
         rows = [row for row in self.events if row["sequence"] > after_sequence]
         selected = rows[:limit]
-        return {"schema_version": 1, "task": self.task, "events": selected,
+        return {"task": self.task, "events": selected,
                 "after_sequence": after_sequence,
                 "next_sequence": selected[-1]["sequence"] if selected else after_sequence,
                 "remaining_events": max(0, len(rows) - len(selected)), "journal": self.metadata()}

@@ -35,8 +35,6 @@ from ..workspace.persistence import PersistenceOperations
 from ..workspace.sessions import SessionOperations
 from .capabilities import _addon_version, capability_response
 from .contract import (
-    BRIDGE_PROTOCOL_VERSION,
-    CAPABILITY_SCHEMA_VERSION,
     OPERATION_SPECS,
     PRIMITIVE_COMMANDS,
     PRODUCT_ID,
@@ -344,14 +342,10 @@ class BridgeServer(
     def _ping(self, params):
         window = _main_window_state()
         active = App.activeDocument()
-        version = App.Version()
         return {
             "bridge": "REAgent",
             "product_id": PRODUCT_ID,
             "product_version": _addon_version(),
-            "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
-            "capability_schema_version": CAPABILITY_SCHEMA_VERSION,
-            "freecad_version": ".".join(str(part) for part in version[:3]),
             "active_document": active.Name if active is not None else None,
             "addon_path": ADDON_PATH,
             "instance_role": _state.INSTANCE_ROLE,

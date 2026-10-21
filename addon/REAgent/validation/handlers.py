@@ -1,6 +1,6 @@
 """Native Target readback with independently requested diagnostic computations."""
 
-from ..runtime import _VALIDATION_SCHEMA_VERSION, _document, _state
+from ..runtime import _document, _state
 from ..workspace.model import (_file_sha256, _result_shape, _step_source_path, _workspace)
 from ..workspace.state import _target_view_revision
 from .comparison import _compare_shapes
@@ -88,8 +88,7 @@ class ValidationOperations:
                     raise _block(document, "Parameter audit changed persistent Target revision")
                 native = result_state(group)
                 provenance["parameter_audit"] = {"document": document.Name, "target_revision": after}
-        return {"validation_schema_version": _VALIDATION_SCHEMA_VERSION,
-                "status": "completed", "scope": "target", "requested": options,
+        return {"status": "completed", "scope": "target", "requested": options,
                 "revision": target_revision,
                 "native": native, "structure": structure, "checks": checks,
                 "read_errors": read_errors,
