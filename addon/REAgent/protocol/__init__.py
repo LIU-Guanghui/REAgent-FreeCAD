@@ -1,1 +1,1 @@
-"""Bridge transport, capability and response contracts."""
+"""Protocol components; importing creates no live resources."""

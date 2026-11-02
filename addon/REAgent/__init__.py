@@ -1,6 +1,5 @@
-"""REAgent FreeCAD Addon implementation."""
+"""Pure Addon resource location; importing starts no host or application resource."""
 
-from .protocol.contract import ROLE_PORTS
-from .protocol.server import BridgeServer
+from pathlib import Path
 
-__all__ = ["BridgeServer", "ROLE_PORTS"]
+ADDON_PATH = str(Path(__file__).resolve().parent)

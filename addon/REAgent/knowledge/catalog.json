@@ -1,0 +1,145 @@
+{
+  "entry": "SKILL.md",
+  "cards": [
+    {
+      "knowledge_id": "workflow/entry",
+      "relative_path": "references/workflow/entry.md",
+      "purpose": "End-to-end iterative reconstruction workflow."
+    },
+    {
+      "knowledge_id": "workflow/session-and-isolation",
+      "relative_path": "references/workflow/session-and-isolation.md",
+      "purpose": "Source/Target process, visibility, ownership, and persistence boundaries."
+    },
+    {
+      "knowledge_id": "workflow/observation",
+      "relative_path": "references/workflow/observation.md",
+      "purpose": "Question-driven dimensional and visual observations."
+    },
+    {
+      "knowledge_id": "workflow/validation",
+      "relative_path": "references/workflow/validation.md",
+      "purpose": "Geometric comparison, concise delivery and checkpoint facts."
+    },
+    {
+      "knowledge_id": "features/entry",
+      "relative_path": "references/features/entry.md",
+      "purpose": "Routing for the retained feature families."
+    },
+    {
+      "knowledge_id": "features/body",
+      "relative_path": "references/features/body.md",
+      "purpose": "Main and tool Body modeling judgment."
+    },
+    {
+      "knowledge_id": "features/sketch",
+      "relative_path": "references/features/sketch.md",
+      "purpose": "Native Sketch profile and constraint judgment."
+    },
+    {
+      "knowledge_id": "features/primitives",
+      "relative_path": "references/features/primitives.md",
+      "purpose": "Native additive and subtractive primitive judgment."
+    },
+    {
+      "knowledge_id": "features/datum",
+      "relative_path": "references/features/datum.md",
+      "purpose": "Stable Datum and local-frame judgment."
+    },
+    {
+      "knowledge_id": "features/extrude",
+      "relative_path": "references/features/extrude.md",
+      "purpose": "Pad and Pocket semantics."
+    },
+    {
+      "knowledge_id": "features/revolve",
+      "relative_path": "references/features/revolve.md",
+      "purpose": "Native Revolution and Groove modeling judgment."
+    },
+    {
+      "knowledge_id": "features/boolean",
+      "relative_path": "references/features/boolean.md",
+      "purpose": "Native Fuse, Cut and Common operand judgment."
+    },
+    {
+      "knowledge_id": "features/hole",
+      "relative_path": "references/features/hole.md",
+      "purpose": "Coaxial subtractive Hole semantics."
+    },
+    {
+      "knowledge_id": "features/loft",
+      "relative_path": "references/features/loft.md",
+      "purpose": "Ordered section transition and native Loft judgment."
+    },
+    {
+      "knowledge_id": "features/pipe",
+      "relative_path": "references/features/pipe.md",
+      "purpose": "Section transport along a continuous path and native Pipe judgment."
+    },
+    {
+      "knowledge_id": "features/pattern",
+      "relative_path": "references/features/pattern.md",
+      "purpose": "Linear and Polar Pattern semantics."
+    },
+    {
+      "knowledge_id": "features/mirror",
+      "relative_path": "references/features/mirror.md",
+      "purpose": "Mirror semantics."
+    },
+    {
+      "knowledge_id": "features/fillet",
+      "relative_path": "references/features/fillet.md",
+      "purpose": "Constant-radius Fillet semantics."
+    },
+    {
+      "knowledge_id": "features/chamfer",
+      "relative_path": "references/features/chamfer.md",
+      "purpose": "Equal- and two-distance Chamfer semantics."
+    },
+    {
+      "knowledge_id": "features/draft",
+      "relative_path": "references/features/draft.md",
+      "purpose": "Explicit neutral-plane Draft judgment."
+    },
+    {
+      "knowledge_id": "features/thickness",
+      "relative_path": "references/features/thickness.md",
+      "purpose": "Opening-face and material-side Thickness judgment."
+    },
+    {
+      "knowledge_id": "foundations/entry",
+      "relative_path": "references/foundations/entry.md",
+      "purpose": "Routing for general CAD and FreeCAD foundations."
+    },
+    {
+      "knowledge_id": "foundations/brep-topology",
+      "relative_path": "references/foundations/brep-topology.md",
+      "purpose": "B-Rep topology and material boundary."
+    },
+    {
+      "knowledge_id": "foundations/geometry-parameterization",
+      "relative_path": "references/foundations/geometry-parameterization.md",
+      "purpose": "Geometry carriers, trimming, orientation, and continuity."
+    },
+    {
+      "knowledge_id": "foundations/tolerance-validity",
+      "relative_path": "references/foundations/tolerance-validity.md",
+      "purpose": "Tolerance, validity and topology-changing repair cautions."
+    },
+    {
+      "knowledge_id": "foundations/persistent-references",
+      "relative_path": "references/foundations/persistent-references.md",
+      "purpose": "Current native object/subelement references and semantic re-resolution."
+    },
+    {
+      "knowledge_id": "foundations/transactions-errors",
+      "relative_path": "references/foundations/transactions-errors.md",
+      "purpose": "Transactions, operation history, rollback, and error channels."
+    },
+    {
+      "knowledge_id": "foundations/freecad-document",
+      "relative_path": "references/foundations/freecad-document.md",
+      "purpose": "FreeCAD document, recompute, reference and persistence distinctions."
+    }
+  ]
+}

@@ -1,4 +1,0 @@
-interface:
-  display_name: "REAgentFreeCAD"
-  short_description: "Reconstruct editable STEP parts in FreeCAD"
-  default_prompt: "Use $reagentfreecad to reconstruct this STEP part with editable native FreeCAD features."

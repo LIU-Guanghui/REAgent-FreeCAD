@@ -1,4 +1,4 @@
-"""FreeCAD GUI entry point for the minimal MCP bridge workbench."""
+"""FreeCAD GUI entry point for the embedded STEP reconstruction agent."""
 
 import os
 import sys
@@ -55,7 +55,7 @@ class _RoleController:
             self._role_label.hide()
 
     def select_role(self, role):
-        from REAgent import bridge
+        from REAgent.bootstrap import bridge
 
         try:
             message = bridge.select_role(role)
@@ -72,13 +72,40 @@ class _RoleController:
             return
         self._set_role_label(role)
         self._app.Console.PrintMessage("[REAgent] %s\n" % message)
+        if role == "source":
+            self.open_panel()
+
+    def open_panel(self):
+        try:
+            from REAgent.bootstrap import source_window_controller
+
+            source_window_controller(self._gui.getMainWindow(), self._stop_now).show()
+        except Exception as exc:
+            self._app.Console.PrintError("[REAgent] Agent panel unavailable: %s\n" % exc)
+            self._qt_widgets.QMessageBox.warning(
+                self._gui.getMainWindow(), "REAgent", "Agent panel unavailable; check the complete Addon installation.\n%s" % exc)
 
     def stop(self):
-        from REAgent import bridge
+        from REAgent.bootstrap import current_source_window_controller
 
-        message = bridge.stop_bridge()
+        manager = current_source_window_controller()
+        if manager is not None:
+            manager.request_close("release")
+            return
+        self._stop_now()
+
+    def _stop_now(self):
+        from REAgent.bootstrap import bridge
+
+        try:
+            message = bridge.stop_bridge()
+        except Exception as exc:
+            self._app.Console.PrintError("[REAgent] role release refused: %s\n" % exc)
+            self._qt_widgets.QMessageBox.warning(self._gui.getMainWindow(), "REAgent", str(exc))
+            return False
         self._set_role_label(None)
         self._app.Console.PrintMessage("[REAgent] %s\n" % message)
+        return True
 
 
 class SourceBridgeCommand:
@@ -88,16 +115,21 @@ class SourceBridgeCommand:
     def GetResources(self):
         return {
             "MenuText": "Source",
-            "ToolTip": "Use this visible FreeCAD window as the read-only Source",
+            "ToolTip": "Use this window as the read-only Source, or reopen its task panel",
         }
 
     def IsActive(self):
-        from REAgent import bridge
+        from REAgent.bootstrap import bridge
 
-        return not bridge.bridge_is_running()
+        return not bridge.bridge_is_running() or bridge.selected_role() == "source"
 
     def Activated(self):
-        self._controller.select_role("source")
+        from REAgent.bootstrap import bridge
+
+        if bridge.selected_role() == "source":
+            self._controller.open_panel()
+        else:
+            self._controller.select_role("source")
 
 
 class TargetBridgeCommand:
@@ -111,7 +143,7 @@ class TargetBridgeCommand:
         }
 
     def IsActive(self):
-        from REAgent import bridge
+        from REAgent.bootstrap import bridge
 
         return not bridge.bridge_is_running()
 
@@ -130,7 +162,7 @@ class StopBridgeCommand:
         }
 
     def IsActive(self):
-        from REAgent import bridge
+        from REAgent.bootstrap import bridge
 
         return bridge.bridge_is_running()
 
@@ -146,7 +178,7 @@ Gui.addCommand("REAgentStop", StopBridgeCommand(_controller))
 
 class REAgentWorkbench(Gui.Workbench):
     MenuText = "REAgent"
-    ToolTip = "Minimal local bridge for Model Context Protocol clients"
+    ToolTip = "Embedded model and native CAD loop for editable STEP reconstruction"
 
     def Initialize(self):
         commands = [
