@@ -12,7 +12,8 @@ from REAgent.rebuild.journal import invalidate_validation
 
 
 def evidence_summary(evidence_id, fact):
-    value = {"evidence_id": evidence_id, **{key: fact[key] for key in ("role", "kind", "revision")}}
+    value = {"evidence_id": evidence_id, **{key: fact[key] for key in ("role", "kind", "revision")},
+             "actor": fact.get("actor")}
     if "image_delivery" in fact:
         delivery = fact["image_delivery"]
         value["image_preparation"] = {"status": delivery["status"], "capture_id": delivery.get("capture_id")}
@@ -73,8 +74,12 @@ class WorkflowContext:
                         summary["initial_views_preparation"] = {
                             "evidence_id": record["initial_source_views"]["evidence_id"],
                             "scope": "session_precondition", "inspection": "not_attested"}
+                trusted = context.get("execution") or {}
                 record["journal"].emit(event, function=function, persist=persist,
-                    summary={"operation_id": context.get("operation_id"), **summary}, role=role, level=level,
+                    summary={"operation_id": context.get("operation_id"),
+                             "actor": trusted.get("actor", "external"), "run_id": trusted.get("run_id"),
+                             **{key: trusted[key] for key in ("comparison_id", "comparison_step") if key in trusted},
+                             **summary}, role=role, level=level,
                     duration_ms=None if started is None else (time.perf_counter()-started)*1000)
             except Exception as exc:
                 record["journal"].note_failure(exc)
@@ -94,7 +99,6 @@ class WorkflowContext:
         payload = {"document": document, **params}
         if "session_id" in OPERATION_SPECS[method]["input_schema"]["properties"]:
             payload["session_id"] = record["session_id"]
-        self.clients[role].validate_request(method, **payload)
         target_was_blocked = bool(role == "target" and record.get("blocked"))
         if (target_was_blocked
                 and request_side_effect(method, payload) != "none"
@@ -113,11 +117,23 @@ class WorkflowContext:
             if context is not None: context["side_effect"] = operation.side_effect
             value = operation.value
             if role == "target" and isinstance(value, dict):
-                if method in ("agent_undo", "agent_redo") or FEATURE_SPECS.get(method, {}).get("side_effect") == "committed":
+                previous_revision = record.get("current_target_revision")
+                current_revision = value.get("revision_after") or value.get("revision") or value.get("model_revision")
+                changed = operation.side_effect == "committed" and (
+                    method in ("agent_undo", "agent_redo") or method in FEATURE_SPECS)
+                revision_changed = (current_revision is not None and previous_revision is not None
+                                    and current_revision != previous_revision)
+                if changed or revision_changed:
                     record["recent_validation"] = invalidate_validation(
-                        record.get("recent_validation", {}), "target_history_changed")
+                        record.get("recent_validation", {}), "target_revision_changed")
+                    record["recent_manual_comparison"] = invalidate_validation(
+                        record.get("recent_manual_comparison", {}), "target_revision_changed")
+                if current_revision is not None or changed:
+                    record["current_target_revision"] = current_revision
                 native_block = value.get("audit_restoration_block") or value.get("document_state", {}).get("write_block")
-                if native_block: record["blocked"] = True
+                if native_block:
+                    record["blocked"] = True
+                    record["current_target_revision"] = None
                 if "document_state" in value:
                     value["document_state"]["target_writes_blocked"] = bool(record.get("blocked"))
             return value
@@ -132,6 +148,9 @@ class WorkflowContext:
             if role == "target" and (getattr(exc, "instance_changed", False)
                                      or operation is not None and operation.side_effect == "unknown"):
                 record["blocked"] = True
+                record["current_target_revision"] = None
                 record["recent_validation"] = invalidate_validation(
                     record.get("recent_validation", {}), "target_write_outcome_unknown")
+                record["recent_manual_comparison"] = invalidate_validation(
+                    record.get("recent_manual_comparison", {}), "target_write_outcome_unknown")
             raise

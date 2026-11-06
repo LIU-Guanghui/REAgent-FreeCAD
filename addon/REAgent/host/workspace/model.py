@@ -63,6 +63,26 @@ def _body_objects(body):
     return result
 
 
+def _feature_owner(group, obj):
+    matches = [body for body in _session_bodies(group) if obj is body or obj in body.Group]
+    if len(matches) != 1:
+        raise ValueError("Object must have one owned Target Body")
+    return matches[0]
+
+
+def _feature_predecessor(body, obj):
+    prior = getattr(obj, "BaseFeature", None)
+    if obj.TypeId in ("PartDesign::Fillet", "PartDesign::Chamfer", "PartDesign::Draft", "PartDesign::Thickness"):
+        base = obj.Base[0] if obj.Base else None
+        if prior is not None and base is not prior:
+            raise ValueError("Native Base and BaseFeature disagree")
+        prior = base
+    if prior is not None and (prior not in body.Group or prior is obj
+            or list(body.Group).index(prior) >= list(body.Group).index(obj)):
+        raise ValueError("Feature predecessor is outside its earlier native history")
+    return prior
+
+
 def _owned_objects(group):
     result = []
     for body in _session_bodies(group):

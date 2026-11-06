@@ -36,7 +36,7 @@ arguments = {
 - `intent`: Explain this operation's measured geometric purpose.
 - `source_evidence_id`: Source evidence actually issued in this session.
 - `target_evidence_id`: Current applicable Target evidence actually issued in this session.
-- `target_revision`: Current Target revision returned by observation/state.
+- `target_revision`: Current Target revision matching the referenced Target observation.
 - `datum_name`: Choose an unused native Datum name.
 - `datum_attachment_offset_mm`: Measured translation in the Datum's attachment coordinate system, mm.
 - `datum_attachment_axis`: Chosen nonzero rotation axis in the Datum's attachment coordinate system.

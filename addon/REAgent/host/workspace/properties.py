@@ -31,7 +31,7 @@ def _native_number(value):
     return float(value.Value) if hasattr(value, "Value") else float(value)
 
 
-def _metadata(obj, prop):
+def _metadata(obj, prop, *, body_edit=False):
     if prop not in obj.PropertiesList:
         raise ValueError("Unknown native property " + obj.Name + "." + prop)
     typ = obj.getTypeIdOfProperty(prop)
@@ -46,7 +46,7 @@ def _metadata(obj, prop):
     origin_owned = root is not None and _is_origin_object(root, obj)
     boolean_tools = obj.TypeId == "PartDesign::Boolean" and prop == "Group"
     reason = (
-        "workspace_read_only" if obj is root
+        "workspace_read_only" if obj is root and not (body_edit and prop in ("Label", "Placement"))
         else "origin_read_only" if origin_owned
         else "internal_or_output" if prop in _INTERNAL and not boolean_tools
         else "native_read_only" if readonly
@@ -122,23 +122,43 @@ def sketch_content_state(sketch):
                 row[key] = scalar(getattr(geometry, key))
         if hasattr(geometry, "Ellipse"):
             row["ellipse"] = geometry_row(geometry.Ellipse)
+        if hasattr(geometry, "getPoles"):
+            row["poles"] = [scalar(point) for point in geometry.getPoles()]
+            row["knots"] = list(geometry.getKnots())
+            row["weights"] = list(geometry.getWeights())
+            row["multiplicities"] = list(geometry.getMultiplicities())
+            row["degree"] = int(geometry.Degree)
+            row["periodic"] = bool(geometry.isPeriodic())
         return row
 
     constraints = []
-    for constraint in sketch.Constraints:
+    expressions = dict(sketch.ExpressionEngine)
+    for index, constraint in enumerate(sketch.Constraints):
         row = {}
         for key in ("Type", "First", "FirstPos", "Second", "SecondPos",
-                    "Third", "ThirdPos", "Value", "IsDriving", "IsActive"):
+                    "Third", "ThirdPos", "Value", "Name", "IsDriving", "IsActive"):
             if hasattr(constraint, key):
                 row[key] = scalar(getattr(constraint, key))
+        row["active"] = bool(sketch.getActive(index))
+        name = row.get("Name")
+        row["expression"] = expressions.get("Constraints[" + str(index) + "]")
+        if name:
+            row["expression"] = expressions.get("Constraints." + name, row["expression"])
+        if "Value" in row:
+            row["value_unit"] = "rad" if row.get("Type", "").startswith("Angle") else "mm" if row.get("Type") in (
+                "Distance", "DistanceX", "DistanceY", "Diameter", "Radius", "DistanceViaPoint") else None
+        row["driving"] = bool(sketch.getDriving(index)) if row.get("value_unit") else None
         constraints.append(row)
     geometry_rows = []
     for index, geometry in enumerate(sketch.Geometry):
         row = geometry_row(geometry)
         row["construction"] = bool(sketch.getConstruction(index))
         geometry_rows.append(row)
-    return {"geometry": geometry_rows,
-            "constraints": constraints}
+    external_rows = [{"index": -index-1, **geometry_row(geometry)}
+                     for index, geometry in enumerate(getattr(sketch, "ExternalGeo", ())) if index >= 2]
+    return {"geometry": geometry_rows, "constraints": constraints,
+            "external_geometry": _encode(sketch.ExternalGeometry, "link_sub_list"),
+            "external_indices": external_rows}
 
 
 def _native_link(value):

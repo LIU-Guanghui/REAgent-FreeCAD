@@ -11,10 +11,11 @@ from REAgent.ui import QtCore, QtWidgets
 from REAgent.model.limits import CONTEXT_RESERVE_TOKENS
 from REAgent.ui.panel import Panel
 from REAgent.ui.viewers import ImageViewer, TaskViewer
+from REAgent.ui.comparison import ComparisonDialog, comparison_text
 from REAgent.session.state_snapshots import preview_entries
 from REAgent.session.state_snapshots import tool_message
 from REAgent.ui.settings import SettingsDialog, saved_settings
-from REAgent.ui.worker import Worker
+from REAgent.ui.worker import Worker, tool_fault
 
 
 def short_token_count(value):
@@ -73,12 +74,19 @@ class SourceWindowController(QtCore.QObject):
         self._viewer = None
         self._viewer_kind = None
         self._snapshot_received_at = None
-        self._shown_context_change = None
         self._journal_cache = {}
         self._image_entries = {}
         self._presentation_session = None
         self._task_artifacts = {}
-        self._model_previewed = False
+        self._presentation_task = 0
+        self._action_number = None
+        self._obsolete_generation = -1
+        self._presented = set()
+        self._reports_presented = set()
+        self._comparison_presented = set()
+        self._comparison = None
+        self._status_notice = None
+        self._journal_fault = None
         self._timer = QtCore.QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._wait_notice)
@@ -96,7 +104,7 @@ class SourceWindowController(QtCore.QObject):
             if saved is not None:
                 self._config, self._draft_credentials, self._profile_name = saved
         except ValueError as exc:
-            self._notice("Saved model settings could not be restored. " + str(exc)[:500] + " Open Settings to correct them.")
+            self._fault("Saved model settings could not be restored. " + str(exc)[:500] + " Open Settings to correct them.")
         self._render()
 
     def show(self):
@@ -133,7 +141,11 @@ class SourceWindowController(QtCore.QObject):
                 and not self._worker_retiring and not self._worker_failed)
 
     def _notice(self, message):
-        self.panel.message("status", message)
+        self._status_notice = message
+        self.panel.status.setToolTip(message)
+
+    def _fault(self, message):
+        self.panel.message("error", message)
 
     def _model_error(self, error):
         text = error["code"] + ": " + error["message"]
@@ -141,8 +153,9 @@ class SourceWindowController(QtCore.QObject):
         if request.get("output_tokens"):
             text += ". Output budget: {:,} tokens".format(request["output_tokens"])
             if request.get("kind") == "model":
-                text += ". No tools from this failed decision were dispatched. Continue requests a fresh decision with the same budget."
-        self._notice(text)
+                text += (". The delivery receipt is retained; its report stopped." if request.get("purpose") == "report" else
+                         ". No tools from this failed decision were dispatched. Send a new message when ready.")
+        self._fault(text)
 
     def _can_save(self):
         facts = self._snapshot.get("controller") or {}
@@ -151,49 +164,50 @@ class SourceWindowController(QtCore.QObject):
         return bool(facts.get("target_document") and facts.get("session_status") == "ready"
                     and not facts.get("write_block_sources", {}).get("controller"))
 
+    def _can_act(self, *, allow_busy=False, closing=False):
+        return not ((self._busy and not allow_busy) or self._worker_failed or self._worker_retiring
+                    or self._input_dialog is not None or (self._close_intent and not closing))
+
     def _render(self):
         facts = self._snapshot.get("controller") or {}
         active = bool(facts)
         chatting = self._snapshot.get("mode") == "chat"
         live = active or chatting
-        idle = (not self._busy and not self._worker_failed and not self._worker_retiring
-                and self._close_intent is None and self._input_dialog is None)
+        idle = self._can_act()
         writable = active and facts.get("session_status") == "ready" and not facts.get("target_writes_blocked")
         viewing = self._input_dialog is None and self._close_intent is None
         enabled = {"settings": idle and (not active or self._snapshot.get("status") in ("paused", "ready")),
                    "rebuild": idle and self._task_open and not active, "pause": self._busy and self._close_intent is None,
                    "compact": idle and live and bool((self._snapshot.get("context") or {}).get("can_compact")),
+                   "compare": idle and writable and not facts.get("source_basis_unknown"),
                    "save": idle and self._can_save(), "journal": viewing and bool(self._journal_cache),
                    "close": (self._task_open or live or self._busy) and viewing and not self._worker_failed,
                    "status": viewing, "images": viewing and bool(self._image_entries)}
-        can_send = self._task_open and (idle or (self._busy and live and self._close_intent is None
-                                               and not self._worker_failed and self._input_dialog is None))
+        can_send = self._task_open and self._can_act(allow_busy=live)
         self.panel.set_controls(enabled, can_new_task=idle and not self._task_open and not live, can_send=can_send)
         self.panel.images.setToolTip("Task is ending." if self._close_intent else
             "Close the input form first." if self._input_dialog is not None else
             "No prepared images yet. Source initial views appear after capture and preparation." if not self._image_entries else
             "Browse all %d prepared task images." % len(self._image_entries))
         status = {"idle": "Ready", "ready": "Ready", "closed": "Ready", "paused": "Paused"}.get(self._snapshot.get("status"), "Working")
-        if not self._task_open and not live:
-            status = "No active task"
         if self._busy:
-            status = ("Pausing…" if self._snapshot.get("pause_requested") else
-                      "Compacting context…" if self._action == "compact" else "Working…")
+            status = "Pausing" if self._snapshot.get("pause", {}).get("paused") else "Working"
+        action = self._snapshot.get("action") or {}
+        resume_notice = ""
+        if action.get("scope") == "reconstruct":
+            resume_notice = "Reconstruction request: " + str(action.get("source_preview") or "")
         if self._close_intent:
-            status = "Closing task…"
+            status = "Closing"
         if self._worker_failed:
-            status = "Worker stopped; inspect task state"
+            status = "Error"
         elif self._worker_retiring:
-            status = "Finishing…"
-        elif active and not writable and not self._busy and not self._close_intent:
-            status = "Task needs attention; inspect state"
+            status = "Closing"
+        elif active and (not writable or facts.get("source_basis_unknown")) and not self._busy and not self._close_intent:
+            status = "Blocked"
+        notice = self._status_notice or ""
         self.panel.status.setText(status)
-        self.panel.status.setToolTip(str(self._snapshot.get("reason") or ""))
+        self.panel.status.setToolTip("\n".join(filter(None, (resume_notice, notice, str(self._snapshot.get("reason") or "")))))
         self.panel.set_context(self.context_view())
-        change = (self._snapshot.get("context") or {}).get("last_compaction")
-        if change is not None and change != self._shown_context_change:
-            self._shown_context_change = change
-            self._notice(self.panel.compaction_text(change))
         self._update_viewer()
 
     def details(self):
@@ -205,18 +219,21 @@ class SourceWindowController(QtCore.QObject):
                                output_tokens=self._config.output_tokens, reserve_tokens=CONTEXT_RESERVE_TOKENS,
                                reasoning_effort=self._config.reasoning_effort)
         return {"snapshot": self._snapshot, "task_open": self._task_open, "last_completed_batch": [
-            {"is_error": row["is_error"], "side_effect": row["side_effect"], "result": row["value"]}
-            for row in self._results], "last_progress": self._progress,
+            {**{key: row[key] for key in ("function", "action_number", "request_number", "response_id",
+                                         "generation", "tool_call_id", "is_error", "side_effect") if key in row},
+             "result": row["value"]} for row in self._results], "last_progress": self._progress,
                 "snapshot_received_at": self._snapshot_received_at, "context": context}
 
     def new_task(self):
-        if (self._task_open or self._busy or self._close_intent or self._input_dialog is not None
-                or self._worker_failed or self._worker_retiring or self._snapshot.get("controller")
+        if (self._task_open or not self._can_act() or self._snapshot.get("controller")
                 or self._snapshot.get("mode") == "chat"):
             self._notice("End the current task before starting another.")
             return False
         # This is an empty UI task; the first message creates the real conversation.
         self._task_open = True
+        self._presentation_task += 1
+        self._obsolete_generation = -1
+        self._status_notice = None
         self._snapshot = {"status": "idle", "controller": None, "mode": None,
                           "model_configured": self._snapshot.get("model_configured", False)}
         self._results, self._progress = (), None
@@ -227,8 +244,7 @@ class SourceWindowController(QtCore.QObject):
         return True
 
     def send(self, text):
-        if (not self._task_open or not text.strip() or self._close_intent or self._input_dialog is not None
-                or self._worker_failed or self._worker_retiring):
+        if not self._task_open:
             return False
         facts = self._snapshot.get("controller")
         if not facts and not self._busy:
@@ -245,14 +261,13 @@ class SourceWindowController(QtCore.QObject):
                 or facts.get("target_writes_blocked")):
             accepted = self.supplement(text)
         else:
-            accepted = self.advance(text)
+            accepted = self.action("advance", {"intent": text})
         if accepted and text:
             self.panel.message("user", text)
         return accepted
 
     def configure(self):
-        if (self._busy or self._close_intent or self._input_dialog is not None
-                or self._worker_failed or self._worker_retiring):
+        if not self._can_act():
             return self._notice("Wait for the current action before changing settings.")
         locked = bool(self._snapshot.get("controller"))
         dialog = SettingsDialog(self.panel, read_settings=self._read_settings, save_settings=self._save_settings, config=self._config, profile_name=self._profile_name, lock_model=locked)
@@ -287,7 +302,7 @@ class SourceWindowController(QtCore.QObject):
 
     def present(self, dialog):
         """Keep modal input separate from execution and close its form before exit."""
-        if self._close_intent or self._input_dialog is not None:
+        if not self._can_act():
             return QtWidgets.QDialog.Rejected
         self._input_dialog = dialog
         self._render()
@@ -301,8 +316,7 @@ class SourceWindowController(QtCore.QObject):
                 QtCore.QTimer.singleShot(0, lambda: self._advance_close("progress"))
 
     def start(self, source, output, objective):
-        if (not self._task_open or self._busy or self._close_intent or self._worker_failed
-                or self._worker_retiring or self._input_dialog is not None or self._snapshot.get("controller")):
+        if not self._task_open or self._snapshot.get("controller"):
             self._notice("Finish the current action/task before starting another.")
             return False
         if (not os.path.isabs(source) or not os.path.isfile(source)
@@ -327,8 +341,7 @@ class SourceWindowController(QtCore.QObject):
         return False
 
     def action(self, action, arguments=None, *, closing=False):
-        if (self._busy or self._worker_failed or self._worker_retiring or self._input_dialog is not None
-                or (self._close_intent and not closing)):
+        if not self._can_act(closing=closing):
             self._notice("The original worker is busy or closing; this action was not queued.")
             return False
         if action not in ("start", "chat", "configure", "advance", "compact", "close") and not self._snapshot.get("controller"):
@@ -344,12 +357,15 @@ class SourceWindowController(QtCore.QObject):
         try:
             if not self._worker.isRunning():
                 self._worker.reactivate()
-            self._worker.submit(action, arguments)
+            self._action_number = self._worker.submit(action, arguments, presentation_task=self._presentation_task)
         except (ValueError, RuntimeError) as exc:
             self._notice(str(exc))
             return False
         self._busy = True
         self._action = action
+        self._presented.clear()
+        self._obsolete_generation = -1
+        self._status_notice = None
         if closing:
             self._timer.start(10000)
         self._render()
@@ -358,13 +374,13 @@ class SourceWindowController(QtCore.QObject):
     def pause(self):
         if self._worker is not None:
             self._worker.pause()
-            self._snapshot = self._worker.snapshot()
+            self._invalidate_previews()
             self._notice("Pause requested. The same worker will collect any in-flight result.")
             self._render()
 
     def supplement(self, text):
-        if (self._close_intent or not (self._snapshot.get("controller") or self._snapshot.get("mode") == "chat")
-                or self._worker_failed):
+        if (not self._can_act(allow_busy=True)
+                or not (self._snapshot.get("controller") or self._snapshot.get("mode") == "chat")):
             self._notice("A correction needs the current live task outside shutdown.")
             return False
         try:
@@ -372,15 +388,30 @@ class SourceWindowController(QtCore.QObject):
         except (ValueError, RuntimeError) as exc:
             self._notice(str(exc))
             return False
-        self._snapshot = self._worker.snapshot()
-        self._notice("Correction queued; old unexecuted decisions are invalidated. Continue explicitly after pause.")
+        self._invalidate_previews()
+        facts = self._snapshot.get("controller") or {}
+        if facts.get("target_writes_blocked"):
+            self._notice("Change request queued. Target writes are blocked. Inspect Status for the cause.")
+        else:
+            self._notice("Message queued; processing stays paused." if self._snapshot.get("pause", {}).get("manual") else
+                         "Message queued. The current operation will finish before the Target conversation is processed.")
         self._render()
         return True
 
-    def advance(self, text):
-        if not isinstance(text, str) or not text.strip():
+    def _invalidate_previews(self):
+        self._snapshot = self._worker.snapshot()
+        self._obsolete_generation = self._snapshot["pause"].get("generation", -1)
+        self.panel.text.discard_previews()
+
+    def compare(self):
+        facts = self._snapshot.get("controller") or {}
+        dialog = ComparisonDialog(self.panel, facts)
+        accepted = self.present(dialog) == QtWidgets.QDialog.Accepted
+        options, request = dialog.options, dialog.view_request
+        dialog.deleteLater()
+        if not accepted:
             return False
-        return self.action("advance", {"intent": text})
+        return self.action("compare", {"options": options, "view_request": request})
 
     def context_view(self):
         details = self.details()
@@ -403,7 +434,7 @@ class SourceWindowController(QtCore.QObject):
         percent = (200 * used + capacity) // (2 * capacity)
         tooltip = "Estimated input: {:,} / {:,} tokens. Basis: {}. Method: {}.".format(
             used, capacity, context["basis"], context["estimate"]["method"])
-        if context.get("pending_results") or self._snapshot.get("pending_supplements") or self._busy:
+        if context.get("pending_results") or self._snapshot.get("pause", {}).get("queued") or self._busy:
             tooltip += " In-flight results or queued corrections are not fully included."
         return str(percent) + "%", "~" + short_token_count(used) + " / " + short_token_count(capacity), tooltip
 
@@ -418,11 +449,14 @@ class SourceWindowController(QtCore.QObject):
     def _reset_views(self):
         self._close_viewer()
         self._snapshot_received_at = None
-        self._shown_context_change = None
         self._journal_cache = {}
         self._image_entries.clear()
         self._presentation_session = None
         self._task_artifacts = {}
+        self._reports_presented.clear()
+        self._comparison_presented.clear()
+        self._comparison = None
+        self._journal_fault = None
 
     def _register_images(self, images, value, session_id):
         if not images or session_id is None or session_id != self._presentation_session:
@@ -431,7 +465,10 @@ class SourceWindowController(QtCore.QObject):
             for entry in preview_entries(images, value, self._task_artifacts):
                 self._image_entries.setdefault((session_id, entry["image_id"]), entry)
         except (KeyError, TypeError, ValueError) as exc:
-            self._notice("Image registration unavailable: " + str(exc)[:300])
+            key = ("image_registration", str(exc)[:300])
+            if key not in self._presented:
+                self._presented.add(key)
+                self._fault("Image registration unavailable. " + key[1])
 
     def _task_ended(self, journal=None):
         self._task_open = False
@@ -440,11 +477,13 @@ class SourceWindowController(QtCore.QObject):
             self._journal_cache["metadata"] = journal
 
     def open_viewer(self, kind):
-        if kind not in ("status", "journal", "images") or self._close_intent or self._input_dialog is not None:
+        if kind not in ("status", "journal", "images", "comparison") or self._close_intent or self._input_dialog is not None:
             return False
         if kind == "journal" and not self._journal_cache:
             return False
         if kind == "images" and not self._image_entries:
+            return False
+        if kind == "comparison" and self._comparison is None:
             return False
         if self._viewer is not None and self._viewer_kind == kind:
             self._viewer.raise_()
@@ -471,6 +510,14 @@ class SourceWindowController(QtCore.QObject):
         if cache and cache.get("session_id") != session_id:
             return  # Old task notifications cannot replace the new task's cache.
         cache.update(session_id=session_id, metadata=event["journal"])
+        journal = event["journal"]
+        error = journal.get("error")
+        if error and self._journal_fault != error:
+            self._journal_fault = error
+            self._fault("Journal could not be written. " + str(error.get("message") or error.get("stage"))
+                        + "\nInspect the Journal and the original output directory.")
+        elif journal.get("complete"):
+            self._journal_fault = None
         by_sequence = {row["sequence"]: row for row in cache.get("events", [])}
         by_sequence.update({row["sequence"]: row for row in event["events"]})
         rows = sorted(by_sequence.values(), key=lambda row: row["sequence"])
@@ -492,6 +539,13 @@ class SourceWindowController(QtCore.QObject):
         if self._viewer_kind == "status":
             details = self.details()
             self._viewer.update_content(self.panel.status_text(details), details)
+            return
+        if self._viewer_kind == "comparison":
+            comparison = self._comparison or {}
+            reference = (self._snapshot.get("controller") or {}).get("recent_manual_comparison") or {}
+            if reference.get("comparison_id") == comparison.get("comparison_id"):
+                comparison = {**comparison, "reference": reference}
+            self._viewer.update_content(comparison_text(comparison), comparison)
             return
         cache = self._journal_cache
         metadata = cache.get("metadata") or {}
@@ -518,54 +572,125 @@ class SourceWindowController(QtCore.QObject):
         rows.extend(("", json.dumps(events, ensure_ascii=False, indent=2) if events else "No displayable events yet."))
         self._viewer.update_content("\n".join(rows), {"journal": metadata, "events": events})
 
+    def _request_key(self, event):
+        return (event["presentation_task"], event["action_number"], event["generation"], event["request_number"])
+
+    def _present_result(self, event):
+        value = event["result"]
+        if event.get("comparison_id"):
+            key = (event["comparison_id"], event["comparison_step"], value.get("operation_id"))
+            if key in self._comparison_presented:
+                return
+            self._comparison_presented.add(key)
+        if tool_fault(event):
+            if value.get("code") in ("invalid_tool_request", "batch_rejected"):
+                key = ("batch_preflight", event.get("response_id"))
+            else:
+                key = ("tool", event.get("response_id"),
+                       event.get("tool_call_id") or value.get("operation_id") or event.get("function"))
+            if key not in self._presented:
+                self._presented.add(key)
+                text = tool_message(event)
+                detail = value.get("detail") or {}
+                reason = detail.get("reason")
+                if reason in ("pending_transaction", "gui_edit_in_progress"):
+                    text += "\nFinish or cancel the active edit in the Target window, then observe again."
+                elif reason in ("empty_stack", "stack_top_mismatch", "transaction_not_owned", "foreign_redo", "history_state_changed"):
+                    text += "\nInspect the Target's native Undo/Redo history before retrying."
+                elif event["side_effect"] == "unknown":
+                    if detail.get("committed"):
+                        text += "\nThe transaction committed, but the final model check failed."
+                    text += "\nTarget state is unconfirmed. Inspect Status before making more changes."
+                elif value.get("restored") or detail.get("model_restored"):
+                    text += "\nThe original model was restored."
+                    if detail.get("redo_changed"):
+                        text += " The native redo branch changed."
+                elif event["side_effect"] == "none" and event.get("is_error"):
+                    text += "\nThis operation did not change the model."
+                elif event["side_effect"] == "committed" and event.get("is_error"):
+                    text += "\nA change was committed. Inspect the actual state and Journal."
+                unexecuted = event.get("unexecuted")
+                if unexecuted:
+                    count = unexecuted["count"]
+                    label = "operation was" if count == 1 else "operations were"
+                    text += f"\n{count} other {label} not executed. {unexecuted['reason']}"
+                self._fault(text)
+        elif event.get("function") == "agent_save" and value.get("saved") is True:
+            self._notice("Model saved to " + str(value["saved_to"]))
+        self._register_images(event["images"], value, event.get("session_id"))
+
+    def _receive_state(self, snapshot):
+        self._snapshot = snapshot
+        self._snapshot_received_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        facts = snapshot.get("controller") or {}
+        if facts.get("session_id"):
+            self._presentation_session = facts["session_id"]
+            self._task_artifacts = facts.get("artifacts") or self._task_artifacts
+        self._present_report((snapshot.get("report") or {}).get("reply"))
+
+    def _present_report(self, report):
+        if not report or not report.get("text"):
+            return
+        key = (self._presentation_task, report["run_id"], report["response_id"])
+        if key not in self._reports_presented:
+            self.panel.message("agent", report["text"], complete=True)
+            self._reports_presented.add(key)
+
+    def _receive_event(self, event):
+        if (event["presentation_task"] != self._presentation_task
+                or event["action_number"] != self._action_number):
+            return
+        kind = event["event"]
+        if kind == "journal_update":
+            self._receive_journal(event)
+        elif kind in ("text_preview", "model_reply", "request_discarded"):
+            key = self._request_key(event)
+            if kind == "model_reply" and event.get("retained_report"):
+                self._present_report(event)
+            elif kind == "request_discarded" or event["generation"] < self._obsolete_generation:
+                self.panel.text.discard_previews(request=key)
+            elif kind == "model_reply" and event["adopted"] and key not in self._presented:
+                self._presented.add(key)
+                if event["text"]:
+                    self.panel.message("progress" if event["progress"] else "agent", event["text"],
+                                       request=key, complete=True)
+                else:
+                    self.panel.text.discard_previews(request=key)
+            elif kind == "text_preview" and key not in self._presented:
+                self.panel.message("agent", event["text"], request=key)
+        elif kind == "state":
+            self._receive_state({key: value for key, value in event.items() if key not in ("event", "images")})
+        elif kind == "tool_result":
+            self._present_result(event)
+            self._results = ({**event, "value": event["result"]},)
+            self._progress = {**event, "images": ()}
+        elif kind in ("tool_progress", "tool_started"):
+            self._progress = {key: value for key, value in event.items() if key not in ("event", "images")}
+        elif kind == "error":
+            key = ("terminal", event.get("request_number"), event["code"])
+            journal_codes = ("model_journal_pending", "context_journal_pending", "journal_pending")
+            if key not in self._presented and not (self._journal_fault and event["code"] in journal_codes):
+                self._presented.add(key)
+                self._model_error(event)
+
     @QtCore.Slot()
     def _drain(self):
         if self._worker is None:
             return
         events, completion = self._worker.drain()
         for event in events:
-            kind = event["event"]
-            if kind == "journal_update":
-                self._receive_journal(event)
-            elif kind == "text_preview":
-                self.panel.append(event["text"])
-                self._model_previewed = True
-            elif kind == "state":
-                self._snapshot = {key: value for key, value in event.items() if key not in ("event", "images")}
-                self._snapshot_received_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-                facts = self._snapshot.get("controller") or {}
-                if facts.get("session_id"):
-                    self._presentation_session = facts["session_id"]
-                    self._task_artifacts = facts.get("artifacts") or self._task_artifacts
-                if event.get("status") == "requesting_model":
-                    self._model_previewed = False
-                    self.panel.begin_reply()
-            elif kind == "tool_result":
-                self._notice(tool_message(event))
-                if (event.get("function") == "agent_save" and not event["is_error"]
-                        and event["side_effect"] == "committed" and event["result"].get("saved") is True):
-                    self._notice("Model saved to: " + str(event["result"]["saved_to"]))
-                self._results = ({"value": event["result"], "images": event["images"],
-                                  "is_error": event["is_error"], "side_effect": event["side_effect"]},)
-                self._register_images(event["images"], event["result"], event.get("session_id"))
-            elif kind == "model_proposal":
-                if not self._model_previewed:
-                    self.panel.append(event["text"])
-            elif kind == "tool_progress":
-                self._progress = {key: value for key, value in event.items() if key not in ("event", "images")}
-            elif kind == "tool_started":
-                self._notice(tool_message(event, started=True))
-            elif kind == "error":
-                self._model_error(event)
+            if event["event"] == "journal_update":
+                self._receive_event(event)
+        for event in events:
+            if event["event"] != "journal_update":
+                self._receive_event(event)
         if completion is not None:
             self._busy = False
             self._action = None
-            self._snapshot = completion["snapshot"]
-            self._snapshot_received_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-            facts = self._snapshot.get("controller") or {}
-            if facts.get("session_id"):
-                self._presentation_session = facts["session_id"]
-                self._task_artifacts = facts.get("artifacts") or self._task_artifacts
+            self._receive_state(completion["snapshot"])
+            for event in completion["presentation_fallback"]:
+                self._receive_event(event)
+            self.panel.text.discard_previews()
             if completion["action"] == "configure":
                 if completion["ok"]:
                     self._config = self._pending_config
@@ -574,32 +699,37 @@ class SourceWindowController(QtCore.QObject):
                                  if self._credential_dialog is not None and self._credential_dialog.session_key_only else ""))
                 self._pending_config = None
                 self._pending_profile = None
-            self._results = completion["results"]
             if completion["new_results"]:
+                self._results = completion["results"]
                 for row in self._results:
-                    self._register_images(row["images"], row["value"], facts.get("session_id"))
+                    self._present_result({**row, "result": row["value"], "session_id": self._presentation_session})
+            for row in completion.get("comparison_results", ()):
+                self._present_result({**row, "result": row["value"], "session_id": self._presentation_session})
+            comparison = completion.get("comparison")
+            if comparison is not None:
+                changed = comparison.get("comparison_id") != (self._comparison or {}).get("comparison_id")
+                self._comparison = comparison
+                if changed and not self._close_intent:
+                    self.open_viewer("comparison")
             if completion["credentials_consumed"]:
                 self._clear_credentials()
             if completion["error"]:
                 self._model_error(completion["error"])
             if completion["action"] == "close":
-                final = completion["results"][-1]["value"] if completion["results"] else {}
+                final = completion["results"][-1]["value"] if completion["new_results"] else {}
                 self._task_ended(final.get("journal"))
                 if self._snapshot.get("controller"):
-                    self._notice("Task ended locally. Source or journal cleanup remains unconfirmed; use End task to retry.")
-                elif final.get("abandoned_roles"):
-                    self._notice("Task ended. Target cleanup is unconfirmed; surviving documents remain open.")
+                    self._notice("Task ended locally. Use End task to retry pending cleanup.")
                 else:
-                    self._notice("Task ended; surviving documents remain open.")
-
+                    self._notice("Task ended. Surviving documents remain open.")
             if completion["presentation_backlog"]:
-                self._notice("Presentation backlog requested pause. The original final batch is retained and shown in Actual state.")
+                self._notice("Paused after presentation backlog. Inspect retained results in Status.")
             if completion["paused_before_start"]:
-                self._notice("Pause arrived before this action began; no new decision was started.")
+                self._notice("Paused before this action began.")
             self._dismiss_wait()
             if self._close_intent and completion["action"] == "close":
                 self._advance_close("task_completed")
-        if completion is not None or any(event["event"] in ("state", "tool_result", "tool_progress", "journal_update", "error") for event in events):
+        if completion is not None or events:
             self._render()
         self._advance_close("progress")
 
@@ -792,7 +922,7 @@ class SourceWindowController(QtCore.QObject):
         self._dismiss_wait()
         if not coordinated:
             self._timer.stop()
-            self._notice("Worker ended without coordinated shutdown. Do not create another worker or infer CAD recovery.")
+            self._fault("Worker ended unexpectedly. Inspect Status for the last confirmed CAD state.")
             if self._close_intent:
                 self.cancel_close()
             self._render()
@@ -812,7 +942,7 @@ class SourceWindowController(QtCore.QObject):
                 self.cancel_close()
                 return
         except Exception as exc:
-            self._notice("Role release failed: " + type(exc).__name__)
+            self._fault("Role release failed. " + type(exc).__name__)
             self.cancel_close()
             return
         self._reset_views()

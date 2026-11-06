@@ -11,7 +11,7 @@ DEFAULT_VIEW_DIRECTIONS = ("front", "top", "left", "iso_xm_ym_zp")
 
 IMAGE_OBSERVATION_KINDS = ("view", "initial_views")
 
-OBSERVATION_ROLES = {"initial_views": "source", "paired_view": "target"}
+OBSERVATION_ROLES = {"initial_views": "source", "paired_view": "target", "feature": "target"}
 
 def validate_observation_role(kind, query, role):
     key = "paired_view" if kind == "view" and query.get("paired", False) else kind
@@ -119,20 +119,6 @@ VIEW_EVIDENCE_CONTRACT = {
                       "groups": INITIAL_VIEW_GROUPS, "projection": "orthographic", "display_mode": "flat_lines",
                       "transparency": 0, "header_height_px": 24},
 }
-
-VIEW_QUERY_FIELDS = (
-    "transparency",
-    "views",
-    "width",
-    "height",
-    "output_long_edge_px",
-    "display_mode",
-    "projection",
-    "focus_box_mm",
-    "paired",
-    "include_section",
-    "section_axis",
-)
 
 _FOCUS_BOX_SCHEMA = _schema(
     {
@@ -252,6 +238,21 @@ def entity_record(kind, values):
     if set(values) != set(ENTITY_FIELDS[kind]):
         raise ValueError("Entity output differs from declared " + kind + " fields")
     return values
+
+FEATURE_OBSERVATION_BUDGET_BYTES = 16 * 1024
+
+FEATURE_QUERY_SCHEMA = _schema({
+    "object": NAME_SCHEMA,
+    "sketch_page": _schema({
+        "section": _string("Sketch element page", ("geometry", "constraints")),
+        "offset": _integer("Zero-based first native index", 0),
+        "limit": _integer("Page size", 1, 16),
+    }, ("section",)),
+    "vertex_page": _schema({
+        "offset": _integer("Zero-based page offset; returned VertexN indices are one-based", 0),
+        "limit": _integer("Page size", 1, 64),
+    }),
+}, ("object",))
 
 ENTITY_QUERY_SCHEMA = _schema(
     {

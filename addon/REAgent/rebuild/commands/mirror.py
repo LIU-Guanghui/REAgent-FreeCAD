@@ -1,13 +1,11 @@
 """Public evidence guard and bounded log for native Mirrored."""
 
 from REAgent.rebuild.log_summary import execution_summary
-from REAgent.rebuild.commands.execution import validate_domain_evidence
 
 
 def run(name, args, record, started, ctx):
     if name != "PartDesign_Mirrored":
         raise ValueError("Unknown Mirrored command")
-    validate_domain_evidence(args, record)
     value = ctx.call(record, name, **{key: item for key, item in args.items()
                                       if key != "session_id"})
     readback = value["readback"]

@@ -80,7 +80,7 @@ def _capture_plan(value, role):
     return {prefix + "_" + d: single_view_layout(width, height, role, d, limit) for d in directions}
 
 
-def image_registration(value, artifacts, evidence_id, role):
+def image_registration(value, artifacts, evidence_id, role, *, actor):
     if value.get("evidence_status") != "generated" or value.get("recovery", {}).get("restoration_confirmed") is not True:
         raise ValueError("View generation and restoration must be confirmed")
     layouts = _capture_plan(value, role)
@@ -120,7 +120,8 @@ def image_registration(value, artifacts, evidence_id, role):
         _artifact_path(artifact, key, artifacts, value["capture_id"], value["capture_number"], output_role, revision)
         plan.append({"artifact_key": key, "role": output_role, "artifact": artifact, "layout": layout,
                      "image_id": evidence_id + ":image:" + str(len(plan))})
-    return to_json_value({"evidence_id": evidence_id, "role": role,
+    return to_json_value({"evidence_id": evidence_id, "role": role, "actor": actor,
+        "document": value["document"],
         "artifacts": {key: artifacts[key] for key in ("output_dir", "basename")}, "plan": plan,
         "scale": value["scale"], "camera": value["camera"], "frames": images,
         **{key: value[key] for key in ("revision", "paired_revisions", "capture_id", "capture_number", "initial_views") if key in value}})
@@ -183,9 +184,9 @@ def read_registered_images(registration, artifact_key=None):
     return report, tuple(content), registration_previews(registration)
 
 
-def prepare_view_content(value, artifacts, evidence_id, role):
+def prepare_view_content(value, artifacts, evidence_id, role, *, actor):
     try:
-        registration = image_registration(value, artifacts, evidence_id, role)
+        registration = image_registration(value, artifacts, evidence_id, role, actor=actor)
         report, content, previews = read_registered_images(registration)
         return report, content, registration, previews
     except (OSError, KeyError, AttributeError, TypeError, ValueError, struct.error) as exc:

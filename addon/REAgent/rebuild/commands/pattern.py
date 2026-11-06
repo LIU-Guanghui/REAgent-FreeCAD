@@ -1,7 +1,6 @@
 """Public evidence guard and bounded log for Linear and Polar Patterns."""
 
 from REAgent.rebuild.log_summary import execution_summary
-from REAgent.rebuild.commands.execution import validate_domain_evidence
 
 _COMMANDS = ("PartDesign_LinearPattern", "PartDesign_PolarPattern")
 
@@ -9,7 +8,6 @@ _COMMANDS = ("PartDesign_LinearPattern", "PartDesign_PolarPattern")
 def run(name, args, record, started, ctx):
     if name not in _COMMANDS:
         raise ValueError("Unknown native Pattern command")
-    validate_domain_evidence(args, record)
     value = ctx.call(record, name, **{key: item for key, item in args.items()
                                       if key != "session_id"})
     readback = value["readback"]

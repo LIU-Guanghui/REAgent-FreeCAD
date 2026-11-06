@@ -67,16 +67,15 @@ def _edge_detail(edge, index, adjacent_faces, contract):
         "parameter_range": parameter_range,
         "closed": closed,
         "periodic": periodic,
-        "curve": _curve_parameters(curve, curve_type),
+        "curve": _curve_parameters(curve),
         "adjacent_faces": list(adjacent_faces),
         "local_tolerance_mm": local_tolerance,
     })
 
 
-def _curve_parameters(curve, curve_type):
+def _curve_parameters(curve):
     if curve is None:
-        return {}
-    result = {}
+        return {"unavailable_reason": "native_curve_unavailable"}
     vector_properties = (
         "Axis",
         "Center",
@@ -92,20 +91,24 @@ def _curve_parameters(curve, curve_type):
         "Degree",
         "NbPoles",
     )
-    for property_name in vector_properties:
-        try:
-            result[_snake_case(property_name)] = _vector_dict(
-                getattr(curve, property_name)
-            )
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            pass
-    for property_name in scalar_properties:
-        try:
-            result[_snake_case(property_name)] = float(
-                getattr(curve, property_name)
-            )
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            pass
+    return _optional_parameters(curve, vector_properties, scalar_properties)
+
+
+def _optional_parameters(native, vectors, scalars):
+    result, unavailable, errors = {}, [], []
+    for properties, convert in ((vectors, _vector_dict), (scalars, float)):
+        for name in properties:
+            field = _snake_case(name)
+            try:
+                result[field] = convert(getattr(native, name))
+            except AttributeError:
+                unavailable.append(field)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                errors.append({"field": field, "exception_type": type(exc).__name__, "reason": str(exc)[:200]})
+    if unavailable:
+        result["unavailable_properties"] = unavailable
+    if errors:
+        result["read_errors"] = errors
     return result
 
 
@@ -576,7 +579,6 @@ def _face_detail(face, index, adjacency, contract):
 
 
 def _surface_parameters(surface, surface_type):
-    result = {}
     vector_properties = {
         "Plane": ("Axis", "Position"),
         "Cylinder": ("Axis", "Center"),
@@ -590,21 +592,7 @@ def _surface_parameters(surface, surface_type):
         "Sphere": ("Radius",),
         "Toroid": ("MajorRadius", "MinorRadius"),
     }
-    for property_name in vector_properties.get(surface_type, ()):
-        try:
-            result[_snake_case(property_name)] = _vector_dict(
-                getattr(surface, property_name)
-            )
-        except (AttributeError, RuntimeError):
-            pass
-    for property_name in scalar_properties.get(surface_type, ()):
-        try:
-            result[_snake_case(property_name)] = float(
-                getattr(surface, property_name)
-            )
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            pass
-    return result
+    return _optional_parameters(surface, vector_properties.get(surface_type, ()), scalar_properties.get(surface_type, ()))
 
 
 def _geometric_relations(faces, tolerance):

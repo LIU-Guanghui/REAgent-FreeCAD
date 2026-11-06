@@ -17,6 +17,60 @@ from REAgent.host.workspace.recovery import _block, _fact_differences, _recomput
 from REAgent.host.workspace.state import _document_history_state, _geometry_differences, _presentation_state, _source_geometry_state, _source_model_state, _target_geometry_state, _target_model_state
 
 
+def _observation_baseline(document, group, source):
+    model = (_target_model_state(document, group, include_history=False) if group
+             else _source_model_state(source, include_history=False))
+    geometry = _target_geometry_state(group) if group else _source_geometry_state(source)
+    tolerance = _ir_tolerance_contract(group) if group else _source_tolerance_contract(source)
+    view = Gui.activeDocument().activeView()
+    return {"model": model, "geometry": geometry, "tolerance": tolerance, "view": view,
+            "camera": _capture_complete_camera_state(view), "display": _presentation_state(document),
+            "history": _document_history_state(document)}
+
+
+def _observation_readback(document, group, source, before, history_owned, errors):
+    recovery = {"checked_at": "after_observation_scope_exit",
+                "model_unchanged": None, "result_geometry_unchanged": None,
+                "history_restored": None, "presentation_restored": None}
+    try:
+        differences = _fact_differences(before["model"],
+            _target_model_state(document, group, include_history=False) if group
+            else _source_model_state(source, include_history=False), "model")
+        recovery["model_unchanged"] = not differences
+        for item in differences[:8]:
+            errors.add("model: " + item["field"] + ": " + item.get("reason", "value_changed"))
+    except Exception as exc:
+        errors.add("model: final state readback failed: " + str(exc)[:180])
+    try:
+        differences = _geometry_differences(before["geometry"],
+            _target_geometry_state(group) if group else _source_geometry_state(source), before["tolerance"])
+        recovery["result_geometry_unchanged"] = not differences
+        for item in differences[:8]:
+            errors.add("geometry: " + _compact_json(item))
+    except Exception as exc:
+        errors.add("geometry: final Result readback failed: " + str(exc)[:180])
+    try:
+        same_history = _document_history_state(document) == before["history"] and App.getActiveTransaction() is None
+        recovery["history_restored"] = same_history if history_owned else None
+        if not same_history:
+            recovery["history_restored"] = False
+            errors.add("history: final undo/redo/pending/application transaction differs from entry")
+    except Exception as exc:
+        errors.add("history: final readback failed: " + str(exc)[:180])
+    try:
+        differences = _camera_state_differences(before["view"], before["camera"]["numeric"])
+        presentation_same = (App.activeDocument() is document
+                             and _presentation_state(document) == before["display"] and not differences)
+        recovery["presentation_restored"] = presentation_same
+        for difference in differences:
+            errors.add(difference)
+        if not presentation_same:
+            errors.add("presentation: final display/camera/active document differs from entry")
+    except Exception as exc:
+        errors.add("presentation_readback: " + str(exc)[:180])
+    return recovery
+
+
 class ObservationScopeOperations:
     def _isolated_observation(self, document, render, params, *, temporary=True):
         """Certify one observation only after its owned transient scope exits."""
@@ -31,16 +85,8 @@ class ObservationScopeOperations:
             raise ValueError("Finish the application transaction before an observation")
         group = _workspace(document) if PROCESS.INSTANCE_ROLE == "rebuild" else None
         source = None if group else _source_objects(document.Name)[1]
-        model_before = (_target_model_state(document, group, include_history=False) if group
-                        else _source_model_state(source, include_history=False))
-        geometry_before = (_target_geometry_state(group) if group
-                           else _source_geometry_state(source))
-        tolerance_contract = (_ir_tolerance_contract(group) if group
-                              else _source_tolerance_contract(source))
-        view = Gui.activeDocument().activeView()
-        camera_before = _capture_complete_camera_state(view)
-        display_before = _presentation_state(document)
-        history_before = _document_history_state(document)
+        before = _observation_baseline(document, group, source)
+        view = before["view"]
         scope = _ObservationScope(document, temporary)
         final_errors = _BoundedRestorationErrors()
         error, value = None, None
@@ -92,7 +138,7 @@ class ObservationScopeOperations:
         try:
             if history_ownership_confirmed and not document.HasPendingTransaction:
                 presentation_attempt = _restore_view_operation(
-                    document, view, camera_before, document, display_before)
+                    document, view, before["camera"], document, before["display"])
         except Exception as exc:
             presentation_attempt.add("presentation: restore attempt failed: " + str(exc))
         try:
@@ -111,48 +157,7 @@ class ObservationScopeOperations:
             history_ownership_confirmed = False
             final_errors.add("history: unexpected event during observation or final cleanup")
         scope.phase = "exited"
-        recovery = {"checked_at": "after_observation_scope_exit",
-                    "model_unchanged": None, "result_geometry_unchanged": None,
-                    "history_restored": None, "presentation_restored": None}
-        try:
-            differences = _fact_differences(model_before,
-                _target_model_state(document, group, include_history=False) if group
-                else _source_model_state(source, include_history=False), "model")
-            recovery["model_unchanged"] = not differences
-            for item in differences[:8]:
-                final_errors.add("model: " + item["field"] + ": " + item.get("reason", "value_changed"))
-        except Exception as exc:
-            final_errors.add("model: final state readback failed: " + str(exc)[:180])
-        try:
-            differences = _geometry_differences(geometry_before,
-                _target_geometry_state(group) if group
-                else _source_geometry_state(source),
-                tolerance_contract)
-            recovery["result_geometry_unchanged"] = not differences
-            for item in differences[:8]:
-                final_errors.add("geometry: " + _compact_json(item))
-        except Exception as exc:
-            final_errors.add("geometry: final Result readback failed: " + str(exc)[:180])
-        try:
-            same_history = (_document_history_state(document) == history_before
-                            and App.getActiveTransaction() is None)
-            recovery["history_restored"] = same_history if history_ownership_confirmed else None
-            if not same_history:
-                recovery["history_restored"] = False
-                final_errors.add("history: final undo/redo/pending/application transaction differs from entry")
-        except Exception as exc:
-            final_errors.add("history: final readback failed: " + str(exc)[:180])
-        try:
-            differences = _camera_state_differences(view, camera_before["numeric"])
-            presentation_same = (App.activeDocument() is document
-                                 and _presentation_state(document) == display_before and not differences)
-            recovery["presentation_restored"] = presentation_same
-            for difference in differences:
-                final_errors.add(difference)
-            if not presentation_same:
-                final_errors.add("presentation: final display/camera/active document differs from entry")
-        except Exception as exc:
-            final_errors.add("presentation_readback: " + str(exc)[:180])
+        recovery = _observation_readback(document, group, source, before, history_ownership_confirmed, final_errors)
         durable_facts = [recovery[key] for key in (
             "model_unchanged", "result_geometry_unchanged", "history_restored")]
         durable_restored = all(value is True for value in durable_facts)

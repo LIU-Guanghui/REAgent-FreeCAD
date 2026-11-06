@@ -2,14 +2,12 @@
 
 from REAgent.protocol.features import PRIMITIVE_COMMANDS
 from REAgent.rebuild.log_summary import execution_summary
-from REAgent.rebuild.commands.execution import validate_domain_evidence
 
 
 def run(name, args, record, started, ctx):
     spec = PRIMITIVE_COMMANDS.get(name)
     if spec is None:
         raise ValueError("Unknown native primitive command")
-    validate_domain_evidence(args, record)
     payload = {key: value for key, value in args.items() if key != "session_id"}
     value = ctx.call(record, name, **payload)
     summary = {

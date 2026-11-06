@@ -7,7 +7,7 @@ import Part
 import Sketcher
 
 from REAgent.host.process_state import PROCESS
-from REAgent.protocol.features import validate_feature_request
+from REAgent.protocol.features import validate_feature_relations
 from REAgent.host.validation.tolerance import _ir_tolerance_contract
 from REAgent.host.workspace.model import _depends_on, _owned_objects, _session_bodies, _target_state
 from REAgent.host.workspace.properties import _metadata
@@ -277,7 +277,7 @@ class SketchOperations:
         epsilon = [None]
 
         def preflight(document, group, request):
-            validate_feature_request("Sketcher_EditSketch", request)
+            validate_feature_relations("Sketcher_EditSketch", request)
             body = document.getObject(body_name)
             sketch = document.getObject(name)
             if (body not in _session_bodies(group) or sketch is None

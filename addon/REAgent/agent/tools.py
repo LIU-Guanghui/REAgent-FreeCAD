@@ -8,7 +8,8 @@ from REAgent.values import decode_json, encode_json
 
 CONTEXT_TOOL_METHODS = ("directory", "check", "facts", "prepare_context", "prepare_receipt", "reply_materials")
 EXECUTION_TOOL_METHODS = ("preflight", "execute", "describe", "notification", "unexecuted",
-                          "interrupted", "result_state", "stage_retention")
+                          "interrupted", "result_state", "stage_retention", "stage_handoff",
+                          "suppress_reply", "report_ready", "action_started")
 
 
 def check_tools(tools):
@@ -44,23 +45,28 @@ def directory(registry):
 class EmptyTools:
     """Ordinary chat has an empty catalog and no execution resource."""
 
-    def directory(self):
+    def directory(self, action=None):
         return {}
 
-    def check(self, policy, call=None, arguments=None, *, binding_only=False):
-        if call is not None:
-            raise ValueError("No tools exist in this conversation")
+    def check(self, *, binding_only=False):
+        return None
 
-    def facts(self, policy):
+    def facts(self, policy, action=None):
         return None
 
     def prepare_context(self, policy, conversation):
         return None
 
-    def prepare_receipt(self, policy, observations):
+    def prepare_receipt(self, policy, observations, *, purpose="action"):
         return None
 
     def reply_materials(self, reply, rows):
         if reply.calls or rows:
             raise ValueError("No tools exist in this conversation")
         return (), ()
+
+    def action_started(self, action, binding):
+        return None
+
+    def suppress_reply(self, reply):
+        return False

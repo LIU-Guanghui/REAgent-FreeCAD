@@ -1,7 +1,7 @@
 """Public evidence and bounded logging adapter for four native Datum commands."""
 
 from REAgent.rebuild.log_summary import execution_summary, reference_summary
-from REAgent.rebuild.commands.execution import validate_domain_evidence
+from REAgent.rebuild.commands.execution import validate_vertex_evidence
 
 DATUM_COMMANDS = ("Part_DatumPlane", "Part_DatumLine", "Part_DatumPoint",
                   "Part_CoordinateSystem")
@@ -10,7 +10,7 @@ DATUM_COMMANDS = ("Part_DatumPlane", "Part_DatumLine", "Part_DatumPoint",
 def run(name, args, record, started, ctx):
     if name not in DATUM_COMMANDS:
         raise ValueError("Unknown Datum command")
-    validate_domain_evidence(args, record)
+    validate_vertex_evidence(args.get("reference"), args, record)
     payload = {key: args[key] for key in ("body_name", "datum_name", "mode",
                                         "position_mm", "intent", "evidence",
                                         "expected_revision")}

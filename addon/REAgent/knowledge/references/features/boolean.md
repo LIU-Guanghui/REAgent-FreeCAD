@@ -30,7 +30,7 @@ arguments = {
 - `intent`: Explain this operation's measured geometric purpose.
 - `source_evidence_id`: Source evidence actually issued in this session.
 - `target_evidence_id`: Current applicable Target evidence actually issued in this session.
-- `target_revision`: Current Target revision returned by observation/state.
+- `target_revision`: Current Target revision matching the referenced Target observation.
 - `feature_name`: Choose an unused native name for this new feature.
 - `tool_body_names`: Actual registered tool Body names; this Common example uses exactly one.
 

@@ -31,7 +31,7 @@ arguments = {
 - `intent`: Explain this operation's measured geometric purpose.
 - `source_evidence_id`: Source evidence actually issued in this session.
 - `target_evidence_id`: Current applicable Target evidence actually issued in this session.
-- `target_revision`: Current Target revision returned by observation/state.
+- `target_revision`: Current Target revision matching the referenced Target observation.
 - `feature_name`: Choose an unused native name for this new feature.
 - `profile_sketch_name`: Actual same-Body closed profile Sketch name.
 - `length_mm`: Measured full generating length, mm; include portions later obscured by dress-ups.

@@ -12,6 +12,7 @@ from .tools import MODEL_COMMANDS
 class DiscoveryPolicy:
     command: str | None = None
     observations: str = "{}"
+    type_id: str | None = None
 
     @property
     def seen(self):
@@ -19,7 +20,7 @@ class DiscoveryPolicy:
 
 
 def prepare_context(policy, conversation):
-    command = None
+    command = type_id = None
     for unit in conversation.units:
         reply = next((item for item in unit.messages if isinstance(item, AssistantTurn)), None)
         if reply is None:
@@ -31,12 +32,16 @@ def prepare_context(policy, conversation):
                 continue
             request = decode_json(call.arguments).get("request", {})
             if request.get("kind") == "tool" and request.get("name") in MODEL_COMMANDS:
-                command = request["name"]
-    return DiscoveryPolicy(command, policy.observations)
+                retained = result.value["result"]
+                if retained.get("name") == request["name"] and "input_schema" in retained:
+                    command, type_id = retained["name"], retained.get("type_id")
+    return DiscoveryPolicy(command, policy.observations, type_id)
 
 
-def prepare_receipt(policy, observations):
+def prepare_receipt(policy, observations, *, purpose="action"):
+    if purpose != "action":
+        return policy
     seen = policy.seen
-    seen.update({key: {**payload, "scope": "model_request_completed", "inspection": "not_attested"}
-                 for key, payload in observations})
-    return DiscoveryPolicy(policy.command, encode_json(seen))
+    for key, payload in observations:
+        seen[key] = {**payload, "scope": "model_request_completed", "inspection": "not_attested"}
+    return DiscoveryPolicy(policy.command, encode_json(seen), policy.type_id)

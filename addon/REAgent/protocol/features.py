@@ -2,15 +2,15 @@
 
 from REAgent.protocol.definitions import NAME_SCHEMA, TEXT_SCHEMA, _DOCUMENT, _operation
 from REAgent.protocol.observations import _edge_ref_schema, _face_ref_schema
-from REAgent.schema import RequestValidationError, _array, _boolean, _branch, _conditional_form, _integer, _number, _schema, _string, validate_input_schema
+from REAgent.schema import RequestValidationError, _array, _boolean, _branch, _conditional_form, _integer, _number, _schema, _string
 
 FEATURE_SPECS = {}
 
 DRESSUP_SCOPE = {
     "edge_limit": 64, "explicit_complete_edge_set": True, "implicit_all_edges": False,
     "mode_gaps": {
-        "fillet": ["use_all_edges", "face_or_whole_feature_implicit_edges", "variable_radius", "edit_existing_feature"],
-        "chamfer": ["use_all_edges", "face_or_whole_feature_implicit_edges", "distance_and_angle", "edit_existing_feature"],
+        "fillet": ["use_all_edges", "face_or_whole_feature_implicit_edges", "variable_radius"],
+        "chamfer": ["use_all_edges", "face_or_whole_feature_implicit_edges", "distance_and_angle"],
     },
 }
 
@@ -38,24 +38,30 @@ DOMAIN_MODE_GAPS = {
     **DRESSUP_SCOPE["mode_gaps"],
     "draft": [
         "inferred_neutral_plane", "custom_pull_direction", "edge_defined_neutral_plane",
-        "automatic_face_grouping", "edit_existing_feature",
+        "automatic_face_grouping",
     ],
     "thickness": [
         "pipe_or_rectoverso_mode", "self_intersection_handling", "implicit_opening_faces",
-        "edit_existing_feature",
     ],
     "mirror": [
-        "whole_shape_mode", "inferred_mirror_plane", "sketch_axis", "nested_transform", "edit_existing_feature",
+        "whole_shape_mode", "inferred_mirror_plane", "sketch_axis", "nested_transform",
     ],
     "pattern": [
         "whole_shape_mode", "second_direction", "uneven_spacing", "sketch_axis",
-        "nested_transform", "edit_existing_feature",
+        "nested_transform",
     ],
 }
 
 DOMAIN_EVIDENCE_SCHEMA = _array(
-    "Source and Target evidence IDs issued by this session",
-    {"type": "string", "pattern": r"^evidence-[a-f0-9]{20}$"}, 2, 16,
+    "Successful observation evidence IDs from this session, including Target evidence for expected_revision; "
+    "reconstruction also requires evidence for the bound Source. "
+    "If no applicable Target observation exists, obtain one before writing; an empty Target supports global observation.",
+    {"type": "string", "pattern": r"^evidence-[a-f0-9]{20}$"}, 1, 16,
+)
+
+TARGET_REVISION_SCHEMA = _string(
+    "Current Target revision matching at least one Target observation referenced in evidence. "
+    "State and write receipts report revisions but do not issue observation evidence."
 )
 
 FEATURE_SPECS["PartDesign_Body"] = _operation(
@@ -64,10 +70,10 @@ FEATURE_SPECS["PartDesign_Body"] = _operation(
     {"document": _DOCUMENT, "session_id": TEXT_SCHEMA,
      "body_name": {**NAME_SCHEMA, "description": "Unique native name for the tool Body"},
      "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
-     "expected_revision": _string("Copy the current Target revision from observation or state")},
+     "expected_revision": TARGET_REVISION_SCHEMA},
     ("document", "session_id", "body_name", "intent", "evidence", "expected_revision"),
-    ("Source and Target evidence belong to this session; Target revision is current.",),
-    timeout_class="long", required_for=("reconstruct",),
+    ("Current Target evidence belongs to this session; reconstruction additionally requires Source evidence.",),
+    timeout_class="long",
 )
 
 FEATURE_SPECS["PartDesign_NewSketch"] = _operation(
@@ -77,10 +83,10 @@ FEATURE_SPECS["PartDesign_NewSketch"] = _operation(
      "body_name": {**NAME_SCHEMA, "description": "Owned receiving Body"},
      "sketch_name": {**NAME_SCHEMA, "description": "Unique native Sketch name"},
      "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
-     "expected_revision": _string("Copy the current Target revision from observation or state")},
+     "expected_revision": TARGET_REVISION_SCHEMA},
     ("document", "session_id", "body_name", "sketch_name", "intent", "evidence", "expected_revision"),
-    ("Source and Target evidence belong to this session; Target revision is current.",),
-    timeout_class="long", required_for=("reconstruct",),
+    ("Current Target evidence belongs to this session; reconstruction additionally requires Source evidence.",),
+    timeout_class="long",
 )
 
 FEATURE_SPECS["Sketcher_MapSketch"] = _operation(
@@ -99,10 +105,10 @@ FEATURE_SPECS["Sketcher_MapSketch"] = _operation(
              "role": _string("Stable local plane role", ("XY_Plane", "XZ_Plane", "YZ_Plane"))}),
      ]},
      "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
-     "expected_revision": _string("Copy the current Target revision from observation or state")},
+     "expected_revision": TARGET_REVISION_SCHEMA},
     ("document", "session_id", "body_name", "sketch_name", "reference", "intent", "evidence", "expected_revision"),
-    ("Source and Target evidence belong to this session; Sketch is not yet attached.",),
-    timeout_class="long", required_for=("reconstruct",),
+    ("Current Target evidence belongs to this session; reconstruction also requires Source evidence; Sketch is not yet attached.",),
+    timeout_class="long",
 )
 
 FEATURE_SPECS["Sketcher_ValidateSketch"] = _operation(
@@ -197,11 +203,11 @@ FEATURE_SPECS["Sketcher_EditSketch"] = _operation(
      "geometry": _array("One-shot native Sketch geometry", _SKETCH_GEOMETRY, 1, 256),
      "constraints": _array("Explicit native Sketch constraints", _SKETCH_CONSTRAINT, 0, 512),
      "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
-     "expected_revision": _string("Copy the current Target revision from observation or state")},
+     "expected_revision": TARGET_REVISION_SCHEMA},
     ("document", "session_id", "body_name", "sketch_name", "geometry", "constraints",
      "intent", "evidence", "expected_revision"),
     ("Sketch is empty and has no downstream generated feature.",),
-    timeout_class="long", required_for=("reconstruct",),
+    timeout_class="long",
 )
 
 _POSITION_MM = _array("Free Body-local position or attached support-local offset in millimetres", _number("Finite coordinate"), 3, 3)
@@ -236,7 +242,7 @@ for _datum_command, _datum_kind in (
         "mode": _string("Free placement or reference-relative attachment", ("free", "attached")),
         "position_mm": _POSITION_MM,
         "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
-        "expected_revision": _string("Copy the current Target revision from observation or state"),
+        "expected_revision": TARGET_REVISION_SCHEMA,
     }
     _datum_required = ("document", "session_id", "body_name", "datum_name",
                        "mode", "position_mm", "intent", "evidence", "expected_revision")
@@ -257,9 +263,9 @@ for _datum_command, _datum_kind in (
     FEATURE_SPECS[_datum_command] = _operation(
         "datum", "Create one owned native %s Datum with free or bounded same-Body attachment." % _datum_kind,
         ("rebuild",), "committed", _datum_properties, _datum_required,
-        ("Source and Target evidence belong to this session; Target revision is current.",
+        ("Current Target evidence belongs to this session; reconstruction additionally requires Source evidence.",
          "Free placement forbids reference; attached placement requires one explicit same-Body reference."),
-        timeout_class="long", required_for=("reconstruct",),
+        timeout_class="long",
     )
     _datum_schema = FEATURE_SPECS[_datum_command]["input_schema"]
     _datum_schema["oneOf"] = [
@@ -348,7 +354,7 @@ for _family, _family_spec in PRIMITIVE_FAMILIES.items():
             "feature_name": {**NAME_SCHEMA, "description": "Unique native feature name"},
             "intent": TEXT_SCHEMA,
             "evidence": DOMAIN_EVIDENCE_SCHEMA,
-            "expected_revision": _string("Current Target observation revision"),
+            "expected_revision": TARGET_REVISION_SCHEMA,
         }
         for _field, _native, _rule in _family_spec["inputs"]:
             _primitive_properties[_field] = _primitive_number(_field, _rule)
@@ -379,10 +385,10 @@ for _family, _family_spec in PRIMITIVE_FAMILIES.items():
             "primitive", "Create one native %s %s in an explicitly owned Body." %
             (_operation_kind.lower(), _family.lower()),
             ("rebuild",), "committed", _primitive_properties, _required,
-            ("Current Source and Target evidence and Target revision are required.",
+            ("Current Target evidence and revision are required; reconstruction also requires Source evidence.",
              "Subtraction requires a prior valid single solid in the receiving Body."),
             ("Only the full, unslanted, unattached supported native form is supported.",),
-            timeout_class="long", required_for=("reconstruct",),
+            timeout_class="long",
         )
 
 HISTORY_COMMANDS = {
@@ -410,7 +416,7 @@ _HISTORY_COMMON = {
     "body_name": {**NAME_SCHEMA, "description": "Explicit owned receiving Body"},
     "feature_name": {**NAME_SCHEMA, "description": "Unique native feature name"},
     "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
-    "expected_revision": _string("Current Target observation revision"),
+    "expected_revision": TARGET_REVISION_SCHEMA,
 }
 
 _HISTORY_REQUIRED = ("document", "session_id", "body_name", "feature_name",
@@ -606,9 +612,9 @@ for _command, _spec in HISTORY_COMMANDS.items():
     FEATURE_SPECS[_command] = _operation(
         _spec["domain"], "Create one native %s feature in an explicitly owned Body." % _command,
         ("rebuild",), "committed", _properties, _required,
-        ("Current Source and Target evidence and Target revision are required.",
+        ("Current Target evidence and revision are required; reconstruction also requires Source evidence.",
          "Native references must belong to this Target session."),
-        _limits, timeout_class="long", required_for=("reconstruct",),
+        _limits, timeout_class="long",
     )
 
 FEATURE_SPECS["PartDesign_Boolean"]["input_schema"]["oneOf"] = [
@@ -651,10 +657,129 @@ _chamfer_schema["oneOf"] = [
                       required=("size2_mm", "flip_direction")),
 ]
 
-def validate_feature_request(command, request, *, path=None):
-    """Shared feature format and finite numeric relations; never reads CAD state."""
+
+DATUM_TYPES = {
+    "Part_DatumPlane": "Part::DatumPlane", "Part_DatumLine": "Part::DatumLine",
+    "Part_DatumPoint": "Part::DatumPoint", "Part_CoordinateSystem": "Part::LocalCoordinateSystem",
+}
+
+_INDEX = _integer("Zero-based native Sketch index from the current observation", 0)
+# Existing indexes are zero-based; new IDs belong only to this edit.
+_SKETCH_ADDRESS = {"oneOf": [
+    _branch("kind", "existing", {"index": _INDEX}),
+    _branch("kind", "new", {"id": _SKETCH_ID}),
+]}
+
+
+def _sketch_edit_constraint(branch):
+    properties = dict(branch["properties"])
+    for key in ("geometry_id", "first_geometry", "second_geometry"):
+        if key in properties:
+            properties[key] = _SKETCH_ADDRESS
+    for key in ("first_point", "second_point", "point"):
+        if key in properties:
+            properties[key] = _schema({"geometry": _SKETCH_ADDRESS,
+                                       "position": _SKETCH_POINT_REF["properties"]["position"]},
+                                      ("geometry", "position"))
+    return {**branch, "properties": properties}
+
+
+def _compact_sketch_form(value):
+    if isinstance(value, list):
+        return [_compact_sketch_form(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _compact_sketch_form(item) for key, item in value.items() if key != "description"}
+    return value
+
+
+def _sketch_constraint_forms():
+    forms = {}
+    for source in _SKETCH_CONSTRAINT["oneOf"]:
+        branch = _compact_sketch_form(_sketch_edit_constraint(source))
+        fields = branch["properties"]
+        kinds = fields["kind"].pop("enum")
+        key = repr(branch)
+        if key not in forms:
+            forms[key] = branch
+        forms[key]["properties"]["kind"].setdefault("enum", []).extend(kinds)
+    return list(forms.values())
+
+
+_SKETCH_OPERATIONS = _compact_sketch_form({"oneOf": [
+    _branch("op", "add_geometry", {"geometry": _SKETCH_GEOMETRY}),
+    _branch("op", "delete_geometry", {"index": _INDEX}),
+    _branch("op", "move_point", {"index": _INDEX,
+                                 "position": _SKETCH_POINT_REF["properties"]["position"],
+                                 "point_mm": _SKETCH_POINT}),
+    _branch("op", "set_radius", {"index": _INDEX, "radius_mm": _POSITIVE_LENGTH}),
+    _branch("op", "set_length", {"index": _INDEX, "length_mm": _POSITIVE_LENGTH}),
+    _branch("op", "construction", {"index": _INDEX, "enabled": _boolean("Construction geometry")}),
+    _branch("op", "add_constraint", {"constraint": {"oneOf": _sketch_constraint_forms()}}),
+    _branch("op", "delete_constraint", {"index": _INDEX}),
+    _branch("op", "set_constraint_value", {"index": _INDEX,
+        "value": _number("Driving dimensional value in millimetres or degrees")}),
+    _branch("op", "constraint_active", {"index": _INDEX, "enabled": _boolean("Constraint enabled")}),
+    _branch("op", "constraint_driving", {"index": _INDEX, "enabled": _boolean("Driving constraint")}),
+]})
+
+EDIT_FEATURE_TYPES = {
+    "PartDesign::Body": "PartDesign_Body",
+    "Sketcher::SketchObject": "Sketcher_EditSketch",
+    **{type_id: name for name, type_id in DATUM_TYPES.items()},
+    **{spec["type_id"]: name for name, spec in PRIMITIVE_COMMANDS.items()},
+    **{spec["type_id"]: name for name, spec in HISTORY_COMMANDS.items()},
+}
+
+_EDIT_PLACEMENT = {"position_mm": _POSITION_MM, "axis": _ROTATION_AXIS,
+                   "angle_deg": _number("Rotation angle in degrees")}
+_EDIT_COMMON = {
+    "document": _DOCUMENT, "session_id": TEXT_SCHEMA, "body_name": NAME_SCHEMA,
+    "object_name": {**NAME_SCHEMA, "description": "Existing native Target object"},
+    "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
+    "expected_revision": TARGET_REVISION_SCHEMA,
+}
+
+
+def _edit_fields(type_id, command):
+    if type_id == "PartDesign::Body":
+        return {"label": {"type": "string", "minLength": 1, "maxLength": 120}, **_EDIT_PLACEMENT}
+    if type_id == "Sketcher::SketchObject":
+        return {**_EDIT_PLACEMENT, "attachment": {"oneOf": [
+            _branch("mode", "free", {}),
+            _branch("mode", "attached", {"reference":
+                FEATURE_SPECS["Sketcher_MapSketch"]["input_schema"]["properties"]["reference"]}),
+        ]}, "operations": _array(
+            "Use observed zero-based indexes or new geometry IDs in this edit. Set radius on an unconstrained circle or arc, or length on an unconstrained line. Use mm or degrees for driving dimensions.",
+                                  _SKETCH_OPERATIONS, 1, 64)}
+    hidden = set(_EDIT_COMMON) | {"feature_name", "datum_name", "predecessor_name"}
+    fields = {key: value for key, value in FEATURE_SPECS[command]["input_schema"]["properties"].items()
+              if key not in hidden}
+    return fields
+
+
+FEATURE_SPECS["EditFeature"] = _operation(
+    "edit", "Edit an observed existing Target object in place using its native type contract.",
+    ("rebuild",), "committed", _EDIT_COMMON, tuple(_EDIT_COMMON),
+    ("Keep native identity and Body Tip. Re-observe the object and any replacement subelements at the current revision.",),
+    timeout_class="long",
+)
+_edit_schema = FEATURE_SPECS["EditFeature"]["input_schema"]
+_edit_schema["properties"].update(type_id=_string("Observed native TypeId", tuple(EDIT_FEATURE_TYPES)),
+                                  changes={"type": "object"})
+_edit_schema["required"] += ["type_id", "changes"]
+_edit_schema["oneOf"] = [
+    _schema({**_EDIT_COMMON, "type_id": _string("Observed native TypeId", (type_id,)),
+             "changes": _schema(_edit_fields(type_id, command))},
+            _edit_schema["required"])
+    for type_id, command in EDIT_FEATURE_TYPES.items()
+]
+
+
+def validate_feature_relations(command, request, *, path=None):
+    """Cross-field relations after schema validation; never reads CAD state."""
     path = path or command
-    validate_input_schema(request, FEATURE_SPECS[command]["input_schema"], path=path)
+    if command == "EditFeature" and not request["changes"]:
+        raise RequestValidationError([{"path": path + ".changes", "message": "Specify at least one change"}])
     if command == "Sketcher_EditSketch":
         for index, item in enumerate(request["geometry"]):
             if item["kind"] in ("arc", "ellipse_arc"):

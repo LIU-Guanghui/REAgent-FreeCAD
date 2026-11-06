@@ -46,19 +46,25 @@ def _target_model_state(document, rebuild, *, include_history=True):
     objects = {}
     for obj in _owned_objects(rebuild):
         properties = {}
+        property_types = {}
         for name in sorted(obj.PropertiesList):
-            if name in ("Visibility", "Label", "Label2"):
+            if name in ("Visibility", "Label"):
                 continue
             if name == "REAgentBodyNames":
                 properties[name] = list(obj.REAgentBodyNames)
                 continue
-            codec = _CODECS.get(obj.getTypeIdOfProperty(name))
+            type_id = obj.getTypeIdOfProperty(name)
+            property_types[name] = type_id
+            codec = _CODECS.get(type_id)
             if codec:
                 properties[name] = _encode(getattr(obj, name), codec)
+            elif type_id in ("App::PropertyFloatList", "App::PropertyIntegerList", "App::PropertyStringList"):
+                properties[name] = list(getattr(obj, name))
         objects[obj.Name] = {
             "type_id": obj.TypeId,
             "label": str(obj.Label),
             "properties": properties,
+            "property_types": property_types,
             "expressions": list(getattr(obj, "ExpressionEngine", [])),
         }
         if obj.TypeId == "Sketcher::SketchObject":

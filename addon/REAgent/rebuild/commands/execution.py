@@ -9,14 +9,29 @@ def _image_prepared(fact):
     return isinstance(delivery, dict) and delivery.get("status") == "prepared"
 
 
-def validate_domain_evidence(args, record):
-    """Require session-issued evidence from both roles at the claimed Target revision."""
+def validate_vertex_evidence(reference, args, record):
+    if not reference or reference.get("kind") != "feature_vertex":
+        return
+    evidence = record["evidence_facts"]
+    if not any(
+        fact["role"] == "target" and fact["kind"] == "feature"
+        and fact["revision"] == args["expected_revision"] and fact["body"] == args["body_name"]
+        and fact["object"] == reference["feature_name"]
+        and reference["vertex_index"] in fact.get("vertex_indices", ())
+        for fact in (evidence[item] for item in args["evidence"])
+    ):
+        raise ValueError("Observe the requested VertexN on the named Target feature in this Body and revision")
+
+
+def validate_domain_evidence(args, record, *, scope):
+    """Require current Target evidence and the Source basis of reconstruction actions."""
     if record["blocked"]:
         raise PublicError("write_blocked", "public_preflight", "Target write outcome is unknown; only safe reads or explicit close are allowed", side_effect="unknown")
     if record["source_basis_unknown"]:
         raise ValueError("Source restoration is unknown; do not continue modeling in this session")
     facts = record["evidence_facts"]
-    if record["observation_policy"] == "visual":
+    reconstruct = scope != "target_edit"
+    if reconstruct and record["observation_policy"] == "visual":
         preparation = record["initial_source_views"]
         evidence_id = preparation.get("evidence_id") if isinstance(preparation, dict) else None
         fact = facts.get(evidence_id) if isinstance(evidence_id, str) else None
@@ -37,7 +52,7 @@ def validate_domain_evidence(args, record):
     if any(facts[item]["kind"] in IMAGE_OBSERVATION_KINDS
            and not _image_prepared(facts[item]) for item in evidence):
         raise ValueError("View evidence requires image_delivery.status=prepared; obtain usable images before writing")
-    if not {facts[item]["role"] for item in evidence} >= {"source", "target"}:
+    if reconstruct and not {facts[item]["role"] for item in evidence} >= {"source", "target"}:
         raise ValueError("Native command requires both Source and Target observation evidence; Target global observation can issue evidence even before geometry exists")
     if any(facts[item]["role"] == "source" and facts[item]["revision"] != record["source_revision"]
            for item in evidence):

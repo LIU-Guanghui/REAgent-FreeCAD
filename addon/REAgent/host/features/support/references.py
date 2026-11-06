@@ -7,9 +7,10 @@ from REAgent.host.validation.structure import _single_solid_summary
 from REAgent.host.validation.tolerance import _ir_tolerance_contract
 from REAgent.host.workspace.model import _predecessor_shape
 from REAgent.host.workspace.properties import _metadata
+from REAgent.host.features.support.construction import _history_context, _shape_readback
 
 
-def _dressup_edges(body, group, request, tip):
+def _dressup_edges(body, group, request, tip, *, shape=None):
     if tip is None or tip.Name != request["predecessor_name"]:
         raise ValueError("Dress-up predecessor must be the current Body Tip")
     references = _feature_semantic_refs(
@@ -17,7 +18,7 @@ def _dressup_edges(body, group, request, tip):
     if any(ref["owner"].get("object_name") != tip.Name for ref in references):
         raise ValueError("Dress-up edge reference belongs to another predecessor")
     contract = _ir_tolerance_contract(group)
-    shape = _predecessor_shape(body)
+    shape = _predecessor_shape(body) if shape is None else shape
     _single_solid_summary(shape, "Dress-up predecessor")
     evidence = _geometry_evidence(shape, contract, include_relations=False,
                                   include_repetition=False)
@@ -51,8 +52,24 @@ def _dressup_base_readback(feature, tip, edge_names):
         raise RuntimeError("Native dress-up Base changed its predecessor or edges")
 
 
+def _edge_dressup_context(document, group, request):
+    body, _profile, tip = _history_context(document, group, request, require_solid=True)
+    return body, tip, _dressup_edges(body, group, request, tip)
+
+
+def _edge_dressup_readback(document, feature, name, type_id, context):
+    body, tip, edges = context
+    shape = _shape_readback(document, body, feature, name, type_id, tip)
+    _dressup_base_readback(feature, tip, edges)
+    for prop in ("UseAllEdges", "Refine", "SupportTransform"):
+        if prop in feature.PropertiesList and bool(getattr(feature, prop)):
+            raise RuntimeError("Native dress-up fixed option changed: " + prop)
+    return {"feature": name, "body": body.Name, "type_id": feature.TypeId,
+            "predecessor": tip.Name, "edges": edges, "tip": body.Tip.Name, "body_shape": shape}
+
+
 def _current_faces(body, group, request, tip, refs, role, parameter_name,
-                   evidence=None):
+                   evidence=None, *, shape=None):
     if tip is None or tip.Name != request["predecessor_name"]:
         raise ValueError("Face dress-up predecessor must be the current Body Tip")
     references = _feature_semantic_refs(refs, "face", role, parameter_name, 64)
@@ -60,7 +77,7 @@ def _current_faces(body, group, request, tip, refs, role, parameter_name,
            or ref.get("fallback") is not None for ref in references):
         raise ValueError("Face references require the current predecessor and no fallback")
     if evidence is None:
-        shape = _predecessor_shape(body)
+        shape = _predecessor_shape(body) if shape is None else shape
         _single_solid_summary(shape, "Face dress-up predecessor")
         evidence = _geometry_evidence(
             shape, _ir_tolerance_contract(group), include_relations=False,

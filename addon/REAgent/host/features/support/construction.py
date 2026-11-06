@@ -29,18 +29,23 @@ def _history_context(document, group, request, *, require_solid, sketch=False):
         raise ValueError("Subtractive history feature requires a prior valid single solid")
     profile = None
     if sketch:
-        profile = document.getObject(request["sketch_name"])
-        if (profile is None or profile.TypeId != "Sketcher::SketchObject"
-                or profile.Document is not document or profile not in body.Group):
-            raise ValueError("Profile must be an existing Sketch in the same owned Body")
-        if profile.GeometryCount == 0 or not any(
-                not profile.getConstruction(i) for i in range(profile.GeometryCount)):
-            raise ValueError("Profile Sketch has no non-construction geometry")
-        wires = list(getattr(profile.Shape, "Wires", []))
-        if (profile.Shape.isNull() or not profile.Shape.isValid()
-                or not wires or not all(wire.isClosed() for wire in wires)):
-            raise ValueError("Profile Sketch has no valid closed native wires")
+        profile = _closed_profile(document, body, request["sketch_name"])
     return body, profile, body.Tip
+
+
+def _closed_profile(document, body, name):
+    profile = document.getObject(name)
+    if (profile is None or profile.TypeId != "Sketcher::SketchObject"
+            or profile.Document is not document or profile not in body.Group):
+        raise ValueError("Profile must be an existing Sketch in the same owned Body")
+    if profile.GeometryCount == 0 or not any(
+            not profile.getConstruction(i) for i in range(profile.GeometryCount)):
+        raise ValueError("Profile Sketch has no non-construction geometry")
+    wires = list(getattr(profile.Shape, "Wires", []))
+    if (profile.Shape.isNull() or not profile.Shape.isValid()
+            or not wires or not all(wire.isClosed() for wire in wires)):
+        raise ValueError("Profile Sketch has no valid closed native wires")
+    return profile
 
 
 def _set_profile(feature, sketch):

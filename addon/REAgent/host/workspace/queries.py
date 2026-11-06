@@ -9,14 +9,46 @@ from REAgent.host.analysis.predecessor import infer_virtual_predecessor_bounds
 from REAgent.host.analysis.references import _edge_names, _face_names, _semantic_entity_ref_from_detail
 from REAgent.host.analysis.selection import _dressup_edge_queries, _dressup_edge_selectors, _dressup_face_selectors, _feature_semantic_refs, _resolve_dressup_selection, _resolve_face_selection
 from REAgent.host.analysis.topology import _geometric_relations, _resolve_geometry_selectors
+from REAgent.host.numeric import _vector_dict
 from REAgent.host.process_state import _document, PROCESS
-from REAgent.protocol.features import DRESSUP_SCOPE
+from REAgent.protocol.features import DRESSUP_SCOPE, EDIT_FEATURE_TYPES
+from REAgent.protocol.observations import FEATURE_OBSERVATION_BUDGET_BYTES
+from REAgent.values import encode_json
 from REAgent.host.validation.comparison import _residual_regions
 from REAgent.host.validation.structure import result_state
 from REAgent.host.validation.tolerance import _ir_tolerance_contract, _source_tolerance_contract
 from REAgent.host.file_digest import _file_sha256
-from REAgent.host.workspace.model import _owned_objects, _placement_summary, _predecessor_shape, _result_object, _result_shape, _session_bodies, _source_objects, _target_state, _workspace, _world_shape
+from REAgent.host.workspace.model import _feature_owner, _feature_predecessor, _owned_objects, _placement_summary, _predecessor_shape, _result_object, _result_shape, _session_bodies, _source_objects, _target_state, _workspace, _world_shape
+from REAgent.host.workspace.properties import _metadata, sketch_content_state
 from REAgent.host.workspace.state import _source_view_revision, _target_view_revision
+
+
+def _bounded_feature_page(result, container, key, section, offset, total, rows):
+    # Leave room for the revision and normal Controller envelope fields.
+    budget = FEATURE_OBSERVATION_BUDGET_BYTES - 512
+    page = container[key] = {"section": section, "offset": offset, "total": total,
+                             "items": [], "next_offset": None}
+    for row in rows:
+        page["items"].append(row)
+        following = offset + len(page["items"])
+        page["next_offset"] = following if following < total else None
+        if len(encode_json(result).encode("utf-8")) > budget:
+            page["items"].pop()
+            page["next_offset"] = following - 1
+            if not page["items"]:
+                raise ValueError("A complete feature page item exceeds the observation budget at offset " + str(offset))
+            break
+
+
+def _sketch_page_row(index, row):
+    omitted = ("poles", "knots", "weights", "multiplicities")
+    item = {"index": index, **{key: value for key, value in row.items() if key not in omitted}}
+    if "poles" in row:
+        item["spline_counts"] = {key: len(row[key]) for key in omitted if key in row}
+    if isinstance(item.get("expression"), str) and len(item["expression"]) > 200:
+        item["expression"] = item["expression"][:200]
+        item["expression_truncated"] = True
+    return item
 
 
 class ObservationOperations:
@@ -89,9 +121,60 @@ class ObservationOperations:
         }
 
 
+    def _observe_feature(self, params):
+        document, _source, group, _config = _target_state(params["document"])
+        obj = document.getObject(params["object"])
+        if obj is None or obj.TypeId not in EDIT_FEATURE_TYPES:
+            raise ValueError("Feature observation requires an editable native Target object")
+        body = _feature_owner(group, obj)
+        prior = _feature_predecessor(body, obj)
+        from REAgent.host.features.edit_parameters import observable_properties
+        properties = {}
+        for prop in observable_properties(obj):
+            row = _metadata(obj, prop, body_edit=obj is body)
+            properties[prop] = {key: row[key] for key in
+                                ("value", "enum", "writable", "unavailable_reason") if key in row}
+        value = {"object": obj.Name, "type_id": obj.TypeId, "body": body.Name,
+                 "label": obj.Label, "predecessor": prior.Name if prior else None,
+                 "tip": body.Tip.Name if body.Tip else None, "properties": properties,
+                 "dependencies": [item.Name for item in obj.OutList[:64]],
+                 "consumers": [item.Name for item in obj.InList[:64]]}
+        if "sketch_page" in params and obj.TypeId != "Sketcher::SketchObject":
+            raise ValueError("Sketch element page requires a Sketch")
+        if obj.TypeId == "Sketcher::SketchObject":
+            content = sketch_content_state(obj)
+            value["sketch"] = {"geometry_count": obj.GeometryCount, "constraint_count": obj.ConstraintCount,
+                               "external_geometry": content["external_geometry"][:16],
+                               "external_link_count": len(content["external_geometry"]),
+                               "external_index_count": len(content["external_indices"]),
+                               "external_indices": [row["index"] for row in content["external_indices"][:32]]}
+            if "sketch_page" in params:
+                query = params["sketch_page"]
+                section, offset, limit = query["section"], query.get("offset", 0), query.get("limit", 12)
+                rows = content[section]
+                _bounded_feature_page(value, value["sketch"], "page", section, offset, len(rows),
+                    (_sketch_page_row(i, rows[i]) for i in range(offset, min(offset + limit, len(rows)))))
+        if "vertex_page" in params:
+            if obj is body or not obj.TypeId.startswith("PartDesign::"):
+                raise ValueError("Vertex pages require a solid history feature in its owned Body")
+            shape = _world_shape(obj)
+            if shape is None or shape.isNull() or not shape.isValid() or len(shape.Solids) != 1:
+                raise ValueError("Observed feature has no valid single solid for vertex references")
+            if any(str(state).lower() in ("touched", "invalid", "error") for state in obj.State):
+                raise ValueError("Recompute the feature before observing writable vertex references")
+            query = params["vertex_page"]
+            offset, limit = query.get("offset", 0), query.get("limit", 32)
+            vertices = shape.Vertexes
+            _bounded_feature_page(value, value, "vertex_page", "vertices", offset, len(vertices),
+                ({"index": i + 1, "name": "Vertex" + str(i + 1), "point_mm": _vector_dict(vertices[i].Point)}
+                 for i in range(offset, min(offset + limit, len(vertices)))))
+        if len(encode_json(value).encode("utf-8")) > FEATURE_OBSERVATION_BUDGET_BYTES - 512:
+            raise ValueError("Feature metadata exceeds the observation budget")
+        return value
+
     def _inspect_geometry(self, params):
         if PROCESS.INSTANCE_ROLE == "source":
-            if params.get("object") is not None:
+            if params.get("object") is not None or params.get("edit_object") is not None:
                 raise ValueError(
                     "Source FaceN/EdgeN are subelements: use entity.query.faces/edges; "
                     "object names are available only for Target owned objects"
@@ -112,7 +195,22 @@ class ObservationOperations:
             tolerance_contract = _ir_tolerance_contract(reconstruction_ir)
             tip = _result_object(rebuild)
             requested_name = params.get("object")
-            if requested_name is None:
+            edit_object = params.get("edit_object")
+            if edit_object is not None:
+                feature = document.getObject(edit_object)
+                if feature is None or feature.TypeId not in EDIT_FEATURE_TYPES:
+                    raise ValueError("Edit geometry requires an owned editable feature")
+                body = _feature_owner(rebuild, feature)
+                inspected = _feature_predecessor(body, feature)
+                if inspected is None or (requested_name is not None and requested_name != inspected.Name):
+                    raise ValueError("Edit geometry must reference this feature's actual predecessor")
+                shape = _world_shape(inspected)
+                target_scope = {"kind": "edit_predecessor", "edit_object": feature.Name,
+                                "requested_object": requested_name, "shape_object": inspected.Name,
+                                "selection_body": body.Name, "current_result_tip": tip.Name if tip else None,
+                                "is_current_result": inspected is tip,
+                                "is_current_predecessor": False}
+            elif requested_name is None:
                 if tip is None:
                     raise ValueError("Target has no current Tip for entity geometry; use Target global observation for workspace evidence before the first feature")
                 inspected = tip
@@ -157,7 +255,8 @@ class ObservationOperations:
             raise ValueError("Entity observation requires Source or Target role")
         tolerance = tolerance_contract["linear_tolerance_mm"]
         include = params.get("include", [])
-        writable_refs = bool(role == "target" and target_scope["is_current_predecessor"]
+        writable_refs = bool(role == "target" and (target_scope["is_current_predecessor"]
+                                                  or target_scope["kind"] == "edit_predecessor")
                              and shape is not None and not shape.isNull()
                              and shape.isValid() and len(shape.Solids) == 1
                              and not any({str(value).lower() for value in obj.State}

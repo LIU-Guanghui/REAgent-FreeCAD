@@ -77,6 +77,11 @@ class PersistenceOperations:
         if document.FileName and _same_file_path(path, document.FileName): document.save()
         else: document.saveAs(path)
         binding["saved_path"] = path
+        # The write has happened. A failed readback only leaves applicability unknown.
+        try:
+            current_revision = _target_view_revision(document, group, config)
+        except Exception:
+            current_revision = None
         return {
             "saved": True,
             "status": "saved",
@@ -87,6 +92,8 @@ class PersistenceOperations:
             "result_body": group.Name,
             "tip": group.Tip.Name if group.Tip else None,
             "validation_provenance": provenance,
+            "saved_revision": provenance["target_revision"] if current_revision == provenance["target_revision"] else None,
+            "revision_after": current_revision,
         }
 
     def contribute(self):

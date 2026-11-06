@@ -10,6 +10,17 @@ from REAgent.protocol.artifacts import ARTIFACT_NUMBER_LIMIT, artifact_filename
 from REAgent.rebuild.errors import PublicError
 
 
+def saved_applicability(record):
+    checkpoint = record.get("last_saved_checkpoint")
+    if checkpoint is None:
+        return None
+    current = None if record.get("blocked") else record.get("current_target_revision")
+    saved = checkpoint.get("saved_revision")
+    status = ("unknown" if not current or not saved or checkpoint["document"] != record["target_document"]
+              else "unchanged" if current == saved else "changed")
+    return {**checkpoint, "applicability": status}
+
+
 def _file_error(exc, stage, path):
     detail = {"stage": stage, "path": str(path), "exception_type": type(exc).__name__,
               "message": str(exc)[:500]}
@@ -252,6 +263,7 @@ def validation_reference(result, operation_id):
     audit = result.get("parameter_audit", {})
     if audit.get("status") != "not_requested":
         facts["parameter_audit"] = {"status": audit.get("status"),
+                                    "reason": audit.get("reason"),
                                     "restored": audit.get("restoration", {}).get("restored")}
     for name, row in facts.items():
         row.setdefault("applicability", "current" if provenance.get(name) else "unknown")

@@ -4,21 +4,25 @@ import math
 
 from REAgent.protocol.features import DRESSUP_SCOPE, PRIMITIVE_COMMANDS
 from REAgent.protocol.observations import IMAGE_OBSERVATION_KINDS
+from REAgent.rebuild.results import ToolEvent
 
 
-def _pick(value, fields):
-    return {key: value[key] for key in fields if key in value} if isinstance(value, dict) else {}
+def _pick(value: dict | None, fields):
+    if value is None:
+        return {}
+    keys = value.keys()
+    return {key: value[key] for key in fields if key in keys}
 
 
-def _rows(values, fields, limit):
-    values = values if isinstance(values, list) else []
+def _rows(values: list[dict] | None, fields, limit):
+    values = [] if values is None else values
     return {"items": [_pick(value, fields) for value in values[:limit]],
             "count": len(values), "omitted": max(0, len(values) - limit)}
 
 
 def reference_summary(reference):
     summary = _pick(reference, ("kind", "role", "object_name", "datum_name", "coordinate_system_name"))
-    if not isinstance(reference, dict):
+    if reference is None:
         return summary
     obj = reference.get("object")
     if isinstance(obj, str):
@@ -32,8 +36,8 @@ def reference_summary(reference):
     if owner:
         summary["owner"] = owner
     for key in ("face_ref", "edge_ref"):
-        child = reference.get(key)
-        if isinstance(child, dict):
+        if key in reference:
+            child = reference[key]
             summary[key] = {**_pick(child, ("kind", "role", "object_name")),
                             "owner": _pick(child.get("owner"), ("role", "object_name"))}
     return summary
@@ -66,18 +70,19 @@ _RECOVERY_FIELDS = ("checked_at", "execution_status", "document_restored", "mode
 
 def recovery_summary(value):
     summary = _pick(value, _RECOVERY_FIELDS)
-    if isinstance(value, dict):
+    if value is not None:
         for key, limit in (("restoration_errors", 8), ("residual_files", 8),
                            ("temporary_cleanup_errors", 8), ("presentation_restore_errors", 8)):
-            if isinstance(value.get(key), list):
-                summary[key] = value[key][:limit]
+            items = value.get(key)
+            if isinstance(items, list):
+                summary[key] = items[:limit]
     return summary
 
 
 def selection_summary(value):
     summary = _pick(value, ("all_resolved", "input_count", "selection_mode", "selection_kind", "face_role",
                             "predecessor", "body", "status", "failed_input", "match_count", "reason"))
-    if not isinstance(value, dict):
+    if value is None:
         return summary
     names = value.get("matched_names", [])
     summary.update(matched_names=names[:DRESSUP_SCOPE["edge_limit"]], matched_count=len(names),
@@ -93,12 +98,10 @@ def selection_summary(value):
 
 
 def observation_request_summary(request):
-    kind = request.get("kind")
-    query = request.get("query", {})
-    kind = kind if isinstance(kind, str) else None
-    query = query if isinstance(query, dict) else {}
+    kind, query = request["kind"], request["query"]
     fields = {
-        "global": (), "entity": ("object", "fields", "offset", "limit", "include"),
+        "global": (), "entity": ("object", "edit_object", "fields", "offset", "limit", "include"),
+        "feature": ("object",),
         "selection_resolution": ("body_name", "edge_scope", "edge_role", "face_role", "nearest_limit"),
         "regions": ("offset", "limit"), "points": (), "residual": (),
         "support_extension": ("radius_mm",),
@@ -107,24 +110,20 @@ def observation_request_summary(request):
                  "projection", "display_mode", "transparency", "focus_box_mm"),
     }
     summary = {"kind": kind}
-    for key, value in _pick(query, fields.get(kind, ())).items():
-        if isinstance(value, (str, bool, int)):
-            summary[key] = value[:200] if isinstance(value, str) else value
-        elif isinstance(value, float) and math.isfinite(value):
-            summary[key] = value
-        elif isinstance(value, list):
-            summary[key] = [item[:80] for item in value[:16] if isinstance(item, str)]
+    for key, value in _pick(query, fields[kind]).items():
+        if isinstance(value, list):
+            summary[key] = [item[:80] for item in value[:16]]
             summary[key + "_count"] = len(value)
             summary[key + "_omitted"] = max(0, len(value) - 16)
-        elif key == "focus_box_mm" and isinstance(value, dict):
-            summary[key] = {axis: item for axis, item in _pick(value, (
-                "x_min", "x_max", "y_min", "y_max", "z_min", "z_max")).items()
-                if isinstance(item, (int, float)) and math.isfinite(item)}
+        else:
+            summary[key] = value[:200] if isinstance(value, str) else value
     for key in ("edge_queries", "edge_selectors", "edge_refs", "face_selectors", "face_refs", "faces", "edges", "points", "selectors"):
-        if isinstance(query.get(key), list):
-            summary[key + "_count"] = len(query[key])
-        elif key in ("faces", "edges") and query.get(key) == "all":
+        if key not in query:
+            continue
+        if query[key] == "all":
             summary[key + "_scope"] = "all"
+        else:
+            summary[key + "_count"] = len(query[key])
     return summary
 
 
@@ -137,6 +136,18 @@ def observation_summary(request, result):
     if "shape" in result:
         summary["shape"] = _pick(result["shape"], ("is_valid", "solid_count", "face_count", "edge_count",
                                                    "volume_mm3", "area_mm2", "bounding_box_mm", "bounding_box_method", "bounding_box_tightness"))
+    if request.get("kind") == "feature":
+        summary.update(_pick(result, ("object", "type_id", "body", "predecessor", "tip")))
+        sketch = result.get("sketch")
+        for key, page, fields in (
+                ("sketch_page", sketch.get("page") if isinstance(sketch, dict) else None,
+                 ("section", "offset", "total", "next_offset")),
+                ("vertex_page", result.get("vertex_page"), ("offset", "total", "next_offset"))):
+            if isinstance(page, dict):
+                summary[key] = _pick(page, fields)
+                items = page.get("items")
+                if isinstance(items, list):
+                    summary[key]["returned"] = len(items)
     if request.get("kind") == "residual":
         summary["operations"] = {direction: _pick(row, ("operation", "method", "status", "available", "reason",
             "exception_type", "calls", "elapsed_ms", "is_valid", "valid_empty", "volume_mm3",
@@ -198,9 +209,10 @@ def validation_summary(value):
     return summary
 
 
-def save_summary(value, recent_validation):
+def save_summary(value, recent_validation, recent_manual_comparison):
     return {**_pick(value, ("saved", "status", "saved_to", "checkpoint", "result", "result_body", "tip")),
-            "model_state": _pick(value.get("model_state"), ("state",)), "recent_validation": recent_validation}
+            "model_state": _pick(value.get("model_state"), ("state",)), "recent_validation": recent_validation,
+            "recent_manual_comparison": recent_manual_comparison}
 
 
 def failure_summary(error, request):
@@ -215,7 +227,8 @@ def failure_summary(error, request):
     summary["recovery"] = recovery_summary(detail)
     summary["failure_detail"] = _pick(detail, ("step", "reason", "object", "property", "property_type", "exception_type",
                                                "original_error", "recovery_error", "committed", "transaction",
-                                               "original_stage", "view_phase", "direction", "history_moved", "recomputed_objects"))
+                                               "original_stage", "view_phase", "direction", "history_moved", "recomputed_objects",
+                                               "link_index", "owner", "subelement", "changed_fields"))
     if isinstance(detail.get("section"), dict):
         summary["failure_detail"]["section"] = detail["section"]
     if isinstance(detail.get("camera"), dict):
@@ -229,6 +242,12 @@ def failure_summary(error, request):
             "status_unavailable", "Profile", "BaseFeature", "Tip", "Originals", "originals_omitted",
             "geometry_count", "constraint_count", "fully_constrained", "diagnostic_error"), 16)
         summary["objects_omitted"] = detail.get("objects_omitted", 0)
+    history_fields = ("reason", "expected", "top", "top_ownership", "pending_transaction",
+                      "pending_documents", "redo_top", "redo_count", "session_owned_count",
+                      "unowned_entries", "model_restored", "redo_changed")
+    guard = _pick(detail, history_fields)
+    if guard:
+        summary["native_guard"] = guard
     if "selection_resolution" in error:
         summary["selection_resolution"] = selection_summary(error["selection_resolution"])
     if "recovery" in error:
@@ -236,46 +255,48 @@ def failure_summary(error, request):
     return summary
 
 
-def request_summary(name, arguments):
-    if not isinstance(arguments, dict):
-        return {}
+def request_summary(name, arguments: dict):
+    """Bounded projection of a schema-validated call; invalid inputs stay in errors."""
     fields = ("knowledge_id", "transaction", "role", "body_name", "sketch_name", "datum_name", "feature_name",
-              "predecessor_name", "intent", "mode", "depth_mode", "mouth_mode", "join", "direction", "reversed",
+              "predecessor_name", "object_name", "type_id", "intent", "mode", "depth_mode", "mouth_mode", "join", "reversed",
               "radius_mm", "size_mm", "size2_mm", "flip_direction", "length_mm", "diameter_mm", "depth_mm",
-              "angle_deg", "thickness_mm", "position_mm", "axis")
+              "angle_deg", "thickness_mm", "validation_operation_id", "paired_evidence_id")
     summary = {key: value[:200] if isinstance(value, str) else value
-               for key, value in _pick(arguments, fields).items()
-               if isinstance(value, (str, int, float, bool)) and (not isinstance(value, float) or math.isfinite(value))}
-    for key in ("position_mm", "axis"):
-        value = arguments.get(key)
-        if isinstance(value, list) and len(value) == 3 and all(isinstance(item, (int, float)) and math.isfinite(item) for item in value):
-            summary[key] = value
-        elif isinstance(value, dict):
-            summary[key] = reference_summary(value)
+               for key, value in _pick(arguments, fields).items()}
+    for key in ("position_mm", "axis", "direction"):
+        if key in arguments:
+            value = arguments[key]
+            summary[key] = reference_summary(value) if isinstance(value, dict) and "kind" in value else value
     if name in PRIMITIVE_COMMANDS:
         summary["dimensions"] = {field: arguments[field] for field, _native, _rule in PRIMITIVE_COMMANDS[name]["inputs"]
-                                 if isinstance(arguments.get(field), (int, float)) and math.isfinite(arguments[field])}
+                                 if field in arguments}
     for key in ("geometry", "constraints", "edge_refs", "face_refs", "source_feature_names", "tool_body_names"):
-        if isinstance(arguments.get(key), list):
+        if key in arguments:
             summary[key + "_count"] = len(arguments[key])
-    if isinstance(arguments.get("request"), dict):
+    if name == "EditFeature":
+        summary["changed_fields"] = sorted(arguments["changes"])
+        summary["values"] = {key: item for key, item in arguments["changes"].items()
+                             if isinstance(item, (int, float, bool, str))}
+    if name == "agent_observe":
         summary["observation"] = observation_request_summary(arguments["request"])
-    if isinstance(arguments.get("reference"), dict):
+    elif "request" in arguments:
+        summary["discovery"] = _pick(arguments["request"], ("kind", "name", "type_id", "role"))
+    if "reference" in arguments:
         summary["reference"] = reference_summary(arguments["reference"])
-    if name == "agent_validate" and isinstance(arguments.get("options"), dict):
+    if name == "agent_validate":
         summary["options"] = _pick(arguments["options"], (
             "measurements", "surface_sampling", "boolean_operations", "parameter_audit"))
     return summary
 
 
-def tool_message(event, *, started=False):
+def tool_message(event: ToolEvent, *, started=False):
     """A short presentation of actual request/result facts, without inferred reasoning."""
     name = str(event.get("function") or "Tool")
-    request = event.get("request") or {}
-    value = event.get("result") or {}
+    request = event.get("request", {})
+    value = {} if started else event["result"]
     label = name.removeprefix("agent_").replace("_", " ")
     if name == "agent_observe":
-        observation = request.get("observation") or {}
+        observation = request.get("observation", {})
         scope = observation.get("kind") or "observation"
         role = request.get("role") or value.get("role")
         label = "Observe " + (str(role)[:1].upper() + str(role)[1:] + " · " if role else "") + scope[:1].upper() + scope[1:].replace("_", " ")
@@ -289,9 +310,9 @@ def tool_message(event, *, started=False):
                 elif observation.get(category + "_count", 0) > 0:
                     counts.append("%s %s requested" % (observation[category + "_count"], category))
         elif not event.get("is_error"):
-            pagination = value.get("pagination") or {}
+            pagination = value.get("pagination")
             for category in ("faces", "edges"):
-                page = pagination.get(category)
+                page = pagination.get(category) if isinstance(pagination, dict) else None
                 if isinstance(page, dict):
                     if page.get("requested") is True and type(page.get("returned")) is int:
                         count = str(page["returned"])
@@ -305,7 +326,7 @@ def tool_message(event, *, started=False):
         if counts:
             label += " · " + ", ".join(counts)
     elif not name.startswith("agent_"):
-        feature = request.get("feature_name") or request.get("sketch_name") or request.get("datum_name") or request.get("body_name")
+        feature = request.get("feature_name") or request.get("sketch_name") or request.get("datum_name") or request.get("object_name") or request.get("body_name")
         if feature:
             label += " · " + str(feature)
     elif name == "agent_validate":

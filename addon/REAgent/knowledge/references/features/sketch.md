@@ -55,7 +55,7 @@ arguments = {
 - `intent`: Explain this operation's measured geometric purpose.
 - `source_evidence_id`: Source evidence actually issued in this session.
 - `target_evidence_id`: Current applicable Target evidence actually issued in this session.
-- `target_revision`: Current Target revision returned by observation/state.
+- `target_revision`: Current Target revision matching the referenced Target observation.
 - `sketch_name`: Actual owned empty Sketch name returned by creation/state.
 - `profile_center_x_mm`: Signed circle center X relative to this Sketch's own origin and X axis, mm; convert coordinates from other frames first.
 - `profile_center_y_mm`: Signed circle center Y relative to this Sketch's own origin and Y axis, mm; convert coordinates from other frames first.

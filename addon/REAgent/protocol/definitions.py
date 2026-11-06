@@ -51,7 +51,6 @@ def _operation(
     preconditions=(),
     limits=(),
     timeout_class="short",
-    required_for=(),
 ):
     return {
         "domain": domain,
@@ -59,7 +58,6 @@ def _operation(
         "roles": list(roles),
         "side_effect": side_effect,
         "timeout_class": timeout_class,
-        "required_for": list(required_for),
         "input_schema": _schema(properties, required),
         "preconditions": list(preconditions),
         "limits": list(limits),

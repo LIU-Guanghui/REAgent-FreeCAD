@@ -1,6 +1,5 @@
 """Single synchronous CAD tool executor; no transport or thread startup."""
 
-import json
 import time
 import uuid
 from threading import Lock
@@ -10,12 +9,14 @@ from REAgent.protocol.definitions import resolve_retry_action
 from REAgent.schema import validate_input_schema
 from REAgent.rebuild.errors import PublicError, error_payload
 from REAgent.rebuild.results import ToolResult
-from REAgent.values import require_json_value, to_json_value
+from REAgent.values import to_json_value
 from REAgent.rebuild.tools import _binding_keys
 from REAgent.rebuild.commands.families import FAMILIES
+from REAgent.rebuild.commands.execution import validate_domain_evidence
 from REAgent.rebuild.log_summary import failure_summary, request_summary
 from REAgent.rebuild.tools import TOOLS
 from REAgent.rebuild.images import cleanup_unpublished_outputs
+from REAgent.rebuild.action_policy import guard as guard_action
 from REAgent.rebuild.workflow import diagnostics, discovery, history, observation, session, validation
 from REAgent.rebuild.workflow_context import WorkflowContext, evidence_summary
 
@@ -49,9 +50,7 @@ def has_retained_task():
 
 def _success_response(value, context):
     try:
-        require_json_value(value)
-        json.dumps(value, ensure_ascii=False, allow_nan=False)
-        return ToolResult(to_json_value(value), tuple(context.get("image_content", ())),
+        return ToolResult(value, tuple(context.get("image_content", ())),
                           side_effect=context["side_effect"])
     except (TypeError, ValueError) as exc:
         raise PublicError("response_encoding_failed", "controller_response", str(exc),
@@ -69,7 +68,7 @@ class Controller:
     def observe_journal(self, observer):
         self.workflow.journal_observer = observer
 
-    def execute(self, name, arguments=None, *, on_progress=None):
+    def execute(self, name, arguments=None, *, on_progress=None, execution=None):
         global _current_controller
         if not _execution_lock.acquire(blocking=False):
             return ToolResult({"code": "execution_busy", "stage": "controller_preflight",
@@ -84,7 +83,8 @@ class Controller:
                                   is_error=True)
             _current_controller = self
             context = {"operation_id": "op-" + uuid.uuid4().hex[:20],
-                       "started": time.perf_counter(), "side_effect": "none"}
+                       "started": time.perf_counter(), "side_effect": "none",
+                       "execution": to_json_value(execution) if execution is not None else None}
             self.operation = {"operation_id": context["operation_id"], "function": name,
                               "status": "running"}
 
@@ -109,8 +109,14 @@ class Controller:
                               "side_effect": result.side_effect}
             return result
         except BaseException:
+            metadata_only = name == "agent_finish_reconstruction"
             if self.operation is not None:
-                self.operation = {**self.operation, "status": "interrupted", "side_effect": "unknown"}
+                self.operation = {**self.operation, "status": "interrupted",
+                                  "side_effect": "none" if metadata_only else "unknown"}
+            if metadata_only:
+                # Delivery only reads native state and commits local metadata.
+                # Keep a prepared receipt/Journal failure without inventing a CAD write.
+                raise
             for record in self.workflow.sessions.values():
                 phase = record["startup"]["phase"]
                 if (name == "agent_close_session"
@@ -139,9 +145,55 @@ class Controller:
                                   "source_revision": record.get("source_revision"),
                                   "initial_source_views": record["initial_source_views"],
                                   "recent_validation": record["recent_validation"],
+                                  "recent_manual_comparison": record.get("recent_manual_comparison", {}),
+                                  "recent_paired_views": record.get("recent_paired_views", {}),
+                                  "current_target_revision": record.get("current_target_revision"),
+                                  "reconstruction": record.get("reconstruction", {}),
+                                  "delivery_receipt": record.get("delivery_receipt"),
                                   "known_evidence": [evidence_summary(item, record["evidence_facts"][item])
                                                      for item in evidence_ids],
                                   "evidence_total": len(record["evidence_order"])})
+        finally:
+            _execution_lock.release()
+
+    def action_started(self, binding, action):
+        """Publish an already adopted local action; no CAD or journal I/O here."""
+        if not _execution_lock.acquire(blocking=False):
+            raise RuntimeError("The original Controller is still busy")
+        try:
+            record = self.workflow.record(binding)
+            if action.scope == "reconstruct" and record.get("reconstruction", {}).get("run_id") != action.id:
+                record["reconstruction"] = {"phase": "reconstructing", "run_id": action.id}
+        finally:
+            _execution_lock.release()
+
+    def recover_delivery(self, binding):
+        """Confirm only the original pending declaration after explicit journal recovery."""
+        if not _execution_lock.acquire(blocking=False):
+            raise RuntimeError("The original Controller is still busy")
+        try:
+            record = self.workflow.record(binding)
+            pending = record.get("pending_delivery")
+            if pending is None:
+                return None
+            arguments = {key: value for key, value in pending["arguments"].items() if key != "session_id"}
+            trusted = pending["execution"]
+        finally:
+            _execution_lock.release()
+        result = self.execute("agent_finish_reconstruction", arguments, execution=trusted)
+        if result.is_error and result.value.get("code") != "journal_pending":
+            if _execution_lock.acquire(blocking=False):
+                try:
+                    self.workflow.record(binding).pop("pending_delivery", None)
+                finally:
+                    _execution_lock.release()
+        return result
+
+    def record_manual_comparison(self, binding, comparison_id, rows):
+        if not _execution_lock.acquire(blocking=False):
+            raise RuntimeError("The original Controller is still busy")
+        try:
+            return to_json_value(validation.record_manual_comparison(self.workflow.record(binding), comparison_id, rows))
         finally:
             _execution_lock.release()
 
@@ -208,18 +260,24 @@ class Controller:
         workflow = self.workflow
         if name not in TOOLS: raise PublicError("capability_unavailable", "public_discovery", "Unknown public tool")
         validate_input_schema(args, TOOLS[name]["input_schema"], path=name)
+        context = workflow.call_context.get()
+        context["request_summary"], context["request_role"] = _request_summary(name, args)
         record = workflow.record(args["session_id"]) if "session_id" in args else None
         if (record is not None and (record["startup"]["status"] != "ready" or record["closed"])
                 and name not in ("agent_get_state", "agent_close_session", "agent_journal")):
             raise PublicError("session_start_incomplete", "public_preflight",
                               "Session is not active; inspect startup, close and journal facts before any modeling",
                               side_effect="unknown" if record["blocked"] else "none")
-        context = workflow.call_context.get()
-        if context is not None and "evidence" in args and "intent" in args:
+        trusted = context.get("execution")
+        guard_record = record or (workflow.sessions.get(trusted.get("binding")) if trusted else None)
+        if guard_record is not None:
+            guard_action(guard_record, name, args, trusted)
+        if name in FEATURE_SPECS and FEATURE_SPECS[name]["side_effect"] != "none":
+            validate_domain_evidence(args, record, scope=trusted["scope"] if trusted else "reconstruct")
+        if "evidence" in args and "intent" in args:
             context["feature_evidence"] = args["evidence"]
             context["feature_intent"] = args["intent"][:400]
-        started = (workflow.call_context.get() or {}).get("started", time.perf_counter())
-        return self._handlers[name](name, args, record, started, workflow)
+        return self._handlers[name](name, args, record, context["started"], workflow)
 
 
     def _execute_tool(self, name, arguments, context):
@@ -278,12 +336,26 @@ class Controller:
                             "direction_count": fact["initial_views"]["direction_count"],
                             "capture_id": fact["initial_views"]["capture_id"],
                             "scope": "local_response_preparation", "inspection": "not_attested"}
+                    if (fact.get("actor") == "model" and fact.get("image_registration", {}).get("paired_revisions")
+                            and fact.get("image_delivery", {}).get("status") == "prepared"):
+                        evidence_record["recent_paired_views"] = {
+                            "evidence_id": evidence_id, "actor": "model",
+                            "paired_revisions": fact["image_registration"]["paired_revisions"]}
                 except Exception:
                     evidence_record["evidence_facts"].pop(evidence_id, None)
                     if evidence_record["evidence_order"] and evidence_record["evidence_order"][-1] == evidence_id:
                         evidence_record["evidence_order"].pop()
                     evidence_record["initial_source_views"] = previous_preparation
                     raise
+            completion = context.get("pending_delivery")
+            if completion is not None:
+                delivery_record, receipt = completion
+                self.workflow.guard_journal(delivery_record)
+                delivery_record.update(
+                    delivery_receipts={**delivery_record["delivery_receipts"], receipt["receipt_id"]: receipt},
+                    delivery_receipt=receipt,
+                    reconstruction={"phase": "delivered", "run_id": receipt["run_id"]})
+                delivery_record.pop("pending_delivery", None)
             return response
         except Exception as exc:
             if record is None:
@@ -310,21 +382,19 @@ class Controller:
                     error["error_class"], error["side_effect"]
                 )
             if hasattr(exc, "runtime"): error["runtime"] = exc.runtime
-            query, role = _request_summary(name, arguments)
+            query, role = context.get("request_summary", {}), context.get("request_role", "agent")
             if name != "agent_journal":
                 workflow.emit(record, "operation.failed", name, failure_summary(error, query), context["started"],
                               level="error", role=role, persist=not (record and record["journal"].start_failed))
             if record is not None: error["journal"] = record["journal"].metadata()
-            return ToolResult(to_json_value(error), is_error=True, side_effect=error["side_effect"])
+            return ToolResult(error, is_error=True, side_effect=error["side_effect"])
         finally:
             workflow.call_context.reset(token)
 
 
 def _request_summary(name, arguments):
-    if not isinstance(arguments, dict): return {}, "agent"
     summary = request_summary(name, arguments)
-    request = arguments.get("request")
-    role = arguments.get("role", request.get("role") if isinstance(request, dict) else None)
+    role = arguments.get("role", arguments.get("request", {}).get("role"))
     if role not in ("source", "target", "both"):
         role = "target" if name in FEATURE_SPECS or name in (
             "agent_undo", "agent_redo", "agent_save", "agent_validate") else "agent"

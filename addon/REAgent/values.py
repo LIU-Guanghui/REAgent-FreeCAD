@@ -34,13 +34,15 @@ def to_json_value(value: Any) -> Any:
     """Return a detached JSON value after enforcing the neutral boundary."""
 
     require_json_value(value)
-    if isinstance(value, tuple):
-        return [to_json_value(item) for item in value]
-    if isinstance(value, list):
-        return [to_json_value(item) for item in value]
-    if isinstance(value, dict):
-        return {key: to_json_value(item) for key, item in value.items()}
-    return value
+
+    def copy(item):
+        if isinstance(item, (list, tuple)):
+            return [copy(child) for child in item]
+        if isinstance(item, dict):
+            return {key: copy(child) for key, child in item.items()}
+        return item
+
+    return copy(value)
 
 def _required_text(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():

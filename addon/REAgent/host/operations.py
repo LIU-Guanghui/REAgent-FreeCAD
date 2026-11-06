@@ -1,16 +1,14 @@
-"""Host adapter and observation routing with explicit native service dependencies."""
+"""Route BridgeServer-validated requests through explicit native service dependencies."""
 
 import os
 import FreeCAD as App
 from REAgent import ADDON_PATH
 from REAgent.host.process_state import _active_task_state, _document, PROCESS
 from REAgent.host.view.presentation import _main_window_state
-from REAgent.host.view.rendering import _validate_view_query
-from REAgent.host.capabilities import _addon_version, capability_response
-from REAgent.protocol.operations import OPERATION_SPECS
+from REAgent.host.view.rendering import _normalize_view_query
+from REAgent.host.capabilities import _addon_metadata, capability_response
 from REAgent.protocol.definitions import PRODUCT_ID
 from REAgent.protocol.observations import initial_view_layout
-from REAgent.schema import _check_request_fields, validate_input_schema
 
 class AdapterOperations:
     def __init__(self, role, port, *, queries, views, scope, validation, handlers):
@@ -28,7 +26,7 @@ class AdapterOperations:
         return {
             "bridge": "REAgent",
             "product_id": PRODUCT_ID,
-            "product_version": _addon_version(),
+            **_addon_metadata(),
             "active_document": active.Name if active is not None else None,
             "addon_path": ADDON_PATH,
             "instance_role": PROCESS.INSTANCE_ROLE,
@@ -53,11 +51,7 @@ class AdapterOperations:
         return self.queries._get_target_state(params)
 
     def _observe(self, params):
-        kind = params.get("kind")
-        query = params.get("query")
-        specification = OPERATION_SPECS["agent_observe"]
-        _check_request_fields(params, specification["input_schema"], "agent_observe")
-        validate_input_schema(query, specification["query_schemas"][kind], path="agent_observe.query[%s]" % kind)
+        kind, query = params["kind"], params["query"]
         forwarded = dict(query)
         forwarded["document"] = params.get("document")
         if kind == "global":
@@ -67,6 +61,10 @@ class AdapterOperations:
                 result = self.queries._observe_target_global(forwarded)
         elif kind == "entity":
             result = self.queries._inspect_geometry(forwarded)
+        elif kind == "feature":
+            if PROCESS.INSTANCE_ROLE != "rebuild":
+                raise ValueError("Feature observation requires the Target instance")
+            result = self.queries._observe_feature(forwarded)
         elif kind == "selection_resolution":
             if PROCESS.INSTANCE_ROLE != "rebuild":
                 raise ValueError(
@@ -90,7 +88,7 @@ class AdapterOperations:
             doc = _document(params.get("document"))
             if doc.RedoNames and (query.get("paired") or query.get("focus_box_mm")):
                 raise ValueError("Paired/focus rendering is unavailable while a native redo branch exists")
-            forwarded = _validate_view_query(query, PROCESS.INSTANCE_ROLE)
+            forwarded = _normalize_view_query(query)
             forwarded["document"] = params.get("document")
             forwarded["session_id"] = params["session_id"]
             paired = forwarded.pop("paired")
@@ -108,8 +106,4 @@ class AdapterOperations:
         return self.queries._with_observation_revision(params["document"], result)
 
     def _validate(self, params):
-        options = params.get("options")
-        schema = OPERATION_SPECS["agent_validate"]["input_schema"]["properties"]["options"]
-        _check_request_fields(options, schema, "agent_validate.options")
-        validate_input_schema(options, schema, path="agent_validate.options")
         return self.validation._validate_target(params)

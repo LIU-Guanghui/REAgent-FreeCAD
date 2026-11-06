@@ -7,11 +7,13 @@ from REAgent.model.messages import AssistantTurn
 from REAgent.model.errors import ModelError
 from REAgent.model.capabilities import cache_mode
 from REAgent.values import to_json_value, encode_json, decode_json
-from .messages import ImageMaterial
+from .messages import HistorySummary, ImageMaterial, UserText
 
 
 @dataclass(frozen=True)
 class SendRecord:
+    """The actual request's frozen context and purpose, not live run state."""
+
     active: object
     revision: int
     generation: int
@@ -21,6 +23,10 @@ class SendRecord:
     unit_ids: tuple
     delivery_ids: tuple
     observations: str
+    purpose: str
+    action_id: str | None
+    requirements: tuple
+    user_generations: tuple
 
     @property
     def directory(self):
@@ -45,10 +51,23 @@ class ModelRequests:
         messages = prepared.messages if prepared is not None else ()
         sent = {id(message) for message in messages}
         units = tuple(unit for unit in active.conversation.units if all(id(item) in sent for item in unit.messages))
+        delivery_ids = tuple(item.delivery_id for item in messages if isinstance(item, ImageMaterial) and item.images)
+        requirements = set()
+        user_generations = []
+        for item in messages:
+            if isinstance(item, UserText):
+                requirements.add(item.generation)
+                user_generations.append(item.generation)
+            elif isinstance(item, HistorySummary):
+                for original in item.value.get("deterministic", {}).get("original_requirements", ()):
+                    requirements.add(original["generation"])
+        markers = tuple((key, payload) for unit in units for key, payload in unit.observations
+                        if not payload.get("delivery_id") or payload["delivery_id"] in delivery_ids)
+        action = active.action
         return SendRecord(active, active.conversation.revision, generation, active.binding,
                           encode_json(published), prepared, tuple(unit.id for unit in units),
-                          tuple(item.delivery_id for item in messages if isinstance(item, ImageMaterial) and item.images),
-                          encode_json(tuple(marker for unit in units for marker in unit.observations)))
+                          delivery_ids, encode_json(markers), self.run.purpose,
+                          action.id if action else None, tuple(sorted(requirements)), tuple(user_generations))
 
     def snapshot(self):
         return to_json_value({"usage": self._usage, "last_usage": self._last_usage,
@@ -113,8 +132,8 @@ class ModelRequests:
         self._usage[self._usage_keys[key]] = row
         return {**self._last_usage, "totals": row}
 
-    def _local_log(self, event, summary, *, function):
-        """Persist a prepared local change before its short in-memory adoption."""
+    def _local_log(self, event, summary, *, function, adopted=False):
+        """Persist local preparation or the retained outcome of a completed exchange."""
         if self.run.active is None or self.run.active.binding is None:
             return
         binding = self.run.active.binding
@@ -122,7 +141,9 @@ class ModelRequests:
         meta = self.journal(binding=binding, event=event, summary=summary, function=function)
         if (not meta["complete"] or meta["appended_sequence"] is None
                 or meta["appended_sequence"] > meta["persisted_sequence"]):
-            raise ModelError("context_journal_pending", "Local context change was not adopted; original journal must be recovered")
+            message = ("Local context change is retained; its original journal must be recovered" if adopted else
+                       "Local context change was not adopted; original journal must be recovered")
+            raise ModelError("context_journal_pending", message)
         self._pending_context_log = None
 
     def recover_context_log(self):
@@ -176,14 +197,18 @@ class ModelRequests:
             raise ModelError("model_journal_pending", "Use Continue to recover the original journal before another model request")
         config, identity = self._model.config, self._model.identity
         self._request_number += 1
-        record = record or self.capture(prepared, generation, self.run.tools.directory())
+        record = record or self.capture(prepared, generation, self.run.directory())
         slot = {"record": record, "identity": identity, "number": self._request_number, "kind": kind, "generation": generation,
                 "binding": record.binding,
                 "started": time.perf_counter(), "network_started": False, "reply": None, "error": None,
                 "accounted": False, "terminal_sequence": None, "network_time": None,
                 "first_event_time": None, "first_visible_time": None}
         self._model_outcome = slot
-        parameters = {"request": slot["number"], "kind": kind, "provider": identity[0], "protocol": identity[1],
+        presentation = {"generation": generation, "request_number": slot["number"], "run_id": record.action_id}
+        if kind == "model":
+            self.run.request_identity = presentation
+        parameters = {"request": slot["number"], "kind": kind, "purpose": record.purpose,
+                      "run_id": record.action_id, "provider": identity[0], "protocol": identity[1],
                       "model": identity[3], "reasoning_effort": config.reasoning_effort,
                       "sent_effort": None if config.reasoning_effort == "default" else config.reasoning_effort,
                       "output_tokens": config.output_tokens, "binding_controls": config.binding_controls,
@@ -191,7 +216,7 @@ class ModelRequests:
                       "estimate": prepared.estimate if prepared else None,
                       "checkpoint": self.run.conversation.checkpoint,
                       "retained_image_groups": sorted(self.run.conversation.retained_groups)}
-        request_info = {"kind": kind, "output_tokens": config.output_tokens}
+        request_info = {"kind": kind, "purpose": record.purpose, "output_tokens": config.output_tokens}
 
         def network_started():
             slot["network_started"] = True
@@ -217,15 +242,19 @@ class ModelRequests:
                 else:
                     if item and slot["first_visible_time"] is None:
                         slot["first_visible_time"] = time.perf_counter()
-                    self.run.publish("summary_preview" if kind == "summary" else "text_preview", {
-                        "text": item, "generation": generation, "request": slot["number"]})
+                    if kind == "model" and self.run.stream_chat and item:
+                        self.run.publish("text_preview", {**presentation, "text": item})
             if slot["reply"] is None:
                 raise ModelError("incomplete_response", "No final model response was retained")
             if kind == "model":
                 if any(call.id in self.run.call_ids for call in slot["reply"].calls):
                     raise ModelError("duplicate_call_id", "Model reused an earlier tool call identity")
                 if not slot["record"].directory and slot["reply"].calls:
+                    if record.purpose == "report":
+                        raise ModelError("report_tools_unavailable", "The delivered run only permits a text report; its receipt remains available")
                     raise ModelError("chat_tools_unavailable", "No tools were published for this conversation")
+                if record.purpose == "report" and not (slot["reply"].content or "").strip():
+                    raise ModelError("empty_report", "The confirmed delivery has no report text; its receipt remains available")
             if validate_reply is not None:
                 validate_reply(slot["reply"])
         except ModelError as exc:
@@ -249,6 +278,8 @@ class ModelRequests:
             diagnostic = {**parameters, "network_started": slot["network_started"],
                           "network_function": "ModelClient.stream" if slot["network_started"] else None,
                           "tool_call_count": len(reply.calls) if reply is not None else None,
+                          "tool_calls": [call.name if len(call.name) <= 200 else call.name[:199] + "…"
+                                         for call in reply.calls] if reply is not None else None,
                           "status": "not_sent" if not slot["network_started"] else
                           "cancelled" if error is not None and error.code == "request_cancelled" else
                           "failed" if error is not None else "completed",
@@ -277,6 +308,8 @@ class ModelRequests:
                                     and meta["appended_sequence"] <= meta["persisted_sequence"])
             except BaseException:
                 journal_complete = False
+            if kind == "model" and (error is not None or not journal_complete or processing_failed):
+                self.run.publish("request_discarded", presentation)
             if not journal_complete or processing_failed:
                 code = "model_journal_pending" if not journal_complete else "model_result_pending"
                 self._retain_unadopted(slot, code)

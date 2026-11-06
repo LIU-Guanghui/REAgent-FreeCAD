@@ -19,6 +19,7 @@ class ActiveContext:
     conversation: object
     policy: object
     binding: str | None
+    action: object = None
 
 
 @dataclass(frozen=True)

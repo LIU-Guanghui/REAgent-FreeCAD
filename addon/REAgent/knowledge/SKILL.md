@@ -8,6 +8,7 @@ Choose the construction, dimensions, further observations, acceptance and rework
 
 ## Read as needed
 
+- [Conversation and session control](references/workflow/session-and-isolation.md): read before handling a paused or follow-up message.
 - [Workflow](references/workflow/entry.md): complete initial observation before modeling, then compare and deliver.
 - [Feature guide](references/features/entry.md): choose an editable construction and its relevant family card.
 - [Foundations](references/foundations/entry.md): resolve a topology, reference, tolerance or document-state question.

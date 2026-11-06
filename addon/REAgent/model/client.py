@@ -1,4 +1,4 @@
-"""One synchronous HTTP/SSE transport with three fixed protocol adapters."""
+"""One synchronous HTTP/SSE transport with registered provider adapters."""
 
 import re
 import ssl

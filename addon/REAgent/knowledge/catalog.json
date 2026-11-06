@@ -9,7 +9,7 @@
     {
       "knowledge_id": "workflow/session-and-isolation",
       "relative_path": "references/workflow/session-and-isolation.md",
-      "purpose": "Source/Target process, visibility, ownership, and persistence boundaries."
+      "purpose": "Source/Target isolation, paused conversation, reconstruction continuation, and persistence boundaries."
     },
     {
       "knowledge_id": "workflow/observation",

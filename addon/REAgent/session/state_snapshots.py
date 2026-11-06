@@ -1,6 +1,7 @@
 """Detached application snapshots and read-only rebuild presentation services."""
 
 from REAgent.rebuild import images, log_summary
+from REAgent.rebuild import tools as rebuild_tools
 from REAgent.model.config import input_limit_tokens
 from REAgent.model.limits import CONTEXT_RESERVE_TOKENS
 
@@ -17,6 +18,10 @@ def tool_message(event, *, started=False):
     return log_summary.tool_message(event, started=started)
 
 
+def comparison_contract():
+    return rebuild_tools.manual_comparison_contract()
+
+
 def _context_info(session, facts, active, request_state, *, prepared=None):
     run = session.run
     config = run.model.config
@@ -30,7 +35,7 @@ def _context_info(session, facts, active, request_state, *, prepared=None):
         conversation, tools = active.conversation, run.tools
         try:
             estimate = dict(prepared) if prepared is not None else conversation.estimate(
-                run.context_model, tools.directory(), tools.facts(active.policy))
+                run.context_model, run.directory(), run.facts())
             used = estimate["input_tokens_estimate"]
             bound = session.mode == "chat" or session.rebuild.bound(facts)
             info.update(status="available", estimate=estimate,
@@ -57,6 +62,11 @@ def snapshot_state(session, status, reason):
     policy_state = session.rebuild.snapshot_state(active.policy) if active is not None and active.policy is not None else {
         "current_command": None, "request_completed_observations": {}}
     return {"status": status, "reason": reason, "controller": facts,
+            "action": run.action.snapshot() if run.action else None,
+            "report": run.report.snapshot() if run.report is not None else None,
+            "requirements": [{"generation": item.generation,
+                "status": "adopted" if (active.binding, item.generation) in run.requirement_receipts else "pending"}
+                for item in active.conversation.requirements] if active and active.conversation else [],
             "mode": session.mode, "model_configured": True, **policy_state,
             "last_request_estimate": run.estimate, "usage": request_state["usage"],
             "context": run.context_info, "proxy_discovery": run.proxy,

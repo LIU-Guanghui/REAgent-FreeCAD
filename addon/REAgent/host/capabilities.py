@@ -9,16 +9,18 @@ from REAgent.protocol.definitions import PRODUCT_ID
 from REAgent.host.logs import native_log_source
 
 
-def _addon_version():
+def _addon_metadata():
     path = os.path.join(ADDON_PATH, "package.xml")
     try:
         root = ET.parse(path).getroot()
-        for child in root:
-            if child.tag.rsplit("}", 1)[-1] == "version":
-                return str(child.text or "unknown")
-    except Exception:
-        pass
-    return "unknown"
+        version = next((child.text for child in root if child.tag.rsplit("}", 1)[-1] == "version"), None)
+        if not version or not version.strip():
+            raise ValueError("package.xml has no nonempty version")
+        return {"product_version": version.strip()}
+    except (OSError, ET.ParseError, ValueError) as exc:
+        return {"product_version": "unknown", "version_error": {
+            "error_class": "package_read" if isinstance(exc, OSError) else "package_metadata",
+            "exception_type": type(exc).__name__, "message": str(exc)[:200]}}
 
 
 def capability_response(*, view, operation, role, port, registered_handlers):
@@ -27,7 +29,7 @@ def capability_response(*, view, operation, role, port, registered_handlers):
     if view == "status":
         return {"available": True,
                 "product_id": PRODUCT_ID, "role": role, "port": port,
-                "product_version": _addon_version(),
+                **_addon_metadata(),
                 "native_log_source": native_log_source(),
                 "operation_contract": {"operations": OPERATION_SPECS}}
     if view == "operation":

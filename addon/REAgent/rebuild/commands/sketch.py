@@ -1,7 +1,6 @@
 """Public adapter for the supported native Sketch command."""
 
 from REAgent.rebuild.log_summary import execution_summary, reference_summary
-from REAgent.rebuild.commands.execution import validate_domain_evidence
 
 
 def run(name, args, record, started, ctx):
@@ -24,7 +23,6 @@ def run(name, args, record, started, ctx):
                   "unavailable_categories": value["unavailable_categories"], "repair_performed": value["repair_performed"]},
                  started)
         return value
-    validate_domain_evidence(args, record)
     payload = {key: args[key] for key in ("body_name", "sketch_name", "intent",
                                         "evidence", "expected_revision")}
     if name == "Sketcher_MapSketch":

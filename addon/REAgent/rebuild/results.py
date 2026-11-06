@@ -1,9 +1,19 @@
 """Original Controller results and verified capture bytes."""
 
 from dataclasses import dataclass
-from typing import Any
-from REAgent.values import NeutralContractError, require_json_value, _required_text
+from typing import Any, TypedDict
+from REAgent.values import NeutralContractError, to_json_value, _required_text
 from REAgent.protocol.results import SIDE_EFFECTS
+
+
+class ToolEvent(TypedDict, total=False):
+    """Presentation of a prepared call or a completed ToolResult."""
+
+    function: str
+    request: dict
+    result: dict
+    is_error: bool
+    side_effect: str
 
 @dataclass(frozen=True)
 class PreparedImage:
@@ -34,7 +44,9 @@ class ToolResult:
     side_effect: str = "none"
 
     def __post_init__(self):
-        require_json_value(self.value)
+        if not isinstance(self.value, dict):
+            raise NeutralContractError("tool result must be an object")
+        object.__setattr__(self, "value", to_json_value(self.value))
         if self.side_effect not in SIDE_EFFECTS:
             raise NeutralContractError("unsupported tool side effect")
         if any(not isinstance(item, PreparedImage) for item in self.images):

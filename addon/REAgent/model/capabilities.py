@@ -36,6 +36,13 @@ CATALOG = (
                       vision="deepseek_1024", cache="automatic"),
     ModelCapabilities("DeepSeek", "chat_completions", "deepseek-v4-pro", ("none", "low", "high", "max"),
                       image_input=False, cache="automatic"),
+    ModelCapabilities("Meta", "responses", "muse-spark-1.3", _THINKING),
+    ModelCapabilities("xAI", "responses", "grok-4.7", ("low", "medium", "high", "xhigh")),
+    ModelCapabilities("Kimi", "chat_completions", "kimi-k3.1-pro", ("low", "high", "max")),
+    ModelCapabilities("Gemini", "chat_completions", "gemini-3.8-flash", ("low", "medium", "high")),
+    ModelCapabilities("Qwen", "chat_completions", "qwen3.8-max", ("none", "low", "medium", "xhigh")),
+    ModelCapabilities("GLM", "chat_completions", "glm-5.3-flash", ("low", "high", "max")),
+    ModelCapabilities("MiniMax", "chat_completions", "MiniMax-M3.1-Flash", _THINKING),
 )
 
 
@@ -54,16 +61,16 @@ def cache_mode(config):
     roots = {"OpenAI": ("api.openai.com", "/v1"), "Anthropic": ("api.anthropic.com", "/v1"),
              "DeepSeek": ("api.deepseek.com", "/v1")}
     url = urlsplit(config.base_url)
-    if url.scheme != "https" or url.port not in (None, 443) or (url.hostname, url.path.rstrip("/")) != roots[config.provider]:
+    if url.scheme != "https" or url.port not in (None, 443) or (url.hostname, url.path.rstrip("/")) != roots.get(config.provider):
         return None
     row = find_capabilities(config.provider, {"OpenAI": "responses", "Anthropic": "messages",
-                            "DeepSeek": "chat_completions"}[config.provider], config.model)
+                            "DeepSeek": "chat_completions"}.get(config.provider), config.model)
     return row.cache if row else None
 
 
 def visual_tokens(config, width, height):
     """A stated upper estimate for the actual high-detail representation, not usage."""
-    protocol = {"OpenAI": "responses", "Anthropic": "messages", "DeepSeek": "chat_completions"}[config.provider]
+    protocol = {"OpenAI": "responses", "Anthropic": "messages", "DeepSeek": "chat_completions"}.get(config.provider)
     row = find_capabilities(config.provider, protocol, config.model)
     rule = row.vision if row and cache_mode(config) is not None else "unknown"
     if width <= 0 or height <= 0:

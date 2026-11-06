@@ -25,6 +25,10 @@ _ENDINGS = {
 _NORMAL_ENDINGS = {"stop", "tool_calls", "end_turn", "tool_use", "completed"}
 
 
+def bearer_headers(config, key):
+    return {"Authorization": "Bearer " + key}
+
+
 class StreamState:
     """Latch native endings before fallible usage parsing or stream cleanup."""
 

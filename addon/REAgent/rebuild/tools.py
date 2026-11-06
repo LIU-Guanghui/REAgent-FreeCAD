@@ -1,13 +1,14 @@
 """Internal CAD tools and the single binding-free model schema projection."""
 
-from REAgent.protocol.features import FEATURE_SPECS
+from REAgent.protocol.features import EDIT_FEATURE_TYPES, FEATURE_SPECS
 
 from copy import deepcopy
 
-from REAgent.protocol.observations import IMAGE_CONTENT_LIMITS, VIEW_EVIDENCE_CONTRACT, SESSION_OBSERVATION_POLICY_SCHEMA
-from REAgent.protocol.definitions import LOG_READ_PROPERTIES, NAME_SCHEMA, OUTPUT_DIR_SCHEMA, TEXT_SCHEMA, VALIDATION_OPTIONS_SCHEMA
+from REAgent.protocol.observations import (DEFAULT_VIEW_DIRECTIONS, IMAGE_CONTENT_LIMITS, IMAGE_OBSERVATION_KINDS, VIEW_EVIDENCE_CONTRACT,
+    VIEW_QUERY_SCHEMA, SESSION_OBSERVATION_POLICY_SCHEMA, view_direction_label)
+from REAgent.protocol.definitions import LOG_READ_PROPERTIES, NAME_SCHEMA, OUTPUT_DIR_SCHEMA, TEXT_SCHEMA, VALIDATION_OPTIONS_SCHEMA, validation_items
 from REAgent.protocol.operations import OBSERVATION_REQUEST_SCHEMA, OPERATION_SPECS, request_side_effect
-from REAgent.schema import _branch, _schema, _string, validate_schema_definition
+from REAgent.schema import _branch, _schema, _string, validate_input_schema, validate_schema_definition
 from REAgent.rebuild.knowledge import _ASSETS
 
 SESSION = {"session_id": TEXT_SCHEMA}
@@ -16,6 +17,27 @@ ROLE = _string("Bound GUI role", ("source", "target"))
 
 def tool(description, properties, required):
     return {"description": description, "input_schema": _schema(properties, required)}
+
+
+def manual_comparison_contract():
+    return deepcopy({"validation": VALIDATION_OPTIONS_SCHEMA, "view": VIEW_QUERY_SCHEMA,
+        "default_views": list(DEFAULT_VIEW_DIRECTIONS),
+        "view_labels": {name: view_direction_label(name) for name in VIEW_QUERY_SCHEMA["properties"]["views"]["items"]["enum"]}})
+
+
+def prepare_comparison(options, view_request):
+    if options is None and view_request is None:
+        raise ValueError("Select geometry, paired views, or both")
+    if options is not None:
+        validate_input_schema(options, VALIDATION_OPTIONS_SCHEMA, path="comparison.options")
+        validation_items(options)
+        if options.get("parameter_audit"):
+            raise ValueError("Parameter audit is separate from manual comparison")
+    if view_request is not None:
+        validate_input_schema(view_request, OBSERVATION_REQUEST_SCHEMA, path="comparison.view_request")
+        if view_request["kind"] != "view" or view_request["query"].get("paired") is not True:
+            raise ValueError("Manual view comparison requires one complete paired view request")
+    return options, view_request
 
 
 def _project_bindings(schema, hidden):
@@ -52,7 +74,11 @@ TOOLS = {
         "No CAD access; available in failed startup, unknown native write and closed/journal_pending states when the worker is idle. "
         "An ended session is released after Source cleanup and its journal are confirmed; human End task/Stop can abandon unconfirmed Target cleanup. "
         "Recorded event loss or cleanup residue cannot be recovered by flush. Never infers model recovery or migrates the log.", {}, ()),
-    "agent_observe": tool("Get role-local revision-bound evidence. Source initial_views deterministically captures all six orthogonal and eight corner directions with one native camera scale and attaches both final labeled boards; each board records its final pixel scale; inspect all 14 before modeling and choose additional local views afterward. Native width/height controls sampling; output_long_edge_px only caps final PNG size without upsampling. Pixel/allocation limits precede capture; encoded byte limits follow it. Never omit directions to fit. Ordinary view selects up to eight directions; paired attaches one complete board with adjacent roles; oversized groups are unavailable, never partial. Image preparation certifies neither receipt nor inspection. Evidence is published after local success-response construction. Non-image queries remain readable under write blocks.",
+    "agent_observe": tool("Get role-local revision-bound evidence. "
+                    f"Image capture kinds ({', '.join(IMAGE_OBSERVATION_KINDS)}) must be the only tool call in a response, "
+                    "even for Source; captures temporarily change presentation and write PNG files. "
+                    "Only independent pure queries may share a response. "
+                    "Source initial_views deterministically captures all six orthogonal and eight corner directions with one native camera scale and attaches both final labeled boards; each board records its final pixel scale; inspect all 14 before modeling and choose additional local views afterward. Native width/height controls sampling; output_long_edge_px only caps final PNG size without upsampling. Pixel/allocation limits precede capture; encoded byte limits follow it. Never omit directions to fit. Ordinary view selects up to eight directions; paired attaches one complete board with adjacent roles; oversized groups are unavailable, never partial. Image preparation certifies neither receipt nor inspection. Evidence is published after local success-response construction. Non-image queries remain readable under write blocks.",
                     {**SESSION, "role": ROLE, "request": OBSERVATION_REQUEST_SCHEMA, "purpose": TEXT_SCHEMA},
                     ("session_id", "role", "request")),
     "agent_undo": tool("Undo the named committed REAgent transaction only when it is the native stack top and owned by this session; never traverses user history.",
@@ -61,6 +87,10 @@ TOOLS = {
                  {**SESSION, "transaction": TEXT_SCHEMA}, ("session_id", "transaction")),
     "agent_validate": tool(OPERATION_SPECS["agent_validate"]["summary"],
                      {**SESSION, "options": VALIDATION_OPTIONS_SCHEMA}, ("session_id", "options")),
+    "agent_finish_reconstruction": tool(
+        "Declare reconstruction ready for delivery using the current model validation and complete paired views already adopted in a model request. Sole call; no CAD mutation. Returns the authoritative limitations and a stable delivery receipt. A separate text-only report follows.",
+        {**SESSION, "validation_operation_id": TEXT_SCHEMA, "paired_evidence_id": TEXT_SCHEMA,
+         "notes": TEXT_SCHEMA}, ("session_id", "validation_operation_id", "paired_evidence_id")),
     "agent_save": tool(OPERATION_SPECS["agent_save"]["summary"],
                  SESSION, ("session_id",)),
     "agent_close_session": tool(OPERATION_SPECS["agent_close_session"]["summary"]
@@ -102,6 +132,10 @@ if not HUMAN_ONLY <= TOOLS.keys():
     raise RuntimeError("Human-only tools differ from the internal tool catalog")
 MODEL_COMMANDS = tuple(name for name in TOOLS if not name.startswith("agent_"))
 MODEL_ONLY = {
+    "agent_resume_reconstruction": tool(
+        "As the sole call, hand this user's explicit decision to continue reconstruction to the session. Only available in a new Target action. Reference the latest original UserText generation shown in current facts. Never infer consent from your own question, history or a summary. No CAD access.",
+        {"user_requirement_generation": {"type": "integer", "minimum": 0}},
+        ("user_requirement_generation",)),
     "agent_execute_command": tool(
         "Execute the ONE currently discovered native command using its exact returned schema. Discovery must have completed on an earlier model request. Human controls and arbitrary code are forbidden.",
         {"command": _string("Discovered native command", MODEL_COMMANDS), "arguments": {"type": "object"}},
@@ -114,7 +148,9 @@ MODEL_ONLY = {
 MODEL_TOOLS = (*tuple(name for name in TOOLS if name not in HUMAN_ONLY), *MODEL_ONLY)
 _capability_queries = [
     _branch("kind", "catalog", {}),
-    _branch("kind", "tool", {"name": _string("Model tool", MODEL_TOOLS)}),
+    _branch("kind", "tool", {"name": _string("Model tool", tuple(n for n in MODEL_TOOLS if n != "EditFeature"))}),
+    _branch("kind", "tool", {"name": _string("Native in-place edit", ("EditFeature",)),
+                            "type_id": _string("Observed native TypeId", tuple(EDIT_FEATURE_TYPES))}),
     _branch("kind", "runtime", {"role": _string("Role", ("source", "target", "both"))}),
 ]
 TOOLS["agent_get_capabilities"]["input_schema"] = {"type": "object", "oneOf": [
@@ -129,16 +165,24 @@ for spec in (*TOOLS.values(), *MODEL_ONLY.values()):
     validate_schema_definition(spec["input_schema"])
 
 
-def model_schema(name):
+def model_schema(name, *, type_id=None):
     """Hide only this request object's bindings, including its oneOf forms."""
     if name not in MODEL_TOOLS:
         raise ValueError("Tool is not available to the model: %s" % name)
     spec = MODEL_ONLY[name] if name in MODEL_ONLY else TOOLS[name]
-    return _project_bindings(spec["input_schema"], {"document", "session_id"})
+    schema = spec["input_schema"]
+    if type_id is not None:
+        if name != "EditFeature" or type_id not in EDIT_FEATURE_TYPES:
+            raise ValueError("Type-specific discovery requires an editable native TypeId")
+        # Each full native branch already contains the common top-level guards.
+        schema = next(branch for branch in schema["oneOf"]
+                      if branch["properties"]["type_id"]["enum"] == [type_id])
+    return _project_bindings(schema, {"document", "session_id"})
 
 
-def model_tool(name):
-    return {**(MODEL_ONLY[name] if name in MODEL_ONLY else TOOLS[name]), "input_schema": model_schema(name)}
+def model_tool(name, *, type_id=None):
+    return {**(MODEL_ONLY[name] if name in MODEL_ONLY else TOOLS[name]),
+            "input_schema": model_schema(name, type_id=type_id)}
 
 
 def model_tools():

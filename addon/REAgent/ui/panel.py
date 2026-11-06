@@ -64,6 +64,7 @@ class Panel(QtWidgets.QDockWidget):
         layout = QtWidgets.QVBoxLayout(body)
         row = QtWidgets.QHBoxLayout()
         self.status = plain_label("Ready")
+        self.status.setWordWrap(False)
         row.addWidget(self.status, 1)
         self.settings = QtWidgets.QPushButton("Settings")
         self.settings.clicked.connect(manager.configure)
@@ -75,6 +76,7 @@ class Panel(QtWidgets.QDockWidget):
             ("rebuild", "Rebuild model…", self.start_task),
             ("compact", "Compact context", lambda: manager.action("compact")),
             ("status", "Status", lambda: manager.open_viewer("status")),
+            ("compare", "Compare Source and Target…", manager.compare),
         ):
             action = QtGui.QAction(label, self)
             action.setToolTip("Shortcut: /" + name)
@@ -107,7 +109,7 @@ class Panel(QtWidgets.QDockWidget):
         self.input = MessageInput()
         self.input.setMaximumHeight(90)
         self.input.textChanged.connect(self._update_send)
-        self.input.submitted.connect(self._submit_input)
+        self.input.submitted.connect(self._send)
         self.input.installEventFilter(self)
         input_area.addWidget(self.input, 1, 0)
         buttons = QtWidgets.QVBoxLayout()
@@ -154,22 +156,12 @@ class Panel(QtWidgets.QDockWidget):
         self.save.setEnabled(enabled["save"])
         self._update_send()
 
-    def _submit_input(self):
-        text = self.input.toPlainText().strip()
-        if text.startswith("/"):
-            problem = self._command_problem(text)
-            if problem:
-                self._show_command_problem(problem)
-                return
-        if self.send.isEnabled():
-            self._send()
-
     def _command_problem(self, text):
         hint = "Valid commands: " + ", ".join("/" + name for name in self.commands) + "."
         parts = text.split()
         if len(parts) != 1:
             return "Commands do not accept inline arguments. " + hint
-        name = parts[0][1:]
+        name = parts[0][1:].casefold()
         action = self.commands.get(name)
         if action is None:
             return "Unknown command. " + hint
@@ -180,7 +172,7 @@ class Panel(QtWidgets.QDockWidget):
     def _show_command_problem(self, problem):
         key = (self.input.toPlainText(), problem)
         if self._rejected_command != key:
-            self.message("status", problem)
+            self._manager._notice(problem)
             self._rejected_command = key
 
     def set_context(self, view):
@@ -213,7 +205,7 @@ class Panel(QtWidgets.QDockWidget):
         if (not self.input.hasFocus() or self.input._composing or self.input._ime_committed
                 or not raw.startswith("/") or any(char.isspace() for char in raw)
                 or raw == self._dismissed_completion
-                or (raw[1:] in self.commands and self.commands[raw[1:]].isEnabled())):
+                or (raw[1:].casefold() in self.commands and self.commands[raw[1:].casefold()].isEnabled())):
             self._suggestions.hide()
             return
         names = [name for name in self.commands if name.startswith(raw[1:].lower())]
@@ -278,21 +270,18 @@ class Panel(QtWidgets.QDockWidget):
         return super().eventFilter(watched, event)
 
     def _send(self):
-        if not self.send.isEnabled():
-            return
         text = self.input.toPlainText().strip()
         if text.startswith("/"):
-            problem = self._command_problem(text)
-            if problem:
-                self._show_command_problem(problem)
-                return
             accepted = self.run_command(text[1:])
-        else:
+        elif self.send.isEnabled():
             accepted = self._manager.send(text)
+        else:
+            return
         if accepted:
             self.input.clear()
 
     def run_command(self, name):
+        name = name.casefold()
         problem = self._command_problem("/" + name)
         if problem:
             self._show_command_problem(problem)
@@ -389,7 +378,7 @@ class Panel(QtWidgets.QDockWidget):
             rows.append("Estimated room after output/reserve: ~{:,} tokens".format(context["remaining_tokens_estimate"]))
             if not estimate["image_soft_target_met"]:
                 rows.append("Protected image groups exceed the soft target; hard limits still apply.")
-            if context.get("pending_results") or snapshot.get("pending_supplements"):
+            if context.get("pending_results") or snapshot.get("pause", {}).get("queued"):
                 rows.append("In-flight results or queued corrections are not fully included.")
         else:
             rows.append("Input estimate: " + ("Conversation not started" if context.get("status") == "not_started" else "Unavailable"))
@@ -424,10 +413,29 @@ class Panel(QtWidgets.QDockWidget):
                          "Target: " + str(facts.get("target_document") or "Not created"), "", "Output",
                          "Folder: " + str(artifacts.get("output_dir") or "Not selected"),
                          "Model file (planned): " + str(artifacts.get("model_path") or "Not allocated")))
+            action = snapshot.get("action") or {}
+            rows.append("Current action: " + str(action.get("scope") or "None"))
+            if action.get("scope") == "target_edit" and facts.get("reconstruction", {}).get("phase") == "reconstructing":
+                rows.append("Reconstruction is paused; Target conversation does not resume it.")
+            requirements = snapshot.get("requirements") or []
+            rows.append("Messages awaiting model processing: " + str(sum(item["status"] == "pending" for item in requirements)))
+            receipt = facts.get("delivery_receipt")
+            if receipt:
+                rows.extend(("", "Last confirmed reconstruction delivery"))
+                for name, check in receipt.get("checks", {}).items():
+                    rows.append(name + ": " + str(check.get("status") or "unknown"))
+                limits = receipt.get("limitations") or []
+                rows.append("Limitations: " + (str(len(limits)) if limits else "None recorded"))
+                rows.extend("  " + item["check"] + ": " + str(item.get("reason") or item["status"]) for item in limits)
+            manual = facts.get("recent_manual_comparison") or {}
+            if manual.get("status") == "recorded":
+                rows.append("Last manual comparison: " + str(manual.get("applicability", "unknown")))
             saved = facts.get("last_saved_checkpoint")
             if saved:
                 rows.append("Last confirmed save: " + str(saved.get("saved_to") or "Path unavailable"))
-                rows.append("Subsequent edits may be unsaved.")
+                rows.append({"changed": "Target changed since the last confirmed save.",
+                             "unchanged": "Last observed Target matches the last confirmed save."}.get(
+                                 saved.get("applicability"), "Current Target and last confirmed save could not be compared."))
             if facts.get("target_writes_blocked"):
                 sources = [key[:1].upper() + key[1:] for key, value in facts.get("write_block_sources", {}).items() if value is True]
                 rows.append("Modeling blocked: " + (", ".join(sources) or "Inspect task and recovery details"))
@@ -436,21 +444,15 @@ class Panel(QtWidgets.QDockWidget):
                 rows.append("Journal incomplete; retained facts have not all been persisted.")
         return "\n".join(rows)
 
-    def append(self, text):
-        self.text.append(text)
-
-    def begin_reply(self):
-        self.text.begin_reply()
-
-    def message(self, role, text):
-        self.text.message(role, text)
+    def message(self, role, text, **options):
+        self.text.message(role, text, **options)
 
     def reset_task(self, *, clear=False):
         if clear:
             self.text.clear()
             self.input.clear()
         else:
-            self.text.begin_reply()
+            self.text.discard_previews()
 
     def closeEvent(self, event):
         self.hide()

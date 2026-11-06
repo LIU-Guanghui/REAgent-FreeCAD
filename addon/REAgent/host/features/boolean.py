@@ -7,6 +7,18 @@ from REAgent.host.workspace.properties import _metadata, _same_placement, _set_b
 from REAgent.host.features.support.construction import _history_context, _shape_readback
 
 
+def _preserve_tool_placement(tool, expected, original, changes):
+    if not _same_placement(tool.getGlobalPlacement(), expected):
+        placement = _metadata(tool, "Placement")
+        if not placement["writable"] or placement["codec"] != "placement":
+            raise ValueError("Boolean tool Placement cannot be converted: " + tool.Name)
+        changes.append((tool.Name, "Placement", "placement", original))
+        parent = tool.getGlobalPlacement().multiply(tool.Placement.inverse())
+        tool.Placement = parent.inverse().multiply(expected)
+    if not _same_placement(tool.getGlobalPlacement(), expected):
+        raise RuntimeError("Boolean tool world Placement changed: " + tool.Name)
+
+
 class BooleanOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
@@ -41,6 +53,7 @@ class BooleanOperations:
                 facts.append({"tool": tool, "members": list(tool.Group),
                               "tip": tool.Tip,
                               "global_placement": tool.getGlobalPlacement(),
+                              "local_placement": _metadata(tool, "Placement")["value"],
                               "shape_summary": shape_summary})
             tools[0], tool_facts[0] = resolved, facts
 
@@ -55,16 +68,7 @@ class BooleanOperations:
                 raise ValueError("Native Boolean tool setter is unavailable")
             feature.setObjects(tools[0])
             for fact in tool_facts[0]:
-                tool = fact["tool"]
-                wanted_global = fact["global_placement"]
-                if not _same_placement(tool.getGlobalPlacement(), wanted_global):
-                    placement = _metadata(tool, "Placement")
-                    if not placement["writable"] or placement["codec"] != "placement":
-                        raise ValueError("Boolean tool Placement cannot be converted: " + tool.Name)
-                    new_parent = tool.getGlobalPlacement().multiply(tool.Placement.inverse())
-                    tool.Placement = new_parent.inverse().multiply(wanted_global)
-                if not _same_placement(tool.getGlobalPlacement(), wanted_global):
-                    raise RuntimeError("Boolean tool world Placement changed: " + tool.Name)
+                _preserve_tool_placement(fact["tool"], fact["global_placement"], fact["local_placement"], changes)
             _validate_boolean_tools(group, feature, tools[0])
             if "Refine" in feature.PropertiesList:
                 _set_bool(feature, "Refine", False)

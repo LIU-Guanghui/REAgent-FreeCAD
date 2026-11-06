@@ -139,15 +139,7 @@ class BridgeClient:
             )) from exc
 
     def call(self, method: str, **params: Any) -> Any:
-        if method == "agent_ping":
-            return self._ensure_bridge()
-
-        self.validate_request(method, **params)
-        # Verify the user-selected GUI before sending a potentially mutating request.
-        # Never retry the original request after a connection failure because
-        # FreeCAD may already have executed it before the response was lost.
-        self._ensure_bridge()
-        return self._call_once(method, **params)
+        return self.call_result(method, **params).value
 
     def _ensure_bridge(self) -> Any:
         return self._ensure_bridge_result().value
@@ -195,11 +187,8 @@ class BridgeClient:
             fail("The bound FreeCAD instance changed; preserve the current task and do not send another write")
         self._instance = identity
 
-    def _call_once(self, method: str, **params: Any) -> Any:
-        return self._call_result_once(method, **params).value
-
     def call_result(self, method: str, **params: Any) -> OperationResult:
-        """Return structured operation metadata without changing ``call``."""
+        """Validate and send once, retaining structured operation metadata."""
 
         if method == "agent_ping":
             return self._ensure_bridge_result()
@@ -211,7 +200,6 @@ class BridgeClient:
         self, method: str, **params: Any
     ) -> OperationResult:
         request_id = uuid.uuid4().hex
-        self.validate_request(method, **params)
         read_only = request_side_effect(method, params) == "none"
 
         def protocol_error(message):

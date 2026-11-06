@@ -1,19 +1,35 @@
-"""Bounded plain-text messages, with user bubbles right and assistant bubbles left."""
+"""Bounded, selectable conversation text and compact bubbles."""
 
-from collections import deque
+from dataclasses import dataclass
 
-from REAgent.ui import QtCore, QtWidgets
+from REAgent.ui import QtCore, QtGui, QtWidgets
+
+
+@dataclass
+class Message:
+    row: object
+    editor: object
+    bubble: object
+    role: str
+    text: str
+    request: tuple | None
+
+
+class _MessageEditor(QtWidgets.QTextEdit):
+    def wheelEvent(self, event):
+        # Let Qt propagate scrolling to the transcript's viewport.
+        event.ignore()
 
 
 class Transcript(QtWidgets.QScrollArea):
     def __init__(self):
         super().__init__()
-        self._rows = deque()
-        self._agent = None
+        self._rows = []
         self._chars = 0
         self.setObjectName("REAgentTranscript")
         self.setStyleSheet("QScrollArea#REAgentTranscript {background:white; border:1px solid #aaa; border-radius:3px;}"
-                           "QWidget#REAgentMessages {background:white; color:#222;}")
+                           "QWidget#REAgentMessages {background:white; color:#222;}"
+                           "QFrame#REAgentMessageRow {border:none; border-bottom:1px solid #e8e8e8;}")
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         body = QtWidgets.QWidget()
@@ -21,90 +37,101 @@ class Transcript(QtWidgets.QScrollArea):
         body.setAutoFillBackground(True)
         self.setWidget(body)
         self._layout = QtWidgets.QVBoxLayout(body)
-        self._layout.setSizeConstraint(QtWidgets.QLayout.SetMinAndMaxSize)
+        self._layout.setSpacing(4)
         self._layout.addStretch(1)
-        self.verticalScrollBar().rangeChanged.connect(lambda _low, high: self.verticalScrollBar().setValue(high))
+        bar = self.verticalScrollBar()
+        bar.rangeChanged.connect(lambda _low, high: bar.setValue(high))
         self.viewport().installEventFilter(self)
 
     def clear(self):
-        while self._rows:
-            self._remove_first()
-        self._agent = None
+        for message in self._rows[:]:
+            self._remove(message)
 
-    def _remove_first(self):
-        row, bubble, label, _role = self._rows.popleft()
-        self._chars -= len(label.text())
-        if label is self._agent:
-            self._agent = None
-        self._layout.removeWidget(row)
-        row.deleteLater()
+    def _remove(self, message):
+        self._rows.remove(message)
+        self._chars -= len(message.text)
+        self._layout.removeWidget(message.row)
+        message.row.hide()
+        message.row.deleteLater()
 
-    def message(self, role, text):
-        row = QtWidgets.QWidget()
-        line = QtWidgets.QHBoxLayout(row)
-        line.setContentsMargins(0, 3, 0, 3)
-        bubble = QtWidgets.QFrame()
-        content = QtWidgets.QVBoxLayout(bubble)
-        bubble.setStyleSheet("QFrame {background:white; color:#222; border-radius:6px;}")
-        label = QtWidgets.QLabel(str(text)[-32768:])
-        label.setTextFormat(QtCore.Qt.PlainText)
-        label.setWordWrap(True)
-        label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        label.setMinimumWidth(0)
-        label.setSizePolicy(QtWidgets.QSizePolicy.Preferred if role == "user" else QtWidgets.QSizePolicy.Ignored,
-                            QtWidgets.QSizePolicy.Preferred)
-        content.addWidget(label)
-        if role == "user":
-            bubble.setStyleSheet("QFrame {background:#e3edff; color:#172b4d; border-radius:8px;}")
-            line.addStretch(1)
-            line.addWidget(bubble)
-        else:
-            if role == "status":
-                bubble.setStyleSheet("QFrame {background:#f0f0f0; color:#444; border-radius:6px;}")
-            line.addWidget(bubble, 1)
-        self._layout.insertWidget(self._layout.count() - 1, row)
-        self._rows.append((row, bubble, label, role))
-        self._chars += len(label.text())
-        self._limit()
-        self._widths()
-        return label
+    def discard_previews(self, *, request=None):
+        for message in self._rows[:]:
+            if message.request is not None and (request is None or message.request == request):
+                self._remove(message)
 
-    def begin_reply(self):
-        self._agent = None
-
-    def append(self, text):
-        if not text:
-            return
-        if self._agent is None:
-            self._agent = self.message("agent", text)
-        else:
-            previous = self._agent.text()
-            value = (previous + str(text))[-32768:]
-            self._chars += len(value) - len(previous)
-            self._agent.setText(value)
-            self._limit()
-            self._widths()
-
-    def _limit(self):
+    def message(self, role, text, *, request=None, complete=False):
+        message = next((row for row in self._rows if row.request == request), None) if request else None
+        if message is None:
+            row = QtWidgets.QFrame()
+            row.setObjectName("REAgentMessageRow")
+            line = QtWidgets.QHBoxLayout(row)
+            line.setContentsMargins(0, 8, 0, 8)
+            editor = _MessageEditor()
+            editor.setFrameShape(QtWidgets.QFrame.NoFrame)
+            editor.setReadOnly(True)
+            editor.setFocusPolicy(QtCore.Qt.ClickFocus)
+            editor.setLineWrapMode(QtWidgets.QTextEdit.WidgetWidth)
+            editor.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+            editor.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            editor.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            editor.setStyleSheet("QTextEdit {background:transparent; color:#222; border:none; border-radius:0; padding:0;}")
+            editor.document().setDocumentMargin(0)
+            editor.viewport().installEventFilter(self)
+            editor.installEventFilter(self)
+            bubble = None
+            if role in ("user", "error"):
+                bubble = QtWidgets.QFrame()
+                bubble.setObjectName("REAgentMessageBubble")
+                background = "#e3edff" if role == "user" else "#f8eae7"
+                bubble.setStyleSheet("QFrame#REAgentMessageBubble {background:" + background
+                                     + "; border:none; border-radius:8px;}")
+                content = QtWidgets.QVBoxLayout(bubble)
+                content.setContentsMargins(9, 7, 9, 7)
+                content.addWidget(editor)
+                alignment = QtCore.Qt.AlignRight if role == "user" else QtCore.Qt.AlignLeft
+                line.addWidget(bubble, 0, alignment)
+            else:
+                line.addWidget(editor)
+            self._layout.insertWidget(self._layout.count() - 1, row)
+            message = Message(row, editor, bubble, role, "", request)
+            self._rows.append(message)
+        value = str(text) if complete or request is None else message.text + str(text)
+        value = value[-32768:]
+        self._chars += len(value) - len(message.text)
+        message.text = value
+        message.editor.setPlainText(value)
+        if complete:
+            message.request = None
         while len(self._rows) > 100 or self._chars > 131072:
-            self._remove_first()
+            oldest = next((row for row in self._rows if row.role == "progress"), self._rows[0])
+            self._remove(oldest)
+        self._widths()
 
     def _widths(self):
         outer = self._layout.contentsMargins()
-        width = max(0, self.viewport().width() - outer.left() - outer.right())
-        for row, bubble, _label, role in self._rows:
-            margins = row.layout().contentsMargins()
-            available = max(0, width - margins.left() - margins.right())
-            bubble.setMinimumWidth(0 if role == "user" else available)
-            bubble.setMaximumWidth(available)
-            bubble.updateGeometry()
+        available = max(1, self.viewport().width() - outer.left() - outer.right())
+        for message in self._rows:
+            editor = message.editor
+            width = available
+            if message.bubble is not None:
+                natural = QtGui.QTextDocument()
+                natural.setDefaultFont(editor.font())
+                natural.setDocumentMargin(editor.document().documentMargin())
+                natural.setPlainText(message.text)
+                natural.setTextWidth(-1)
+                margins = message.bubble.layout().contentsMargins()
+                padding = margins.left() + margins.right()
+                width = min(max(1, available - padding), max(1, int(natural.idealWidth()) + 1))
+                message.bubble.setFixedWidth(width + padding)
+            editor.setFixedWidth(width)
+            editor.document().setTextWidth(width)
+            height = editor.document().size().height()
+            editor.setFixedHeight(max(1, int(height + 0.999)))
 
     def eventFilter(self, watched, event):
-        if watched is self.viewport() and event.type() == QtCore.QEvent.Resize:
+        kind = event.type()
+        if watched is self.viewport() and kind == QtCore.QEvent.Resize:
             self._widths()
+        elif kind == QtCore.QEvent.FontChange:
+            QtCore.QTimer.singleShot(0, self._widths)
         return super().eventFilter(watched, event)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, "_layout"):
-            self._widths()

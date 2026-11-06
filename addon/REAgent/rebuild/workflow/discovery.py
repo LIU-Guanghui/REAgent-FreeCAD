@@ -1,8 +1,9 @@
 """Public discovery lists only registered and currently callable flow tools."""
 
-from REAgent.protocol.features import DOMAIN_MODE_GAPS, DRESSUP_SCOPE
+from REAgent.protocol.features import DOMAIN_MODE_GAPS, DRESSUP_SCOPE, EDIT_FEATURE_TYPES
 from REAgent.protocol.operations import OPERATION_SPECS
 from REAgent.rebuild.errors import error_payload
+from REAgent.values import encode_json
 from REAgent.rebuild.knowledge import read_knowledge, reconstruction_guidance
 from REAgent.rebuild.tools import MODEL_COMMANDS, MODEL_TOOLS, model_tool
 
@@ -39,7 +40,8 @@ def run(name, args, record, started, ctx):
         kind = query["kind"]
         if kind == "catalog":
             domain_names = list(MODEL_COMMANDS)
-            value = {"tools": [{"name": n, "description": model_tool(n)["description"], "query": {"kind": "tool", "name": n}} for n in MODEL_TOOLS],
+            value = {"tools": [{"name": n, "description": (OPERATION_SPECS[n]["summary"] if n in MODEL_COMMANDS else model_tool(n)["description"]),
+                                "query": {"kind": "tool", "name": n, **({"type_id": "observed native TypeId"} if n == "EditFeature" else {})}} for n in MODEL_TOOLS],
                      "domain_commands": {"status": "implementation_pending_user_model_review", "available": len(domain_names),
                                          "names": domain_names,
                                          "mode_gaps": [{"domain": domain, "unsupported": list(gaps)}
@@ -59,7 +61,14 @@ def run(name, args, record, started, ctx):
                 "document_container_policy": "main_body_or_registered_tool_body",
             }
             value["dressup_scope"] = DRESSUP_SCOPE
-        elif kind == "tool": value = {"name": query["name"], **model_tool(query["name"])}
+            value["editable_native_types"] = list(EDIT_FEATURE_TYPES)
+        elif kind == "tool":
+            type_id = query.get("type_id")
+            value = {"name": query["name"], **model_tool(query["name"], type_id=type_id)}
+            if type_id is not None:
+                value["type_id"] = type_id
+                if len(encode_json(value).encode("utf-8")) > 16000:
+                    raise ValueError("Complete edit contract exceeds the discovery budget")
         elif kind == "runtime": value = _runtime(query["role"])
         else: raise ValueError("Unknown capability query")
         summary = {"request": query, "status": "available"}

@@ -10,8 +10,18 @@ from REAgent.values import to_json_value
 from REAgent.ui import QtCore
 
 
-_ACTIONS = frozenset(("start", "chat", "advance", "compact", "save", "close", "configure"))
-_PREVIEWS = frozenset(("text_preview", "summary_preview"))
+_ACTIONS = frozenset(("start", "chat", "advance", "compare", "compact", "save", "close", "configure"))
+def tool_fault(event):
+    value = event.get("result") or {}
+    if (value.get("caused_by_tool_call_id") or value.get("code") == "not_executed"
+            or value.get("status") == "not_adopted"):
+        return False
+    if (value.get("image_delivery") or {}).get("status") == "unavailable":
+        return True
+    if event.get("function") == "agent_close_session" and value.get("ended"):
+        if value.get("session_retained") or value.get("abandoned_roles"):
+            return True
+    return event.get("is_error") or event.get("side_effect") == "unknown"
 
 
 class Worker(QtCore.QThread):
@@ -34,8 +44,11 @@ class Worker(QtCore.QThread):
         self._completion = None
         self._journal_event = None
         self._parked = False
+        self._action_number = 0
+        self._identity = {}
+        self._overflow_fault = self._overflow_terminal = self._overflow_reply = None
 
-    def submit(self, action, arguments=None):
+    def submit(self, action, arguments=None, *, presentation_task):
         if action not in _ACTIONS:
             raise ValueError("Unknown human action")
         with self._lock:
@@ -45,8 +58,11 @@ class Worker(QtCore.QThread):
                 self._jobs.put_nowait((action, arguments if arguments is not None else {}))
             except Full:
                 raise RuntimeError("The original worker already has a queued action; this action was not queued") from None
+            self._action_number += 1
+            self._identity = {"action_number": self._action_number, "presentation_task": presentation_task}
             self._busy = True
             self._pause_intent = False
+            return self._action_number
 
     def pause(self):
         with self._lock:
@@ -60,7 +76,6 @@ class Worker(QtCore.QThread):
             raise ValueError("Supplement must be non-empty text")
         with self._lock:
             session = self._session
-            self._pause_intent = True
         if session is None:
             raise RuntimeError("The task has not started")
         session.supplement(text)
@@ -68,7 +83,12 @@ class Worker(QtCore.QThread):
     def snapshot(self):
         with self._lock:
             session = self._session
-        return session.snapshot() if session is not None else {"status": "idle", "controller": None}
+            manual_pause = self._pause_intent
+        state = session.snapshot() if session is not None else {"status": "idle", "controller": None}
+        pause = state.get("pause", {})
+        if manual_pause:
+            pause = {**pause, "paused": True, "manual": True}
+        return {**state, **self._identity, "pause": pause}
 
     def shutdown(self):
         with self._lock:
@@ -123,7 +143,9 @@ class Worker(QtCore.QThread):
         return events, completion
 
     def _event(self, event):
-        if event["event"] == "journal_update":
+        event = {**event, **self._identity}
+        kind = event["event"]
+        if kind == "journal_update":
             with self._lock:
                 self._journal_event = event
                 wake = not self._notified
@@ -134,18 +156,31 @@ class Worker(QtCore.QThread):
         # Session retains all final ToolResults. A full presentation buffer pauses
         # new decisions; the final action packet still carries the real batch.
         text = event.get("text", "")
-        cost = len(text) if event["event"] in _PREVIEWS else len(str(event.get("result", event)))
+        cost = len(text) if kind in ("text_preview", "model_reply") else len(str(event.get("result", event)))
         image_bytes = sum(len(item.data) for item in event.get("images", ()))
         wake = False
         with self._lock:
             if (len(self._events) >= 64 or self._event_chars + cost > 131072
                     or self._event_bytes + image_bytes > 67108864):
                 self._overflowed = True
+                if kind == "tool_result" and self._overflow_fault is None and tool_fault(event):
+                    value = event["result"]
+                    summary = {key: value[key] for key in (
+                        "operation_id", "status", "code", "message", "retry_action", "restored",
+                        "ended", "session_retained", "abandoned_roles", "image_delivery") if key in value}
+                    detail = value.get("detail") or {}
+                    summary["detail"] = {key: detail[key] for key in (
+                        "reason", "model_restored", "redo_changed", "committed") if key in detail}
+                    self._overflow_fault = {**event, "result": summary, "images": ()}
+                elif kind == "error":
+                    self._overflow_terminal = event
+                elif kind == "model_reply":
+                    self._overflow_reply = {**event, "text": text[-32768:]}
                 return False
-            if (event["event"] in _PREVIEWS and self._events
-                    and self._events[-1]["event"] == event["event"]
+            if (kind == "text_preview" and self._events
+                    and self._events[-1]["event"] == kind
                     and self._events[-1].get("generation") == event.get("generation")
-                    and self._events[-1].get("request") == event.get("request")):
+                    and self._events[-1].get("request_number") == event.get("request_number")):
                 self._events[-1] = {**event, "text": self._events[-1]["text"] + text}
             else:
                 self._events.append(event)
@@ -184,6 +219,8 @@ class Worker(QtCore.QThread):
             return self._session.compact()
         if action == "save":
             return self._session.save()
+        if action == "compare":
+            return self._session.compare(args["options"], args["view_request"])
         if action == "close":
             return self._session.close()
         if action == "configure":
@@ -211,10 +248,11 @@ class Worker(QtCore.QThread):
             value = None
             skipped = False
             self._overflowed = False
+            self._overflow_fault = self._overflow_terminal = self._overflow_reply = None
             previous_batch = self._session.last_batch if self._session is not None else None
             try:
                 with self._lock:
-                    skipped = self._pause_intent and action in ("start", "chat", "advance", "compact")
+                    skipped = self._pause_intent and action in ("start", "chat", "advance", "compare", "compact")
                 if not skipped:
                     value = self._perform(action, args)
             except BaseException as exc:
@@ -229,10 +267,20 @@ class Worker(QtCore.QThread):
                     credentials.clear()
                 snapshot = self.snapshot()
                 rows = self._session.last_batch if self._session is not None else ()
-                packet = {"action": action, "snapshot": snapshot, "error": error,
+                identities = self._session.last_result_identities if self._session is not None else ()
+                packet = {"action": action, **self._identity, "snapshot": snapshot, "error": error,
+                          "comparison": self._session.comparison if self._session else None,
+                          "comparison_results": tuple({**identity, **self._identity,
+                              "value": to_json_value(row.value), "images": tuple(row.images),
+                              "is_error": row.is_error, "side_effect": row.side_effect}
+                              for identity, row in (self._session.comparison_rows if self._session else ())),
+                          "presentation_fallback": tuple(event for event in (
+                              self._overflow_reply, self._overflow_fault, self._overflow_terminal) if event is not None),
                           "ok": error is None and not getattr(value, "is_error", False),
-                          "results": tuple({"value": to_json_value(row.value), "images": tuple(row.images),
-                                            "is_error": row.is_error, "side_effect": row.side_effect} for row in rows),
+                          "results": tuple({**identity, **self._identity, "value": to_json_value(row.value),
+                                            "images": tuple(row.images), "is_error": row.is_error,
+                                            "side_effect": row.side_effect}
+                                           for identity, row in zip(identities, rows)),
                           "new_results": bool(rows) and rows is not previous_batch,
                           "presentation_backlog": self._overflowed,
                           "paused_before_start": skipped,

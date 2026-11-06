@@ -1,13 +1,11 @@
 """Evidence guards for native Fillet, Chamfer, Draft and Thickness commands."""
 
 from REAgent.rebuild.log_summary import execution_summary, reference_summary
-from REAgent.rebuild.commands.execution import validate_domain_evidence
 
 
 def fillet(name, args, record, started, ctx):
     if name != "PartDesign_Fillet":
         raise ValueError("Unknown Fillet command")
-    validate_domain_evidence(args, record)
     value = ctx.call(record, name, **{k: v for k, v in args.items() if k != "session_id"})
     ctx.emit(record, "feature.committed", name,
              {**execution_summary(value), "body": value["readback"]["body"],
@@ -25,7 +23,6 @@ def fillet(name, args, record, started, ctx):
 def chamfer(name, args, record, started, ctx):
     if name != "PartDesign_Chamfer":
         raise ValueError("Unknown Chamfer command")
-    validate_domain_evidence(args, record)
     value = ctx.call(record, name, **{k: v for k, v in args.items() if k != "session_id"})
     summary = {**execution_summary(value), "body": value["readback"]["body"],
                "feature": value["readback"]["feature"],
@@ -46,7 +43,6 @@ def chamfer(name, args, record, started, ctx):
 def draft(name, args, record, started, ctx):
     if name != "PartDesign_Draft":
         raise ValueError("Unknown Draft command")
-    validate_domain_evidence(args, record)
     value = ctx.call(record, name, **{k: v for k, v in args.items() if k != "session_id"})
     ctx.emit(record, "feature.committed", name,
              {**execution_summary(value), "body": value["readback"]["body"],
@@ -65,7 +61,6 @@ def draft(name, args, record, started, ctx):
 def thickness(name, args, record, started, ctx):
     if name != "PartDesign_Thickness":
         raise ValueError("Unknown Thickness command")
-    validate_domain_evidence(args, record)
     value = ctx.call(record, name, **{k: v for k, v in args.items() if k != "session_id"})
     ctx.emit(record, "feature.committed", name,
              {**execution_summary(value), "body": value["readback"]["body"],

@@ -35,10 +35,13 @@ def _transform_context(document, group, request):
     body, _sketch, tip = context
     if tip is None or tip.Name != request["predecessor_name"]:
         raise ValueError("Transformation predecessor must be the current Body Tip")
+    return context, _transform_sources(document, body, tip, request["source_feature_names"])
+
+
+def _transform_sources(document, body, tip, names):
     group_order = list(body.Group)
     tip_index = group_order.index(tip)
     chain = _active_feature_chain(tip, body)
-    names = request["source_feature_names"]
     if not 1 <= len(names) <= 16:
         raise ValueError("Transformation requires one to 16 ordered source features")
     if len(names) != len(set(names)):
@@ -65,7 +68,7 @@ def _transform_context(document, group, request):
                for state in feature.State):
             raise ValueError("Transformation source is not recomputed: " + name)
         sources.append(feature)
-    return context, sources
+    return sources
 
 
 def _check_datum_supports(document, body, datum):
@@ -113,7 +116,7 @@ def _check_datum_supports(document, body, datum):
     visit(datum)
 
 
-def _transform_plane(document, body, group, tip, request):
+def _transform_plane(document, body, group, tip, request, *, shape=None):
     choice = request["mirror_plane"]
     if choice["kind"] == "origin_plane":
         origin = body.Origin
@@ -123,7 +126,7 @@ def _transform_plane(document, body, group, tip, request):
     if choice["kind"] == "predecessor_face":
         names, evidence = _current_faces(
             body, group, request, tip, [choice["face_ref"]],
-            "mirror_plane", "mirror_plane.face_ref")
+            "mirror_plane", "mirror_plane.face_ref", shape=shape)
         detail = next(face for face in evidence["faces"] if face["name"] == names[0])
         if detail["surface_type"] != "Plane":
             raise ValueError("Mirror plane reference must be planar")
@@ -138,7 +141,7 @@ def _transform_plane(document, body, group, tip, request):
     raise ValueError("Unsupported mirror plane kind")
 
 
-def _current_axis_edge(body, group, request, tip, reference):
+def _current_axis_edge(body, group, request, tip, reference, *, shape=None):
     if tip is None or tip.Name != request["predecessor_name"]:
         raise ValueError("Pattern axis edge requires the current Body Tip")
     refs = _feature_semantic_refs(
@@ -146,7 +149,7 @@ def _current_axis_edge(body, group, request, tip, reference):
     if (refs[0]["owner"].get("object_name") != tip.Name
             or refs[0].get("fallback") is not None):
         raise ValueError("Pattern axis edge must name the current predecessor without fallback")
-    shape = _predecessor_shape(body)
+    shape = _predecessor_shape(body) if shape is None else shape
     _single_solid_summary(shape, "Pattern predecessor")
     evidence = _geometry_evidence(
         shape, _ir_tolerance_contract(group), include_relations=False,
@@ -168,7 +171,7 @@ def _current_axis_edge(body, group, request, tip, reference):
     return tip, [name]
 
 
-def _transform_axis(document, body, group, tip, request):
+def _transform_axis(document, body, group, tip, request, *, shape=None):
     """Return the native axis LinkSub and its parent only when it is a CS child."""
     choice = request["axis"]
     kind = choice["kind"]
@@ -178,7 +181,7 @@ def _transform_axis(document, body, group, tip, request):
             raise ValueError("Pattern Body has no native Origin")
         return (_role_object(origin, choice["role"], "App::Line", document), [""]), None
     if kind == "predecessor_edge":
-        return _current_axis_edge(body, group, request, tip, choice["edge_ref"]), None
+        return _current_axis_edge(body, group, request, tip, choice["edge_ref"], shape=shape), None
     if kind == "datum_line":
         obj = document.getObject(choice["datum_name"])
         if (obj is None or obj.TypeId != "Part::DatumLine"

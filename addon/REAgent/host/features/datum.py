@@ -5,17 +5,11 @@ import math
 import FreeCAD as App
 
 from REAgent.host.analysis.measurements import _shape_summary
-from REAgent.protocol.features import validate_feature_request
+from REAgent.protocol.features import DATUM_TYPES
 from REAgent.host.workspace.model import _placement_summary, _result_shape, _session_bodies
 from REAgent.host.workspace.properties import _encode, _metadata, _same_placement
 from REAgent.host.features.support.references import _role_object
 
-_DATUM_TYPES = {
-    "Part_DatumPlane": "Part::DatumPlane",
-    "Part_DatumLine": "Part::DatumLine",
-    "Part_DatumPoint": "Part::DatumPoint",
-    "Part_CoordinateSystem": "Part::LocalCoordinateSystem",
-}
 _CS_ROLES = {
     "origin": ("Origin", "App::Point"),
     "x_axis": ("X_Axis", "App::Line"),
@@ -108,7 +102,7 @@ class DatumOperations:
     def _create_datum(self, params, command):
 
         name, body_name = params["datum_name"], params["body_name"]
-        type_id = _DATUM_TYPES[command]
+        type_id = DATUM_TYPES[command]
         prior_tip = [None]
         expected_offset = [None]
         prior_shape = [None]
@@ -117,7 +111,6 @@ class DatumOperations:
         map_mode = [None]
 
         def preflight(document, group, request):
-            validate_feature_request(command, request)
             body = document.getObject(body_name)
             if body not in _session_bodies(group):
                 raise ValueError("Datum Body is not owned by this session")

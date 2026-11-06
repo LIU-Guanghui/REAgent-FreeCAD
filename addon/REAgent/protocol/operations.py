@@ -2,12 +2,14 @@
 
 from REAgent.protocol.definitions import CAPABILITY_VIEWS, LOG_READ_PROPERTIES, SESSION_ARTIFACTS_SCHEMA, TEXT_SCHEMA, VALIDATION_OPTIONS_SCHEMA, _DOCUMENT, _operation
 from REAgent.protocol.features import FEATURE_SPECS
-from REAgent.protocol.observations import ENTITY_QUERY_SCHEMA, OBSERVATION_ROLES, SELECTION_RESOLUTION_QUERY_SCHEMA, SESSION_OBSERVATION_POLICY_SCHEMA, VIEW_EVIDENCE_CONTRACT, VIEW_QUERY_SCHEMA
+from REAgent.protocol.observations import ENTITY_QUERY_SCHEMA, FEATURE_QUERY_SCHEMA, OBSERVATION_ROLES, SELECTION_RESOLUTION_QUERY_SCHEMA, SESSION_OBSERVATION_POLICY_SCHEMA, VIEW_EVIDENCE_CONTRACT, VIEW_QUERY_SCHEMA
 from REAgent.schema import _array, _branch, _nullable, _number, _object, _schema, _string, validate_schema_definition
 
 _OBSERVATION_QUERIES = {
     "global": _schema(),
-    "entity": ENTITY_QUERY_SCHEMA,
+    "entity": {**ENTITY_QUERY_SCHEMA, "properties": {**ENTITY_QUERY_SCHEMA["properties"],
+                "edit_object": {**_DOCUMENT, "description": "Obtain writable geometry of this existing feature's actual predecessor"}}},
+    "feature": FEATURE_QUERY_SCHEMA,
     "selection_resolution": SELECTION_RESOLUTION_QUERY_SCHEMA,
     "regions": _schema({
         "region_ids": _array("Optional region subset", _string("Region identifier")),
@@ -51,7 +53,6 @@ OPERATION_SPECS = {
         "Report adapter health, role, port, process, and active document.",
         ("source", "rebuild"),
         "none",
-        required_for=("reconstruct",),
     ),
     "agent_get_capabilities": _operation(
         "adapter",
@@ -62,7 +63,6 @@ OPERATION_SPECS = {
             "view": _string("Discovery depth", CAPABILITY_VIEWS),
             "operation": _nullable(_string("Operation identifier")),
         },
-        required_for=("reconstruct",),
     ),
     "agent_start_session": _operation(
         "session",
@@ -81,7 +81,6 @@ OPERATION_SPECS = {
         ("document", "source_path", "artifacts", "session_id"),
         ("The active process role supports reconstruction.",),
         timeout_class="long",
-        required_for=("reconstruct",),
     ) | {"session_observation_policy": SESSION_OBSERVATION_POLICY_SCHEMA},
     "agent_close_session": _operation(
         "session",
@@ -93,7 +92,6 @@ OPERATION_SPECS = {
             "session_id": TEXT_SCHEMA,
         },
         ("document", "session_id"),
-        required_for=("reconstruct",),
     ),
     "agent_get_state": _operation(
         "session",
@@ -102,7 +100,6 @@ OPERATION_SPECS = {
         "none",
         {"document": _DOCUMENT},
         ("document",),
-        required_for=("reconstruct",),
     ),
     "agent_observe": _operation(
         "observation",
@@ -121,12 +118,11 @@ OPERATION_SPECS = {
         ("document", "kind", "query", "session_id"),
         ("The query is read-only for the active process role.",),
         timeout_class="long",
-        required_for=("reconstruct",),
     ) | {"query_schemas": _OBSERVATION_QUERIES,
          "view_evidence_contract": VIEW_EVIDENCE_CONTRACT,
-         "kind_roles": {"initial_views": [OBSERVATION_ROLES["initial_views"]]},
+         "kind_roles": {kind: [OBSERVATION_ROLES[kind]] for kind in ("initial_views", "feature")},
          "view_role_conditions": {"paired": OBSERVATION_ROLES["paired_view"]},
-         "read_only_kinds": ["global", "entity", "selection_resolution", "regions", "points", "residual", "support_extension"]},
+         "read_only_kinds": ["global", "entity", "feature", "selection_resolution", "regions", "points", "residual", "support_extension"]},
     "agent_validate": _operation(
         "validation",
         "Compute explicitly selected geometric measurements, sampling, Booleans or transient parameter audit. At least one item is required. No task acceptance or automatic equivalence verdict; state reads use agent_get_state.",
@@ -139,7 +135,6 @@ OPERATION_SPECS = {
         },
         ("document", "options", "session_id"),
         timeout_class="long",
-        required_for=("reconstruct",),
     ) | {"read_only_without_parameter_audit": True},
 
 }
@@ -155,7 +150,7 @@ for _name, _properties, _required, _effect in (
          "saved_to reports an actual save, independently of geometry validation and journal persistence."
          if _name == "agent_save" else "Native " + _name.replace("_", " ")), ("rebuild",), _effect,
         {"document": _DOCUMENT, "session_id": TEXT_SCHEMA, **_properties},
-        ("document", "session_id", *_required), timeout_class="long", required_for=("reconstruct",))
+        ("document", "session_id", *_required), timeout_class="long")
 
 OPERATION_SPECS["agent_read_freecad_log"] = _operation("adapter",
     "Read only the bound instance's configured native log; no arbitrary path or configuration changes.",

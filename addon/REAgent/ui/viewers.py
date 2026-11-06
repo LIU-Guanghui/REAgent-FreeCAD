@@ -151,7 +151,7 @@ class TaskViewer(QtWidgets.QDialog):
 
     def __init__(self, parent, kind):
         super().__init__(parent)
-        self.setWindowTitle("Status" if kind == "status" else "Journal")
+        self.setWindowTitle({"status": "Status", "journal": "Journal", "comparison": "Comparison"}[kind])
         layout = QtWidgets.QVBoxLayout(self)
         self.summary = QtWidgets.QPlainTextEdit()
         self.summary.setReadOnly(True)

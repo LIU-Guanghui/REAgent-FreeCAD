@@ -199,13 +199,6 @@ class BridgeServer:
             if PROCESS.INSTANCE_ROLE not in specification["roles"]:
                 raise ValueError("Operation is not available for this instance role")
             validate_input_schema(params, specification["input_schema"], path=method)
-            allowed = set(specification["input_schema"]["properties"])
-            unknown = sorted(set(params) - allowed)
-            if unknown:
-                raise ValueError(
-                    "Unknown request parameters for %s: %s"
-                    % (method, ", ".join(unknown))
-                )
         if PROCESS.ACTIVE_OPERATION is not None:
             raise ValueError("An operation is still executing; retry after its response")
         task = PROCESS.ACTIVE_TASK

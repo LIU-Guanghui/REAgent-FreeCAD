@@ -8,7 +8,7 @@ import Part
 from PySide import QtCore, QtGui
 
 from REAgent.host.analysis.measurements import _geometry_bound_box
-from REAgent.protocol.observations import DEFAULT_VIEW_DIRECTIONS, VIEW_DIRECTIONS, VIEW_DISPLAY_MODES, VIEW_QUERY_FIELDS, IMAGE_CONTENT_LIMITS, view_direction_label, validate_observation_role
+from REAgent.protocol.observations import DEFAULT_VIEW_DIRECTIONS, IMAGE_CONTENT_LIMITS, view_direction_label
 from REAgent.host.view.cameras import VIEW_CAMERA_SPECS
 from REAgent.host.file_digest import _file_sha256
 from REAgent.host.view.camera import _apply_canonical_view, _camera_metadata, _camera_numeric_state, _camera_state_differences, _canonical_view_method, _direction_error_deg, _projection, _refresh_camera, _record_camera_failure, _set_camera_height, _set_camera_focus, _set_orthographic_projection, _wait_for_camera_stable
@@ -23,36 +23,12 @@ def _existing_directory(value):
     return path
 
 
-def _pixel_dimension(value, field):
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("%s must be an integer" % field)
-    number = value
-    if number < 128 or number > 4096:
-        raise ValueError("%s must be an integer from 128 to 4096" % field)
-    return number
-
-
 def _view_directions(value):
-    if value is None:
-        return DEFAULT_VIEW_DIRECTIONS
-    if not isinstance(value, list) or not value or len(value) > 8:
-        raise ValueError("views must be a non-empty list of at most 8 directions")
-    result = []
-    for direction in value:
-        if direction not in VIEW_DIRECTIONS:
-            raise ValueError("Unsupported view direction: %s" % direction)
-        if direction not in result:
-            result.append(direction)
-    return tuple(result)
+    return DEFAULT_VIEW_DIRECTIONS if value is None else tuple(dict.fromkeys(value))
 
 
 def _display_mode(value):
-    value = "flat_lines" if value is None else value
-    if value not in VIEW_DISPLAY_MODES:
-        raise ValueError(
-            "display_mode must be wireframe, flat_lines, or shaded"
-        )
-    return value
+    return "flat_lines" if value is None else value
 
 
 def _view_precondition(message, code):
@@ -61,12 +37,6 @@ def _view_precondition(message, code):
     failure.error_code = code
     failure.retry_action = "correct_request"
     return failure
-
-
-def _view_transparency(value):
-    if type(value) is not int or not 0 <= value <= 100:
-        raise ValueError("transparency must be an integer from 0 to 100")
-    return value
 
 
     # _camera_metadata will report the actual vectors and a useful error if a
@@ -99,8 +69,6 @@ def _render_item_groups(value):
 
 def _render_canonical_views(view, items, *args, scope, transparency=0, **kwargs):
     """Render with explicit opacity; retain local cleanup facts for the scope owner."""
-    if type(transparency) is not int or not 0 <= transparency <= 100:
-        raise ValueError("transparency must be an integer from 0 to 100")
     scope.assert_render_safe()
     operation_error = None
     snapshots = []
@@ -422,40 +390,23 @@ def _set_display_mode(view_object, label, requested):
     return previous, actual
 
 
-def _validate_view_query(query, role):
-    """Validate and normalize the complete kind=view query contract."""
-
-    if not isinstance(query, dict):
-        raise ValueError("view query must be an object")
-    unknown = sorted(set(query) - set(VIEW_QUERY_FIELDS))
-    if unknown:
-        raise ValueError(
-            "Unknown view query parameters: %s; allowed fields: %s"
-            % (", ".join(unknown), ", ".join(VIEW_QUERY_FIELDS))
-        )
+def _normalize_view_query(query):
+    """Apply view defaults and cross-field semantics after Bridge validation."""
     paired = query.get("paired", False)
-    if not isinstance(paired, bool):
-        raise ValueError("paired must be a boolean")
     include_section = query.get("include_section", False)
-    if not isinstance(include_section, bool):
-        raise ValueError("include_section must be a boolean")
-    validate_observation_role("view", query, role)
     if include_section and not paired:
         raise ValueError("include_section requires paired=true")
     if "section_axis" in query and not include_section:
         raise ValueError("section_axis requires include_section=true")
     section_axis = query.get("section_axis", "y")
-    if section_axis not in ("x", "y", "z"):
-        raise ValueError("section_axis must be x, y, or z")
-    focus_metadata, _focus_shape = _focus_box(query.get("focus_box_mm"))
     normalized = {
         "views": list(_view_directions(query.get("views"))),
-        "width": _pixel_dimension(query.get("width", 640), "width"),
-        "height": _pixel_dimension(query.get("height", 480), "height"),
+        "width": query.get("width", 640),
+        "height": query.get("height", 480),
         "output_long_edge_px": query.get("output_long_edge_px", 1536),
-        "transparency": _view_transparency(query.get("transparency", 0)),
-        "projection": _projection(query.get("projection")),
-        "focus_box_mm": focus_metadata,
+        "transparency": query.get("transparency", 0),
+        "projection": query.get("projection", "orthographic"),
+        "focus_box_mm": query.get("focus_box_mm"),
         "paired": paired,
         "include_section": include_section,
     }

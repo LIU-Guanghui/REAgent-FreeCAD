@@ -5,11 +5,12 @@ import uuid
 
 from REAgent.rebuild.artifacts import absolute_path, artifact_paths, same_path
 from REAgent.rebuild.errors import PublicError, error_payload
-from REAgent.rebuild.journal import JournalRecorder
+from REAgent.rebuild.journal import JournalRecorder, saved_applicability
 from REAgent.protocol.observations import SESSION_OBSERVATION_POLICY_SCHEMA
 from REAgent.schema import validate_input_schema
 from REAgent.rebuild.workflow.discovery import runtime as discover_runtime
 from REAgent.rebuild.workflow_context import evidence_summary
+from REAgent.protocol.definitions import validation_items
 
 
 def _close_side_effect(results):
@@ -59,7 +60,7 @@ def _session_metadata(record, *, addon_block=None):
             "source_document": record["source_document"], "target_document": record["target_document"],
             "close_results": record["close_results"], "artifacts": dict(record["artifacts"]),
             "observation_policy": record["observation_policy"], "source_basis_unknown": record["source_basis_unknown"],
-            "last_saved_checkpoint": record.get("last_saved_checkpoint"),
+            "last_saved_checkpoint": saved_applicability(record),
             "target_writes_blocked": any(value is True for value in blocks.values()),
             "write_block_sources": blocks, "journal": record["journal"].metadata()}
 
@@ -105,6 +106,9 @@ def start(args, ctx):
     record = {"session_id": session_id, "source_document": None, "target_document": None,
               "evidence_order": [], "evidence_facts": {}, "blocked": False,
               "recent_validation": {"status": "not_requested"},
+              "recent_manual_comparison": {"status": "not_requested"}, "recent_paired_views": {},
+              "reconstruction": {"phase": "reconstructing", "run_id": None},
+              "delivery_receipts": {}, "delivery_receipt": None,
               "artifacts": artifact_paths(source_path, output_dir), "close_results": {},
               "closed": False, "finished_recorded": False}
     record.update(observation_policy=policy, initial_source_views=None, source_basis_unknown=False)
@@ -214,6 +218,99 @@ def start(args, ctx):
             "runtime": runtime}
 
 
+def finish_reconstruction(args, record, ctx):
+    context = ctx.call_context.get()
+    trusted = context.get("execution") or {}
+    if trusted.get("actor") != "model" or trusted.get("scope") != "reconstruct" or not trusted.get("run_id"):
+        raise ValueError("Delivery requires an adopted model reconstruction action")
+    receipt_id = "delivery-" + trusted["run_id"]
+    existing = record["delivery_receipts"].get(receipt_id)
+    if existing is not None:
+        return {"status": "delivered", "receipt": existing, "repeated": True}
+    ctx.guard_journal(record)
+    if record["blocked"] or record["source_basis_unknown"]:
+        raise ValueError("Unknown Target or Source restoration prevents delivery")
+    state = ctx.call(record, "agent_get_state")
+    basis = state.get("source_basis", {})
+    if basis.get("matches_bound") is not True or state.get("audit_restoration_block"):
+        raise ValueError("Current Source basis and Target restoration must be confirmed")
+    revision = record.get("current_target_revision")
+    comparison = record["recent_validation"]
+    pair = record["recent_paired_views"]
+    if (comparison.get("actor") != "model" or comparison.get("operation_id") != args["validation_operation_id"]
+            or pair.get("evidence_id") != args["paired_evidence_id"]):
+        raise ValueError("Reference the current model comparison and complete paired board: "
+                         + str({"validation_operation_id": comparison.get("operation_id"),
+                                "paired_evidence_id": pair.get("evidence_id")}))
+    observations = trusted.get("observations", {})
+    geometry_receipt = observations.get("geometry_comparison", {})
+    image_receipt = observations.get("paired_views", {})
+    if (geometry_receipt.get("operation_id") != comparison["operation_id"]
+            or image_receipt.get("evidence_id") != pair["evidence_id"]
+            or geometry_receipt.get("scope") != "model_request_completed"
+            or image_receipt.get("scope") != "model_request_completed"):
+        raise ValueError("The current geometry result and complete PNG board must enter an adopted action request")
+    registered = record["evidence_facts"].get(pair["evidence_id"], {})
+    registration = registered.get("image_registration") or {}
+    revisions = {"source_revision": record["source_revision"], "target_revision": revision}
+    if not revision:
+        raise ValueError("Current Target revision is unavailable; delivery cannot be confirmed")
+    if not registration:
+        raise ValueError("Paired image evidence is not registered to the current task")
+    if registration.get("actor") != "model":
+        raise ValueError("Paired image evidence is not registered as a model capture")
+    if registered.get("image_delivery", {}).get("status") != "prepared":
+        raise ValueError("Paired image evidence is not prepared for delivery")
+    if image_receipt.get("document") != record["target_document"]:
+        raise ValueError("Adopted paired image receipt does not name the current Target document")
+    identity = registration.get("paired_revisions") or {}
+    if not identity:
+        raise ValueError("Paired image evidence has no revision identity")
+    if identity.get("source_revision") != revisions["source_revision"]:
+        raise ValueError("Paired image Source revision is missing or differs from the bound Source")
+    if identity.get("target_revision") != revisions["target_revision"]:
+        raise ValueError("Paired image Target revision is missing or differs from the current Target")
+    items = validation_items(comparison.get("requested", {}))
+    if not items:
+        raise ValueError("Delivery needs at least one requested geometric comparison")
+    facts = comparison.get("facts", {})
+    provenance = record.get("_recent_validation_provenance") or {}
+    limitations = []
+    available = False
+    expected = {"document": record["target_document"], **revisions}
+    if (geometry_receipt.get("document") != expected["document"]
+            or geometry_receipt.get("revision") != revision):
+        raise ValueError("Geometry receipt differs from the current Target document or revision")
+    selected = [*items, *(["parameter_audit"] if comparison["requested"].get("parameter_audit") else [])]
+    for item in selected:
+        row = facts.get(item, {})
+        if row.get("status") in (None, "pending", "running", "not_requested"):
+            raise ValueError("Every selected delivery check must have an actual terminal result")
+        dependency = provenance.get(item)
+        required = expected if item != "parameter_audit" else {"document": expected["document"], "target_revision": revision}
+        if not dependency or any(dependency.get(key) != value for key, value in required.items()):
+            raise ValueError("A selected check has stale or unknown dependency revisions: " + item)
+        usable = row.get("available") is True if item != "parameter_audit" else row.get("restored") is True
+        if item in items and usable:
+            available = True
+        if not usable or row.get("status") in ("failed", "unavailable", "error"):
+            limitations.append({"check": item, "status": row["status"], "reason": row.get("reason")})
+    if not available:
+        raise ValueError("All selected geometric comparisons are unavailable; no delivery receipt was issued")
+    receipt = {"receipt_id": receipt_id, "run_id": trusted["run_id"], "actor": "model",
+               "document": record["target_document"], **revisions,
+               "validation_operation_id": comparison["operation_id"], "paired_evidence_id": pair["evidence_id"],
+               "checks": facts, "limitations": limitations, "notes": args.get("notes")}
+    record["pending_delivery"] = {"receipt": receipt, "arguments": dict(args), "execution": dict(trusted)}
+    ctx.emit(record, "reconstruction.delivery_prepared", "agent_finish_reconstruction", {
+                 key: receipt[key] for key in ("receipt_id", "run_id", "validation_operation_id",
+                                               "paired_evidence_id", "checks", "limitations")},
+             context["started"], role="agent")
+    ctx.guard_journal(record)
+    context["pending_delivery"] = (record, receipt)
+    return {"status": "delivered", "receipt": receipt, "repeated": False}
+
+
 def run(name, args, record, started, ctx):
     _runtime = lambda role: discover_runtime(role, ctx.clients)
     _call = ctx.call
@@ -222,6 +319,8 @@ def run(name, args, record, started, ctx):
     if name == "agent_ping": return _runtime("both")
     if name == "agent_start_session": return start(args, ctx)
     if record is None: raise ValueError("session_id is required")
+    if name == "agent_finish_reconstruction":
+        return finish_reconstruction(args, record, ctx)
     if name == "agent_journal":
         if args["action"] == "read":
             return record["journal"].read(args.get("after_sequence", 0), args.get("limit", 100))
@@ -269,7 +368,10 @@ def run(name, args, record, started, ctx):
                     "order": "oldest_to_newest",
                     "scope": "current_session",
                 },
-                "recent_validation": record["recent_validation"]}
+                "recent_validation": record["recent_validation"],
+                "recent_manual_comparison": record["recent_manual_comparison"],
+                "recent_paired_views": record["recent_paired_views"],
+                "reconstruction": record["reconstruction"], "delivery_receipt": record["delivery_receipt"]}
     if name == "agent_close_session":
         record["closed"] = True
         results = record.setdefault("close_results", {})
@@ -330,4 +432,5 @@ def run(name, args, record, started, ctx):
 
 
 def contribute():
-    return {name: run for name in ('agent_ping', 'agent_start_session', 'agent_get_state', 'agent_close_session', 'agent_journal')}
+    return {name: run for name in ('agent_ping', 'agent_start_session', 'agent_get_state', 'agent_close_session',
+                                  'agent_journal', 'agent_finish_reconstruction')}

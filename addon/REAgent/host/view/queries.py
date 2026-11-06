@@ -6,11 +6,11 @@ import FreeCADGui as Gui
 from REAgent.host.process_state import _operation_stage, PROCESS
 from REAgent.host.analysis.measurements import _geometry_bound_box
 from REAgent.protocol.observations import VIEW_DIRECTIONS, initial_view_layout, paired_view_layout, single_view_layout
-from REAgent.host.workspace.model import _owned_objects, _result_display_plan, _result_object, _result_shape, _source_objects, _target_state
+from REAgent.host.workspace.model import _result_display_plan, _result_object, _result_shape, _source_objects, _target_state
 from REAgent.host.workspace.scope import _cleanup_observation_previews
 from REAgent.host.workspace.state import _source_view_revision, _target_view_revision
 from REAgent.host.view.camera import _projection
-from REAgent.host.view.rendering import _CaptureOutput, _display_mode, _existing_directory, _focus_box, _pixel_dimension, _render_canonical_views, _section_preview_shapes, _view_directions, _view_precondition, _view_transparency
+from REAgent.host.view.rendering import _CaptureOutput, _display_mode, _existing_directory, _focus_box, _render_canonical_views, _section_preview_shapes, _view_directions, _view_precondition
 
 
 def _view_artifacts(params, document):
@@ -43,15 +43,13 @@ class ViewObservationOperations:
             raise ValueError("Paired views require FreeCAD GUI mode")
         document, source, rebuild, reconstruction_ir = _target_state(params.get("document"))
         artifacts = _view_artifacts(params, document)
-        width = _pixel_dimension(params.get("width", 640), "width")
-        height = _pixel_dimension(params.get("height", 480), "height")
+        width = params.get("width", 640)
+        height = params.get("height", 480)
         projection = _projection(params.get("projection"))
         _display_mode(params.get("display_mode"))
         directions = _view_directions(params.get("views"))
         section_requested = params.get("include_section", False)
         axis = params.get("section_axis", "y")
-        if type(section_requested) is not bool or axis not in ("x", "y", "z"):
-            raise ValueError("Invalid section request")
         rows = (*directions, *(("section",) if section_requested else ()))
         revisions = {"source": _source_view_revision(source),
                      "target": _target_view_revision(document, rebuild, reconstruction_ir)}
@@ -107,14 +105,14 @@ class ViewObservationOperations:
             _hide_all(document)
             phase = "render"
             camera = _render_canonical_views(view, main_items, output.capture, directions, width, height,
-                scope=scope, transparency=_view_transparency(params.get("transparency", 0)),
+                scope=scope, transparency=params.get("transparency", 0),
                 display_mode=params.get("display_mode"), projection=projection)
             if section_requested:
                 phase = "section_render"
                 _hide_all(document)
                 section["capturing"] = True
                 _render_canonical_views(view, section_items, output.capture, ("iso_xm_ym_zp",), width, height,
-                    scope=scope, transparency=_view_transparency(params.get("transparency", 0)),
+                    scope=scope, transparency=params.get("transparency", 0),
                     display_mode=params.get("display_mode"), projection=projection, camera_metadata=camera)
                 section.pop("capturing")
                 section.pop("preview_names")
@@ -124,8 +122,7 @@ class ViewObservationOperations:
             value = _view_result(document, scope, params, camera, output)
             value.update(revision=revisions["target"], view_directions=list(rows), section=section,
                 focus_box_mm=focus, paired_revisions={"source_revision": revisions["source"],
-                    "source_revision_basis": "step_sha256", "source_sha256": source.SourceSHA256,
-                    "target_revision": revisions["target"], "rebuild_object_count": len(_owned_objects(rebuild))},
+                    "target_revision": revisions["target"]},
                 rebuild_rendered_from={"name": result_object.Name, "type_id": result_object.TypeId,
                                        "body_display_mode": display_plan["body_display_mode"]})
             return value
@@ -163,8 +160,8 @@ class ViewObservationOperations:
             display_item = _result_display_plan(rebuild)
         else:
             raise ValueError("Views require a Source or Target role")
-        width = _pixel_dimension(params.get("width", 640), "width")
-        height = _pixel_dimension(params.get("height", 480), "height")
+        width = params.get("width", 640)
+        height = params.get("height", 480)
         limit = params.get("output_long_edge_px", 1536)
         directions = VIEW_DIRECTIONS if initial else _view_directions(params.get("views"))
         focus, focus_shape = _focus_box(params.get("focus_box_mm"))
@@ -194,7 +191,7 @@ class ViewObservationOperations:
                 display_item = preview.ViewObject
             phase = "render"
             camera = _render_canonical_views(view, {role: display_item}, output.capture, directions, width, height,
-                scope=scope, transparency=_view_transparency(params.get("transparency", 0)),
+                scope=scope, transparency=params.get("transparency", 0),
                 display_mode=params.get("display_mode"), projection=_projection(params.get("projection")),
                 framing_box=_geometry_bound_box(shape) if initial else None)
             phase = "output"

@@ -48,25 +48,6 @@ def _nullable(spec):
     result["type"] = [spec["type"], "null"]
     return result
 
-def _check_request_fields(value, schema, field):
-    """Check fields and scalar enums before dispatching to geometry handlers."""
-
-    if not isinstance(value, dict):
-        raise ValueError("%s must be an object" % field)
-    properties = schema["properties"]
-    allowed = sorted(properties)
-    unknown = sorted(set(value) - set(properties))
-    missing = sorted(set(schema.get("required", [])) - set(value))
-    if unknown or missing:
-        raise ValueError(
-            "%s: unsupported fields %s; missing fields %s; allowed fields %s"
-            % (field, unknown, missing, allowed)
-        )
-    for name, item in value.items():
-        choices = properties[name].get("enum")
-        if choices is not None and item not in choices:
-            raise ValueError("%s.%s=%r; allowed values: %s" % (field, name, item, choices))
-
 def _branch(key, value, properties, required=None):
     return _schema({key: {"type": "string", "enum": [value]}, **properties},
                    (key, *(properties if required is None else required)))

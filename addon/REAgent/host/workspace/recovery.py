@@ -1,6 +1,7 @@
 """Native restoration evidence, write blocking and history-preserving recovery."""
 
 import FreeCAD as App
+import FreeCADGui as Gui
 
 from REAgent.host.analysis.measurements import _shape_summary
 from REAgent.host.process_state import _operation_stage, PROCESS
@@ -78,12 +79,24 @@ def _block(document, reason):
     return exc
 
 
+def _preflight_error(message, reason, **detail):
+    error = ValueError(message)
+    error.failure_detail = {"reason": reason, **detail}
+    return error
+
+
 def _transaction_ready(document):
     _operation_stage("bridge_preflight")
     if App.activeDocument() is not document:
         raise ValueError("Target must be the active document in its bound window")
-    if any(doc.HasPendingTransaction for doc in App.listDocuments().values()):
-        raise ValueError("A user transaction is active; finish it before an REAgent operation")
+    pending = [doc.Name for doc in App.listDocuments().values() if doc.HasPendingTransaction]
+    if pending:
+        raise _preflight_error("A user transaction is active", "pending_transaction",
+                               pending_documents=pending[:8], pending_transaction=True)
+    gui_document = Gui.activeDocument()
+    if gui_document is not None and gui_document.getInEdit() is not None:
+        raise _preflight_error("Finish or cancel the native edit in Target",
+                               "gui_edit_in_progress", pending_transaction=False)
     if not document.UndoMode:
         raise ValueError("Native undo is disabled for this document")
 

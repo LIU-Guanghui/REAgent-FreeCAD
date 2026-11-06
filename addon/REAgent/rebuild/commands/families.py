@@ -1,7 +1,7 @@
 """The one list of command families the Controller registers, in registration order."""
 
-from . import (body, boolean, datum, dressup, extrude, hole, loft, mirror, pattern, pipe,
+from . import (body, boolean, datum, dressup, edit, extrude, hole, loft, mirror, pattern, pipe,
                primitives, revolve, sketch)
 
 FAMILIES = (body, sketch, datum, primitives, extrude, revolve, hole, boolean, loft, pipe,
-            dressup, mirror, pattern)
+            dressup, mirror, pattern, edit)

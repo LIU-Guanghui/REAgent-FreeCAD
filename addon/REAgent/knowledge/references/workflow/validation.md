@@ -12,6 +12,12 @@ Topology counts, segmentation and analytic/B-Spline representation differences a
 
 Parameter audit is opt-in: it temporarily changes native parameters and requires confirmed restoration.
 
+## Declare delivery
+
+Once the selected geometric checks and complete paired views have entered an adopted action request, decide whether the reconstruction can be delivered. Explicitly declare delivery using the currently registered model comparison and paired-board identities. Measurements and views alone do not advance the task. At least one geometric comparison must be available; unavailable selected checks remain explicit limitations rather than evidence of agreement. Unknown restoration, no available geometry or an incomplete paired board prevents delivery.
+
+Use the confirmed delivery receipt as the authority for check states and the complete limitation list. Summarize the editable result, meaningful agreements or differences, open issues and actual save status in the text-only report. Do not issue more tools in that delivered run. For subsequent user conversation and intentional changes, follow [session control](session-and-isolation.md).
+
 ## Save a checkpoint
 
 The user requests `agent_save` to confirm an FCStd write; it does not rerun comparison or refresh historical validation. A structurally known unfinished workspace can be saved and reported as unfinished.

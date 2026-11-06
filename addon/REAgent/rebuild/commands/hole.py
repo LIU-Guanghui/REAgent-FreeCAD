@@ -1,13 +1,11 @@
 """Public evidence guard for native Hole."""
 
 from REAgent.rebuild.log_summary import execution_summary
-from REAgent.rebuild.commands.execution import validate_domain_evidence
 
 
 def run(name, args, record, started, ctx):
     if name != "PartDesign_Hole":
         raise ValueError("Unknown Hole command")
-    validate_domain_evidence(args, record)
     value = ctx.call(record, name, **{k: v for k, v in args.items() if k != "session_id"})
     summary = {**execution_summary(value), "body": value["readback"]["body"],
                "feature": value["readback"]["feature"],

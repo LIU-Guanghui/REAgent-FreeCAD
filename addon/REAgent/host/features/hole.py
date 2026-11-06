@@ -1,6 +1,6 @@
 """Bounded native Hole from a circle-only Sketch in an owned solid Body."""
 
-from REAgent.protocol.features import validate_feature_request
+from REAgent.protocol.features import validate_feature_relations
 from REAgent.host.workspace.properties import _metadata, _number_readback, _set_bool, _set_enum, _set_number
 from REAgent.host.features.support.construction import _history_context, _profile_readback, _set_profile, _shape_readback
 
@@ -23,6 +23,17 @@ def _set_circle_centers(feature):
         raise RuntimeError("Native Hole did not select circle centers only")
 
 
+def _circle_profile(sketch):
+    geometry = list(sketch.Geometry)
+    if any(sketch.getConstruction(i) or type(item).__name__ != "Circle"
+           for i, item in enumerate(geometry)):
+        raise ValueError("Hole Profile must contain only non-construction circles")
+    centers = [item.Center for item in geometry]
+    if len(centers) != len({(round(c.x, 10), round(c.y, 10)) for c in centers}):
+        raise ValueError("Hole Profile contains duplicate circle centers")
+    return len(geometry)
+
+
 class HoleOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
@@ -34,18 +45,10 @@ class HoleOperations:
         enum_values = [None]
 
         def preflight(document, group, request):
-            validate_feature_request("PartDesign_Hole", request)
+            validate_feature_relations("PartDesign_Hole", request)
             context[0] = _history_context(
                 document, group, request, require_solid=True, sketch=True)
-            sketch = context[0][1]
-            geometry = list(sketch.Geometry)
-            if any(sketch.getConstruction(i) or type(item).__name__ != "Circle"
-                   for i, item in enumerate(geometry)):
-                raise ValueError("Hole Profile must contain only non-construction circles")
-            centers = [item.Center for item in geometry]
-            if len(centers) != len({(round(c.x, 10), round(c.y, 10)) for c in centers}):
-                raise ValueError("Hole Profile contains duplicate circle centers")
-            profile_circle_count[0] = len(geometry)
+            profile_circle_count[0] = _circle_profile(context[0][1])
 
         def mutate(document, group, request, changes):
             body, sketch, _tip = context[0]

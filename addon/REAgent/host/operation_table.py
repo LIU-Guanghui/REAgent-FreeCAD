@@ -17,6 +17,7 @@ from .features.boolean import BooleanOperations
 from .features.chamfer import ChamferOperations
 from .features.datum import DatumOperations
 from .features.draft import DraftOperations
+from .features.edit import EditOperations
 from .features.extrude import ExtrudeOperations
 from .features.fillet import FilletOperations
 from .features.hole import HoleOperations
@@ -61,6 +62,7 @@ def assemble_operations(role, port):
         DatumOperations(execute_native=executor._execute_native_command),
         DraftOperations(execute_native=executor._execute_native_command),
         ExtrudeOperations(execute_native=executor._execute_native_command),
+        EditOperations(execute_native=executor._execute_native_command),
         FilletOperations(execute_native=executor._execute_native_command),
         HoleOperations(execute_native=executor._execute_native_command),
         LoftOperations(execute_native=executor._execute_native_command),
