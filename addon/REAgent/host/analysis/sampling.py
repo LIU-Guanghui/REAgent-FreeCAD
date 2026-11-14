@@ -5,8 +5,8 @@ import math
 import FreeCAD as App
 import Part
 
-from REAgent.host.numeric import _vector_dict
-from REAgent.host.analysis.measurements import _shape_tolerance
+from REAgent.host.numeric import vector_dict
+from REAgent.host.analysis.measurements import shape_tolerance
 
 
 def _face_surface_samples(face, contract):
@@ -17,7 +17,7 @@ def _face_surface_samples(face, contract):
         u0, u1, v0, v1 = bounds
         if u1 <= u0 or v1 <= v0:
             raise ValueError("degenerate_uv_range")
-        kernel_tolerance = _shape_tolerance(face)
+        kernel_tolerance = shape_tolerance(face)
         if kernel_tolerance is None or not math.isfinite(kernel_tolerance):
             raise ValueError("face_tolerance_unavailable")
         tolerance = max(kernel_tolerance, contract["numeric_linear_epsilon_mm"])
@@ -34,7 +34,7 @@ def _face_surface_samples(face, contract):
                     if not face.isPartOfDomain(u, v):
                         continue
                     point, normal = face.valueAt(u, v), face.normalAt(u, v)
-                    coords, direction = _vector_dict(point), _vector_dict(normal)
+                    coords, direction = vector_dict(point), vector_dict(normal)
                     if not all(math.isfinite(value) for value in [*coords.values(), *direction.values()]):
                         continue
                     length = math.sqrt(sum(value * value for value in direction.values()))
@@ -56,12 +56,12 @@ def _face_surface_samples(face, contract):
         return [], str(exc)
 
 
-def _face_surface_sample(face, contract):
+def face_surface_sample(face, contract):
     samples, reason = _face_surface_samples(face, contract)
     return samples[0] if samples else {"available": False, "unavailable_reason": reason}
 
 
-def _material_side_at_sample(face, shape, sample):
+def material_side_at_sample(face, shape, sample):
     if not sample.get("available"):
         return {"classification": "unknown", "unavailable_reason": sample.get("unavailable_reason")}
     point = App.Vector(*(sample["point_mm"][axis] for axis in ("x", "y", "z")))

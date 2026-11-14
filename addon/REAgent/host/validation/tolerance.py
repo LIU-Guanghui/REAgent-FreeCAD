@@ -6,17 +6,17 @@ import math
 _DEFAULT_LINEAR_TOLERANCE_MM = 0.01
 _DEFAULT_ANGULAR_TOLERANCE_DEG = 0.1
 _MAX_SURFACE_SAMPLES = 160
-from REAgent.host.numeric import _positive_finite_number, _positive_number
+from REAgent.host.numeric import positive_finite_number, positive_number
 
 
-def _resolve_tolerance_contract(params, source_summary):
+def resolve_tolerance_contract(params, source_summary):
     linear_value = params.get(
         "linear_tolerance_mm", _DEFAULT_LINEAR_TOLERANCE_MM
     )
-    linear_tolerance = _positive_number(
+    linear_tolerance = positive_number(
         linear_value, "linear_tolerance_mm"
     )
-    angular_tolerance = _positive_number(
+    angular_tolerance = positive_number(
         params.get(
             "angular_tolerance_deg", _DEFAULT_ANGULAR_TOLERANCE_DEG
         ),
@@ -94,7 +94,7 @@ def _parse_tolerance_contract(raw_value):
                 "ToleranceContractJSON is missing property: %s" % name
             )
     for name in required[:-1]:
-        _positive_finite_number(contract[name], name)
+        positive_finite_number(contract[name], name)
     maximum = contract["max_surface_samples_per_direction"]
     if (
         isinstance(maximum, bool)
@@ -112,14 +112,14 @@ def _parse_tolerance_contract(raw_value):
     }
 
 
-def _ir_tolerance_contract(reconstruction_ir):
+def ir_tolerance_contract(reconstruction_ir):
     raw_value = getattr(reconstruction_ir, "ToleranceContractJSON", None)
     if not raw_value:
         raise ValueError("Workspace is missing ToleranceContractJSON")
     return _parse_tolerance_contract(raw_value)
 
 
-def _source_tolerance_contract(source):
+def source_tolerance_contract(source):
     raw_value = getattr(source, "ToleranceContractJSON", None)
     if not raw_value:
         raise ValueError("Source is missing ToleranceContractJSON")

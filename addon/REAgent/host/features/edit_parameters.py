@@ -5,24 +5,24 @@ import math
 import FreeCAD as App
 
 from REAgent.protocol.features import DATUM_TYPES, EDIT_FEATURE_TYPES, HISTORY_COMMANDS, PRIMITIVE_COMMANDS
-from REAgent.host.analysis.evidence import _geometry_evidence
-from REAgent.host.validation.structure import _single_solid_summary
-from REAgent.host.validation.tolerance import _ir_tolerance_contract
-from REAgent.host.workspace.model import _body_objects, _depends_on, _validate_boolean_tools, _world_shape
-from REAgent.host.workspace.properties import _encode, _metadata, _native_link, _native_number, _same_placement
-from .boolean import _preserve_tool_placement
+from REAgent.host.analysis.evidence import geometry_evidence
+from REAgent.host.validation.structure import single_solid_summary
+from REAgent.host.validation.tolerance import ir_tolerance_contract
+from REAgent.host.workspace.model import body_objects, depends_on, validate_boolean_tools, copy_world_shape
+from REAgent.host.workspace.properties import encode, metadata, native_link, native_number, same_placement
+from .boolean import preserve_tool_placement
 from .chamfer import _MODES as CHAMFER_MODES
-from .datum import _resolve_reference
-from .draft import _neutral_plane
-from .hole import _HOLE_ENUM, _circle_profile
-from .pattern import _AXIS_PARENT_PROPERTY, _native_extent_mode, _one_direction
+from .datum import resolve_reference
+from .draft import neutral_plane
+from .hole import _HOLE_ENUM, circle_profile
+from .pattern import _AXIS_PARENT_PROPERTY, native_extent_mode, one_direction
 from .pipe import _PIPE_FIXED_ENUMS
-from .primitives import _validate_family
-from .revolve import _reference_axis
+from .primitives import validate_family
+from .revolve import reference_axis
 from .thickness import _JOIN
-from .support.construction import _closed_profile, _distinct_section_planes, _section_or_path, _whole_sketch_link
-from .support.references import _current_faces, _dressup_edges, _role_object
-from .support.transforms import _transform_axis, _transform_plane, _transform_sources
+from .support.construction import closed_profile, distinct_section_planes, section_or_path, whole_sketch_link
+from .support.references import current_faces, dressup_edges, role_object
+from .support.transforms import transform_axis, transform_plane, transform_sources
 
 
 _SCALARS = {
@@ -73,18 +73,18 @@ def observable_properties(obj):
 
 def _same(actual, desired, codec):
     if codec == "placement":
-        return _same_placement(actual, desired)
+        return same_placement(actual, desired)
     if codec in ("number", "quantity"):
-        a, b = _native_number(actual), _native_number(desired)
+        a, b = native_number(actual), native_number(desired)
         return math.isfinite(a) and abs(a-b) <= max(1e-9, abs(b)*1e-12)
     if codec in ("link_sub", "link_sub_list"):
         def normalized(value):
             rows = [value] if codec == "link_sub" else value
             return [(obj.Name, tuple(parts) if any(parts) else ()) for obj, parts in rows if obj is not None]
         if codec == "link_sub" and (not actual or not desired):
-            return _encode(actual, codec) == _encode(desired, codec)
+            return encode(actual, codec) == encode(desired, codec)
         return normalized(actual) == normalized(desired)
-    return _encode(actual, codec) == _encode(desired, codec)
+    return encode(actual, codec) == encode(desired, codec)
 
 
 class ParameterEdit:
@@ -101,7 +101,7 @@ class ParameterEdit:
 
     def add(self, prop, desired, *codecs, when_mode_changes=False):
         obj = self.target
-        meta = _metadata(obj, prop, body_edit=obj.TypeId == "PartDesign::Body")
+        meta = metadata(obj, prop, body_edit=obj.TypeId == "PartDesign::Body")
         codec = meta["codec"]
         if codec not in codecs or "value" not in meta:
             raise ValueError("Native edit cannot encode " + obj.Name + "." + prop)
@@ -115,7 +115,7 @@ class ParameterEdit:
         self.writes[prop] = (codec, desired, meta["value"])
 
     def link(self, prop, refs, *, empty=()):
-        codec = _metadata(self.target, prop)["codec"]
+        codec = metadata(self.target, prop)["codec"]
         if codec == "link":
             if any(parts and parts != [""] for _, parts in refs):
                 raise ValueError(prop + " does not accept subelements")
@@ -143,13 +143,13 @@ class ParameterEdit:
         for prop, (codec, desired, old) in self.writes.items():
             if _same(getattr(obj, prop), desired, codec):
                 continue
-            if not _metadata(obj, prop, body_edit=obj.TypeId == "PartDesign::Body")["writable"]:
+            if not metadata(obj, prop, body_edit=obj.TypeId == "PartDesign::Body")["writable"]:
                 raise ValueError("Native property is still read-only in requested mode: " + prop)
             changes.append((obj.Name, prop, codec, old))
             if prop == "Group" and obj.TypeId == "PartDesign::Boolean":
                 obj.setObjects(desired)
                 for tool, placement, original in self.tool_placements.values():
-                    _preserve_tool_placement(tool, placement, original, changes)
+                    preserve_tool_placement(tool, placement, original, changes)
             else:
                 setattr(obj, prop, desired)
 
@@ -162,7 +162,7 @@ class ParameterEdit:
                 raise RuntimeError("Native edit did not read back " + obj.Name + "." + prop)
             if prop in self.writes:
                 original = self.writes[prop][2]
-                read = _encode(actual, codec)
+                read = encode(actual, codec)
                 if original != read:
                     actual_changes[prop] = {"before": original, "after": read}
         if self.install_axis_parent:
@@ -170,7 +170,7 @@ class ParameterEdit:
                 raise RuntimeError("Native pattern axis parent did not read back")
             actual_changes[_AXIS_PARENT_PROPERTY] = {"before": None, "after": {"object": self.axis_parent.Name}}
         for tool, placement, _original in self.tool_placements.values():
-            if not _same_placement(tool.getGlobalPlacement(), placement):
+            if not same_placement(tool.getGlobalPlacement(), placement):
                 raise RuntimeError("Boolean operand world Placement changed after recompute")
         if any(ref not in obj.OutList for ref in self.new_links):
             raise RuntimeError("Native edit did not retain an intended dependency")
@@ -182,7 +182,7 @@ def _fixed(obj, values):
         if prop in obj.PropertiesList:
             actual = getattr(obj, prop)
             if isinstance(expected, (int, float)) and not isinstance(expected, bool):
-                actual = _native_number(actual)
+                actual = native_number(actual)
             if actual != expected:
                 raise ValueError("Unsupported native mode: " + obj.Name + "." + prop)
 
@@ -207,7 +207,7 @@ def _sketch_support(document, body, ref):
     if ref["kind"] == "origin_plane":
         if origin is None:
             raise ValueError("Body Origin is unavailable")
-        return _role_object(origin, ref["role"], "App::Plane", document), [""], "FlatFace"
+        return role_object(origin, ref["role"], "App::Plane", document), [""], "FlatFace"
     support = document.getObject(ref["datum_name"])
     is_plane = ref["kind"] == "datum_plane"
     type_id = "Part::DatumPlane" if is_plane else "Part::LocalCoordinateSystem"
@@ -215,7 +215,7 @@ def _sketch_support(document, body, ref):
         raise ValueError("Sketch attachment requires a native plane in the same Body")
     if is_plane:
         return support, [""], "FlatFace"
-    _role_object(support, ref["role"], "App::Plane", document)
+    role_object(support, ref["role"], "App::Plane", document)
     return support, [""], {"XY_Plane": "ObjectXY", "XZ_Plane": "ObjectXZ",
                             "YZ_Plane": "ObjectYZ"}[ref["role"]]
 
@@ -245,7 +245,7 @@ def _edit_attachment(plan, document, body, command, changes):
         plan.link("AttachmentSupport", [], empty=("link_sub", "link_sub_list"))
     elif ref is not None:
         resolved = (_sketch_support(document, body, ref) if command == "Sketcher_EditSketch"
-                    else _resolve_reference(document, body, ref, command))
+                    else resolve_reference(document, body, ref, command))
         support, parts, map_mode = resolved
         plan.link("AttachmentSupport", [(support, parts)])
         plan.add("MapMode", map_mode, "string")
@@ -327,10 +327,10 @@ def _hole_parameters(plan, changes):
     native = {"mouth_diameter_mm": "HoleCutDiameter", "mouth_depth_mm": "HoleCutDepth",
               "mouth_angle_deg": "HoleCutCountersinkAngle"}
     mouth_before = _enum_key(_HOLE_ENUM["HoleCutType"], obj.HoleCutType)
-    mouth, values = _mode_values(changes, mouth_before, "mouth_mode", lambda field: _native_number(getattr(obj, native[field])),
+    mouth, values = _mode_values(changes, mouth_before, "mouth_mode", lambda field: native_number(getattr(obj, native[field])),
         {"none": (), "counterbore": ("mouth_diameter_mm", "mouth_depth_mm"),
          "countersink": ("mouth_diameter_mm", "mouth_angle_deg")})
-    if mouth != "none" and values["mouth_diameter_mm"] <= changes.get("diameter_mm", _native_number(obj.Diameter)):
+    if mouth != "none" and values["mouth_diameter_mm"] <= changes.get("diameter_mm", native_number(obj.Diameter)):
         raise ValueError("Hole entrance diameter must exceed the bore diameter")
     if mouth != mouth_before:
         if mouth == "none":
@@ -363,8 +363,8 @@ def _chamfer_parameters(plan, changes):
 
 def _pattern_parameters(plan, changes, linear):
     obj = plan.target
-    _one_direction(obj)
-    modes = {key: _native_extent_mode(obj, key) for key in ("overall", "offset")}
+    one_direction(obj)
+    modes = {key: native_extent_mode(obj, key) for key in ("overall", "offset")}
     before = _enum_key(modes, obj.Mode)
     mode = changes.get("extent_mode", before)
     field = "distance_mm" if linear else "angle_deg"
@@ -373,7 +373,7 @@ def _pattern_parameters(plan, changes, linear):
         if field not in changes:
             raise ValueError("Changing the pattern extent mode requires " + field)
         plan.add("Mode", modes[mode], "string")
-    value = changes[field] if field in changes else _native_number(getattr(obj, prop))
+    value = changes[field] if field in changes else native_number(getattr(obj, prop))
     count = changes.get("occurrences", int(obj.Occurrences))
     if not 2 <= count <= 64 or value <= 0 or (not linear and (
             value > 360 or mode == "offset" and value * (count-1) >= 360)):
@@ -392,10 +392,10 @@ def _history_parameters(plan, document, group, body, prior, command, changes):
             codecs = ("bool",) if type(value) is bool else ("integer",) if prop == "Occurrences" else ("quantity", "number")
             plan.add(prop, value, *codecs)
     if family in ("extrude", "revolve", "hole"):
-        existing = _native_link(obj.Profile)
-        if existing is None or not _whole_sketch_link(obj.Profile, existing):
+        existing = native_link(obj.Profile)
+        if existing is None or not whole_sketch_link(obj.Profile, existing):
             raise ValueError("Native profile is not a whole Sketch")
-        profile = _closed_profile(document, body, changes.get("sketch_name", existing.Name))
+        profile = closed_profile(document, body, changes.get("sketch_name", existing.Name))
         if "sketch_name" in changes:
             plan.link("Profile", [(profile, [])])
         if family == "extrude":
@@ -403,12 +403,12 @@ def _history_parameters(plan, document, group, body, prior, command, changes):
         elif family == "revolve":
             _fixed(obj, {"Type": "Angle", "Midplane": False})
             if "axis" in changes:
-                axis, element = _reference_axis(document, body, profile, changes["axis"])
+                axis, element = reference_axis(document, body, profile, changes["axis"])
                 plan.link("ReferenceAxis", [(axis, [element])])
-            elif _native_link(obj.ReferenceAxis) is existing and profile is not existing:
+            elif native_link(obj.ReferenceAxis) is existing and profile is not existing:
                 plan.link("ReferenceAxis", [(profile, list(obj.ReferenceAxis[1]))])
         else:
-            _circle_profile(profile)
+            circle_profile(profile)
             _hole_parameters(plan, changes)
     elif family in ("loft", "pipe"):
         _section_parameters(plan, document, body, family, changes)
@@ -431,16 +431,16 @@ def _section_parameters(plan, document, body, family, changes):
     prop = "Sections" if loft else "Spine"
     field = "section_sketch_name" if loft else "path_sketch_name"
     raw = obj.Sections[0] if loft else obj.Spine
-    first, second = _native_link(obj.Profile), _native_link(raw)
-    if (first is None or second is None or not _whole_sketch_link(obj.Profile, first)
-            or not _whole_sketch_link(raw, second)):
+    first, second = native_link(obj.Profile), native_link(raw)
+    if (first is None or second is None or not whole_sketch_link(obj.Profile, first)
+            or not whole_sketch_link(raw, second)):
         raise ValueError("Native Loft/Pipe references must be whole Sketches")
-    first, _ = _section_or_path(document, body, changes.get("profile_sketch_name", first.Name), closed=True)
-    second, _ = _section_or_path(document, body, changes.get(field, second.Name), closed=loft, path=not loft)
+    first, _ = section_or_path(document, body, changes.get("profile_sketch_name", first.Name), closed=True)
+    second, _ = section_or_path(document, body, changes.get(field, second.Name), closed=loft, path=not loft)
     if first is second:
         raise ValueError("Loft/Pipe requires two distinct Sketches")
     if loft:
-        _distinct_section_planes(first, second)
+        distinct_section_planes(first, second)
     if "profile_sketch_name" in changes:
         plan.link("Profile", [(first, [])])
     if field in changes:
@@ -456,24 +456,24 @@ def _boolean_parameters(plan, document, group, changes):
         raise ValueError("Requested Boolean tool Body does not exist")
     if mode not in ("Fuse", "Cut", "Common") or not 1 <= len(tools) <= (1 if mode == "Common" else 16):
         raise ValueError("Boolean mode and tool count are incompatible")
-    _validate_boolean_tools(group, obj, tools)
+    validate_boolean_tools(group, obj, tools)
     for tool in tools:
-        _single_solid_summary(_world_shape(tool), "Boolean tool " + tool.Name)
+        single_solid_summary(copy_world_shape(tool), "Boolean tool " + tool.Name)
     if "mode" in changes:
         plan.add("Type", mode, "string")
     if "tool_body_names" in changes:
         plan.link("Group", [(tool, []) for tool in tools])
         if "Group" in plan.writes:
             plan.tool_placements = {
-                tool.Name: (tool, tool.getGlobalPlacement(), _metadata(tool, "Placement")["value"])
+                tool.Name: (tool, tool.getGlobalPlacement(), metadata(tool, "Placement")["value"])
                 for tool in [*obj.Group, *tools]
             }
 
 
 def _predecessor_parameters(plan, document, group, body, prior, family, command, changes):
     obj = plan.target
-    shape = _world_shape(prior)
-    _single_solid_summary(shape, "Edit predecessor")
+    shape = copy_world_shape(prior)
+    single_solid_summary(shape, "Edit predecessor")
     request = {**changes, "predecessor_name": prior.Name}
     if family in ("fillet", "chamfer", "draft", "thickness"):
         _fixed(obj, {"UseAllEdges": False, "SupportTransform": False})
@@ -481,20 +481,20 @@ def _predecessor_parameters(plan, document, group, body, prior, family, command,
             raise ValueError("Existing dress-up has no explicit predecessor subelements")
     if family in ("fillet", "chamfer"):
         if "edge_refs" in changes:
-            plan.link("Base", [(prior, _dressup_edges(body, group, request, prior, shape=shape))])
+            plan.link("Base", [(prior, dressup_edges(body, group, request, prior, shape=shape))])
         if family == "chamfer":
             _chamfer_parameters(plan, changes)
     elif family in ("draft", "thickness"):
         role = "draft_target" if family == "draft" else "thickness_opening"
         if "face_refs" in changes:
-            faces, _ = _current_faces(body, group, request, prior, changes["face_refs"], role, "face_refs", shape=shape)
+            faces, _ = current_faces(body, group, request, prior, changes["face_refs"], role, "face_refs", shape=shape)
             plan.link("Base", [(prior, faces)])
         if family == "draft":
             _fixed(obj, {"PullDirection": None})
             if "neutral_plane" in changes:
-                evidence = _geometry_evidence(shape, _ir_tolerance_contract(group),
+                evidence = geometry_evidence(shape, ir_tolerance_contract(group),
                                               include_relations=False, include_repetition=False)
-                plan.link("NeutralPlane", [_neutral_plane(document, body, group, prior, request, evidence)])
+                plan.link("NeutralPlane", [neutral_plane(document, body, group, prior, request, evidence)])
         else:
             _fixed(obj, {"Mode": "Skin", "Intersection": False})
             if "direction" in changes:
@@ -503,16 +503,16 @@ def _predecessor_parameters(plan, document, group, body, prior, family, command,
                 plan.add("Join", _JOIN[changes["join"]], "string")
     else:
         _fixed(obj, {"TransformMode": "Features"})
-        sources = _transform_sources(document, body, prior, changes.get(
+        sources = transform_sources(document, body, prior, changes.get(
             "source_feature_names", [source.Name for source in obj.Originals]))
         if "source_feature_names" in changes:
             plan.link("Originals", [(source, []) for source in sources])
         if family == "mirror" and "mirror_plane" in changes:
-            plan.link("MirrorPlane", [_transform_plane(document, body, group, prior, request, shape=shape)])
+            plan.link("MirrorPlane", [transform_plane(document, body, group, prior, request, shape=shape)])
         if family == "pattern":
             linear = command == "PartDesign_LinearPattern"
             if "axis" in changes:
-                link, parent = _transform_axis(document, body, group, prior, request, shape=shape)
+                link, parent = transform_axis(document, body, group, prior, request, shape=shape)
                 plan.link("Direction" if linear else "Axis", [link])
                 if _AXIS_PARENT_PROPERTY in obj.PropertiesList:
                     plan.link(_AXIS_PARENT_PROPERTY, [(parent, [])] if parent else [], empty=("link",))
@@ -537,9 +537,9 @@ def prepare_parameters(document, group, body, obj, prior, changes):
         _fixed(obj, {**dict(spec["fixed"]), "MapMode": "Deactivated"})
         if getattr(obj, "AttachmentSupport", None) or getattr(obj, "Support", None):
             raise ValueError("Native primitive has an attachment")
-        complete = {field: changes.get(field, _native_number(getattr(obj, prop)))
+        complete = {field: changes.get(field, native_number(getattr(obj, prop)))
                     for field, prop, _ in spec["inputs"]}
-        _validate_family(complete, spec["family"])
+        validate_family(complete, spec["family"])
         for field, prop, rule in spec["inputs"]:
             if field in changes:
                 plan.add(prop, changes[field], *(("integer",) if rule == "polygon" else ("quantity", "number")))
@@ -548,9 +548,9 @@ def prepare_parameters(document, group, body, obj, prior, changes):
         _edit_attachment(plan, document, body, command, changes)
     else:
         _history_parameters(plan, document, group, body, prior, command, changes)
-    members = _body_objects(body)
+    members = body_objects(body)
     for dependency in plan.new_links:
-        if (dependency is obj or _depends_on(dependency, obj)
+        if (dependency is obj or depends_on(dependency, obj)
                 or dependency not in members and command != "PartDesign_Boolean"):
             raise ValueError("Replacement reference is outside its scope or creates a dependency cycle")
     return plan

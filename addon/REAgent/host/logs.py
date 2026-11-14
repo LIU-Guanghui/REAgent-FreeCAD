@@ -12,7 +12,7 @@ from REAgent.host.process_state import PROCESS
 
 
 def native_log_source():
-    source = {"process_id": os.getpid(), "role": "target" if PROCESS.INSTANCE_ROLE == "rebuild" else "source",
+    source = {"process_id": os.getpid(), "role": PROCESS.INSTANCE_ROLE or "source",
               "path": None, "path_source": "FreeCAD.ConfigGet", "attribution": "instance_file_not_call"}
     try:
         enabled = App.ConfigGet("LoggingFile") == "1"
@@ -33,6 +33,9 @@ def native_log_source():
 
 
 class DiagnosticOperations:
+    def contribute(self):
+        return {'agent_read_freecad_log': self._read_freecad_log}
+
     def _read_freecad_log(self, params):
         source = native_log_source()
         base = {"source": source, "available": False, "next_cursor": None,
@@ -119,6 +122,3 @@ class DiagnosticOperations:
             return {**base, "status": "permission_denied"}
         except OSError as exc:
             return {**base, "status": "read_failed", "reason": str(exc)[:500]}
-
-    def contribute(self):
-        return {'agent_read_freecad_log': self._read_freecad_log}

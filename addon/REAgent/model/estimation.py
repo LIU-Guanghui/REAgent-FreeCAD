@@ -6,7 +6,7 @@ from .capabilities import visual_tokens
 from .config import model_identity
 from REAgent.model.limits import (
     IMAGE_SOFT_TARGET_COUNT, IMAGE_SOFT_TARGET_TOKENS)
-from REAgent.values import encode_json
+from REAgent.json_values import encode_json
 
 def material_estimate(config, message):
     """Conservative local accounting; opaque bytes are never tokenized as text."""

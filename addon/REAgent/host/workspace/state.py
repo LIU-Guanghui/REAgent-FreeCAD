@@ -2,20 +2,20 @@
 
 import math
 
-from REAgent.host.analysis.measurements import _shape_summary
-from REAgent.host.analysis.topology import _stable_digest
-from REAgent.host.workspace.model import _owned_objects, _placement_summary, _result_shape
-from REAgent.host.workspace.properties import _CODECS, _encode, sketch_content_state
+from REAgent.host.analysis.measurements import summarize_shape
+from REAgent.host.analysis.topology import stable_digest
+from REAgent.host.workspace.model import copy_world_shape, owned_objects, placement_summary, result_shape
+from REAgent.host.workspace.properties import _CODECS, encode, sketch_content_state
 
 
-def _source_view_revision(source):
+def source_view_revision(source):
     revision = getattr(source, "SourceSHA256", None)
     if not isinstance(revision, str) or not revision:
         raise ValueError("Source has no STEP SHA-256 revision")
     return revision
 
 
-def _document_history_state(document):
+def document_history_state(document):
     return {
         "pending_transaction": bool(document.HasPendingTransaction),
         "undo": list(document.UndoNames),
@@ -23,28 +23,28 @@ def _document_history_state(document):
     }
 
 
-def _source_model_state(source, *, include_history=True):
+def source_model_state(source, *, include_history=True):
     document = getattr(source, "Document", None)
     return {
-        "revision": _source_view_revision(source),
-        "placement": _placement_summary(source),
+        "revision": source_view_revision(source),
+        "placement": placement_summary(source),
         "document_objects": (
             [{"name": obj.Name, "type_id": obj.TypeId} for obj in document.Objects]
             if document is not None else None
         ),
-        "history": _document_history_state(document) if document is not None and include_history else None,
+        "history": document_history_state(document) if document is not None and include_history else None,
     }
 
 
-def _source_geometry_state(source):
-    return _shape_summary(source.Shape)
+def source_geometry_state(source):
+    return summarize_shape(source.Shape)
 
 
-def _target_model_state(document, rebuild, *, include_history=True):
+def target_model_state(document, target_body, *, include_history=True):
     """Capture persistent model facts; never include derived Shape or GUI state."""
     # Read only native property contents; no feature handler is needed.
     objects = {}
-    for obj in _owned_objects(rebuild):
+    for obj in owned_objects(target_body):
         properties = {}
         property_types = {}
         for name in sorted(obj.PropertiesList):
@@ -57,7 +57,7 @@ def _target_model_state(document, rebuild, *, include_history=True):
             property_types[name] = type_id
             codec = _CODECS.get(type_id)
             if codec:
-                properties[name] = _encode(getattr(obj, name), codec)
+                properties[name] = encode(getattr(obj, name), codec)
             elif type_id in ("App::PropertyFloatList", "App::PropertyIntegerList", "App::PropertyStringList"):
                 properties[name] = list(getattr(obj, name))
         objects[obj.Name] = {
@@ -68,7 +68,7 @@ def _target_model_state(document, rebuild, *, include_history=True):
             "expressions": list(getattr(obj, "ExpressionEngine", [])),
         }
         if obj.TypeId == "Sketcher::SketchObject":
-            objects[obj.Name]["sketch_content_digest"] = _stable_digest(
+            objects[obj.Name]["sketch_content_digest"] = stable_digest(
                 sketch_content_state(obj), length=24,
             )
     state = {
@@ -78,32 +78,45 @@ def _target_model_state(document, rebuild, *, include_history=True):
             for obj in document.Objects
         ],
         "objects": objects,
-        "registered_bodies": list(rebuild.REAgentBodyNames),
-        "result": rebuild.Tip.Name if rebuild.Tip else None,
+        "registered_bodies": list(target_body.REAgentBodyNames),
+        "result": target_body.Tip.Name if target_body.Tip else None,
         "tips": {
             obj.Name: obj.Tip.Name if obj.Tip else None
-            for obj in _owned_objects(rebuild)
+            for obj in owned_objects(target_body)
             if obj.TypeId == "PartDesign::Body"
         },
     }
     if include_history:
-        state["history"] = _document_history_state(document)
+        state["history"] = document_history_state(document)
     return state
 
 
-def _target_geometry_state(rebuild):
-    shape = _result_shape(rebuild)
-    return None if shape is None or shape.isNull() else _shape_summary(shape)
+def target_geometry_state(target_body):
+    shape = result_shape(target_body)
+    return None if shape is None or shape.isNull() else summarize_shape(shape)
 
 
-def _target_view_revision(document, rebuild, reconstruction_ir):
+def object_geometry_state(obj):
+    shape = copy_world_shape(obj)
+    return None if shape is None or shape.isNull() else summarize_shape(shape)
+
+
+def owned_geometry_state(target_body):
+    return {obj.Name: object_geometry_state(obj) for obj in owned_objects(target_body)}
+
+
+def geometry_digest(shapes):
+    return stable_digest(shapes, length=24)
+
+
+def target_view_revision(document, target_body, reconstruction_ir):
     # Active observation transactions and derived geometry are recovery
     # evidence, not part of the persistent model revision.
-    state = _target_model_state(document, rebuild, include_history=False)
-    return "observation-" + _stable_digest(state, length=24)
+    state = target_model_state(document, target_body, include_history=False)
+    return "observation-" + stable_digest(state, length=24)
 
 
-def _geometry_differences(expected, actual, tolerance_contract, field="result_geometry"):
+def geometry_differences(expected, actual, tolerance_contract, field="result_geometry"):
     if expected == actual:
         return []
     if expected is None or actual is None:
@@ -145,7 +158,7 @@ def _geometry_differences(expected, actual, tolerance_contract, field="result_ge
     return rows
 
 
-def _presentation_state(document):
+def presentation_state(document):
     return {
         obj.Name: {
             key: getattr(obj.ViewObject, key)

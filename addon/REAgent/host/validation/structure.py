@@ -2,12 +2,12 @@
 
 import math
 
-from REAgent.host.analysis.measurements import _shape_summary
-from REAgent.host.workspace.model import _owned_objects, _session_bodies, _validate_boolean_tools
-from REAgent.host.workspace.state import _target_geometry_state
+from REAgent.host.analysis.measurements import summarize_shape
+from REAgent.host.workspace.model import owned_objects, session_bodies, validate_boolean_tools
+from REAgent.host.workspace.state import target_geometry_state
 
 
-def _check_result(group):
+def check_result(group):
     state = result_state(group)
     if state["state"] != "solid_ready":
         raise ValueError("Result is still in progress")
@@ -17,13 +17,13 @@ def _check_result(group):
 def result_state(group):
     """Native solid readiness does not accept a reconstruction task."""
 
-    audit = _structure_audit(group)
+    audit = structure_audit(group)
     if not audit["passed"]:
         raise ValueError("Native structure check failed: " + repr(audit["failures"]))
-    for obj in _owned_objects(group):
+    for obj in owned_objects(group):
         if any(str(state).lower() in ("invalid", "error", "touched") for state in obj.State):
             raise ValueError("Native object is not ready: " + obj.Name)
-    geometry = _target_geometry_state(group)
+    geometry = target_geometry_state(group)
     in_progress = group.Tip is None or geometry is None or bool(audit["in_progress"])
     if geometry is not None and (not geometry["is_valid"]
                                  or not in_progress and geometry["solid_count"] != 1):
@@ -38,14 +38,14 @@ _REFERENCE_DATUM_TYPES = frozenset((
 ))
 
 
-def _structure_audit(group):
+def structure_audit(group):
     failures = []
     in_progress = []
-    objects = _owned_objects(group)
+    objects = owned_objects(group)
     for obj in group.Document.Objects:
         if obj not in objects:
             failures.append({"object": obj.Name, "reason": "unowned_document_object"})
-    bodies = _session_bodies(group)
+    bodies = session_bodies(group)
     dependencies = {body.Name: [] for body in bodies}
     for body in bodies:
         if "AllowCompound" in body.PropertiesList and bool(body.AllowCompound):
@@ -67,7 +67,7 @@ def _structure_audit(group):
             elif shape is None or shape.isNull():
                 failures.append({"object": body.Name, "reason": "body_without_shape"})
             else:
-                summary = _shape_summary(shape)
+                summary = summarize_shape(shape)
                 if not summary["is_valid"] or summary["solid_count"] != 1:
                     failures.append({"object": body.Name, "reason": "body_not_single_solid",
                                      "is_valid": summary["is_valid"],
@@ -90,7 +90,7 @@ def _structure_audit(group):
         if obj.TypeId == "PartDesign::Boolean":
             try:
                 tools = list(obj.Group)
-                _validate_boolean_tools(group, obj, tools)
+                validate_boolean_tools(group, obj, tools)
                 owner = next(body for body in bodies if obj in body.Group)
                 dependencies[owner.Name].extend(tool.Name for tool in tools)
             except ValueError as exc:
@@ -122,10 +122,10 @@ def _structure_audit(group):
             "parameter_editing_exercised": False}
 
 
-def _single_solid_summary(shape, label):
+def single_solid_summary(shape, label):
     if shape is None or shape.isNull():
         raise ValueError(label + " has no native Shape")
-    summary = _shape_summary(shape)
+    summary = summarize_shape(shape)
     if (not summary["is_valid"] or not summary["is_closed"]
             or summary["solid_count"] != 1
             or not math.isfinite(summary["volume_mm3"])

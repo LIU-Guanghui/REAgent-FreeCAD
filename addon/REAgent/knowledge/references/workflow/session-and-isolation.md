@@ -4,7 +4,7 @@
 
 A session owns two exact Document objects in separate GUI processes; it cannot adopt a same-named replacement. Binding establishes ownership, not a geometry revision.
 
-Keep Source evidence on the session's STEP revision; start a new session when the file changes. Resume needs fresh evidence and does not certify the checkpoint's historical Source version.
+Keep Source evidence tied to the session's STEP revision. If the STEP file changes, the user starts a new task.
 
 Native `agent_undo`/`agent_redo` require a session-owned transaction at the exact stack top. Closing or reopening invalidates that ownership; journal entries cannot restore it. Omission from the bounded evidence list in `agent_get_state` does not expire earlier session evidence.
 
@@ -24,6 +24,6 @@ After continuation is adopted, inspect current Target as needed and briefly expl
 
 Preserve the error and operation identity. Unknown Target writes block mutations; uncertain Source restoration stops modeling. Non-view observations and validation without parameter audit remain readable, but safe reads neither clear uncertainty nor prove rollback. Do not blindly repeat a lost write.
 
-The user can end the task through `agent_close_session` even when modeling is blocked. Ending releases each confirmed original binding and retains open documents, native history and unknown-state facts; it neither saves nor discards geometry. Unreachable roles and incomplete logs remain pending, and another explicit End task can retry original cleanup without resuming modeling. Native window closing belongs to FreeCAD.
+The user can click **End task** even when modeling is blocked. Ending releases original bindings as cleanup is confirmed and preserves open documents, geometry, native history, and records of unknown outcomes. If Target cleanup cannot be confirmed, REAgent drops the local Target binding and records the uncertainty. Clicking **End task** again continues the original cleanup, including pending Source cleanup and journal writes eligible for retry. FreeCAD handles native window closing.
 
 For restoration evidence and native-log limits, see [transactions and errors](../foundations/transactions-errors.md).

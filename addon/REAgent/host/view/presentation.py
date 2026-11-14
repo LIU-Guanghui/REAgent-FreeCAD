@@ -4,7 +4,7 @@ import FreeCAD as App
 import FreeCADGui as Gui
 
 
-def _style_source_document(source):
+def style_source_document(source):
     if not getattr(App, "GuiUp", False):
         return
     try:
@@ -26,7 +26,7 @@ _PRESENTATION_PROPERTIES = (
 )
 
 
-def _presentation_snapshot(owned_objects):
+def presentation_snapshot(owned_objects):
     return {
         obj.Name: {
             key: getattr(obj.ViewObject, key)
@@ -38,7 +38,7 @@ def _presentation_snapshot(owned_objects):
     }
 
 
-def _restore_presentation(owned_objects, snapshot):
+def restore_presentation(owned_objects, snapshot):
     objects = {obj.Name: obj for obj in owned_objects
                if hasattr(obj, "ViewObject")}
     # Container mode first, ordinary style second, visibility parent first last.
@@ -53,7 +53,7 @@ def _restore_presentation(owned_objects, snapshot):
         if obj is not None and "Visibility" in expected:
             if obj.ViewObject.Visibility != expected["Visibility"]:
                 obj.ViewObject.Visibility = expected["Visibility"]
-    actual = _presentation_snapshot(owned_objects)
+    actual = presentation_snapshot(owned_objects)
     if actual != snapshot:
         raise RuntimeError("Native presentation restoration differs from snapshot")
 
@@ -71,7 +71,7 @@ def _set_body_display_mode(view, expected="Through"):
     return actual
 
 
-def _present_result(owned_objects, plan):
+def present_result(owned_objects, plan):
     """Show the native Body-through-Tip chain without moving the camera."""
     _set_body_display_mode(plan["body"], plan["body_display_mode"])
     views = list(plan["render"])
@@ -81,7 +81,7 @@ def _present_result(owned_objects, plan):
             expected = obj.Name in visible
             if bool(obj.ViewObject.Visibility) != expected:
                 obj.ViewObject.Visibility = expected
-    actual = _presentation_snapshot(owned_objects)
+    actual = presentation_snapshot(owned_objects)
     if any(bool(value.get("Visibility")) != (name in visible)
            for name, value in actual.items()):
         raise RuntimeError("Native Result display chain could not be established")
@@ -89,7 +89,7 @@ def _present_result(owned_objects, plan):
         raise RuntimeError("Native Result Body display mode changed unexpectedly")
 
 
-def _main_window_state():
+def main_window_state():
     """Return evidence for the real Qt main window in this FreeCAD process."""
 
     state = {"gui_available": False, "main_window_available": False,

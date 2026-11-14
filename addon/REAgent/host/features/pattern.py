@@ -2,9 +2,9 @@
 
 from functools import partial
 
-from REAgent.host.workspace.properties import _fixed_dressup_false, _metadata, _number_readback, _set_bool, _set_enum, _set_number
-from REAgent.host.features.support.construction import _shape_readback
-from REAgent.host.features.support.transforms import _set_transform_reference, _set_transform_sources, _transform_axis, _transform_context, _transform_reference_readback, _transform_sources_readback
+from REAgent.host.workspace.properties import fixed_dressup_false, metadata, number_readback, set_bool, set_enum, set_number
+from REAgent.host.features.support.construction import shape_readback
+from REAgent.host.features.support.transforms import set_transform_reference, set_transform_sources, transform_axis, transform_context, transform_reference_readback, transform_sources_readback
 
 _PATTERN_TYPES = {
     "PartDesign_LinearPattern": ("PartDesign::LinearPattern", "Direction"),
@@ -13,8 +13,8 @@ _PATTERN_TYPES = {
 _AXIS_PARENT_PROPERTY = "REAgentAxisParent"
 
 
-def _native_extent_mode(feature, public_mode):
-    meta = _metadata(feature, "Mode")
+def native_extent_mode(feature, public_mode):
+    meta = metadata(feature, "Mode")
     if not meta["writable"] or meta["codec"] != "string":
         raise ValueError("Native pattern mode is not a writable enumeration")
     options = meta.get("enum", [])
@@ -29,11 +29,11 @@ def _native_extent_mode(feature, public_mode):
     return matches[0]
 
 
-def _one_direction(feature, *, write=False):
+def one_direction(feature, *, write=False):
     if "Direction2" in feature.PropertiesList and feature.Direction2 is not None:
         raise ValueError("Second native pattern direction is linked")
     if "Occurrences2" in feature.PropertiesList:
-        meta = _metadata(feature, "Occurrences2")
+        meta = metadata(feature, "Occurrences2")
         if write and meta["writable"] and meta["codec"] == "integer":
             feature.Occurrences2 = 1
         if int(feature.Occurrences2) != 1:
@@ -48,6 +48,12 @@ def _one_direction(feature, *, write=False):
 class PatternOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
+
+    def contribute(self):
+        return {
+            'PartDesign_LinearPattern': partial(self._create_pattern, command='PartDesign_LinearPattern'),
+            'PartDesign_PolarPattern': partial(self._create_pattern, command='PartDesign_PolarPattern'),
+        }
 
     def _create_pattern(self, params, *, command):
         if command not in _PATTERN_TYPES:
@@ -66,9 +72,9 @@ class PatternOperations:
         numeric_field = "distance_mm" if command == "PartDesign_LinearPattern" else "angle_deg"
 
         def preflight(document, group, request):
-            prepared[0], sources[0] = _transform_context(document, group, request)
+            prepared[0], sources[0] = transform_context(document, group, request)
             body, _profile, tip = prepared[0]
-            axis[0], axis_parent[0] = _transform_axis(document, body, group, tip, request)
+            axis[0], axis_parent[0] = transform_axis(document, body, group, tip, request)
             if (command == "PartDesign_PolarPattern"
                     and request["extent_mode"] == "offset"
                     and request["angle_deg"] * (request["occurrences"] - 1) >= 360):
@@ -80,9 +86,9 @@ class PatternOperations:
             if feature.Name != name or feature.TypeId != type_id:
                 raise RuntimeError("Native pattern type or identity differs")
             body.addObject(feature)
-            _set_enum(feature, "TransformMode", "Features")
-            _set_transform_sources(feature, sources[0])
-            _set_transform_reference(feature, axis_property, axis[0])
+            set_enum(feature, "TransformMode", "Features")
+            set_transform_sources(feature, sources[0])
+            set_transform_reference(feature, axis_property, axis[0])
             if axis_parent[0] is not None:
                 # The child axis alone does not propagate parent CS motion to Pattern.
                 if _AXIS_PARENT_PROPERTY in feature.PropertiesList:
@@ -90,29 +96,29 @@ class PatternOperations:
                 feature.addProperty(
                     "App::PropertyLink", _AXIS_PARENT_PROPERTY, "REAgent",
                     "Parent Coordinate System dependency")
-                parent_link = _metadata(feature, _AXIS_PARENT_PROPERTY)
+                parent_link = metadata(feature, _AXIS_PARENT_PROPERTY)
                 if not parent_link["writable"] or parent_link["codec"] != "link":
                     raise ValueError("Pattern axis-parent dependency is not a writable Link")
                 setattr(feature, _AXIS_PARENT_PROPERTY, axis_parent[0])
-            native_mode[0] = _native_extent_mode(feature, request["extent_mode"])
-            _set_enum(feature, "Mode", native_mode[0])
-            _set_number(feature, numeric_property, request[numeric_field])
-            _set_bool(feature, "Reversed", request["reversed"])
-            count = _metadata(feature, "Occurrences")
+            native_mode[0] = native_extent_mode(feature, request["extent_mode"])
+            set_enum(feature, "Mode", native_mode[0])
+            set_number(feature, numeric_property, request[numeric_field])
+            set_bool(feature, "Reversed", request["reversed"])
+            count = metadata(feature, "Occurrences")
             if not count["writable"] or count["codec"] != "integer":
                 raise ValueError("Native pattern Occurrences are not writable integers")
             feature.Occurrences = request["occurrences"]
-            _one_direction(feature, write=True)
+            one_direction(feature, write=True)
             if "Refine" in feature.PropertiesList:
-                _fixed_dressup_false(feature, "Refine")
+                fixed_dressup_false(feature, "Refine")
             body.Tip = feature
             return feature
 
         def readback(document, group, feature, _state):
             body, _profile, tip = prepared[0]
-            body_shape = _shape_readback(document, body, feature, name, type_id, tip)
-            _transform_sources_readback(feature, sources[0], tip)
-            _transform_reference_readback(feature, axis_property, axis[0])
+            body_shape = shape_readback(document, body, feature, name, type_id, tip)
+            transform_sources_readback(feature, sources[0], tip)
+            transform_reference_readback(feature, axis_property, axis[0])
             if axis_parent[0] is not None:
                 if (_AXIS_PARENT_PROPERTY not in feature.PropertiesList
                         or feature.getTypeIdOfProperty(_AXIS_PARENT_PROPERTY) != "App::PropertyLink"
@@ -128,8 +134,8 @@ class PatternOperations:
             if (bool(feature.Reversed) != params["reversed"]
                     or int(feature.Occurrences) != params["occurrences"]):
                 raise RuntimeError("Native pattern direction or count did not read back")
-            extent = _number_readback(feature, numeric_property, params[numeric_field])
-            _one_direction(feature)
+            extent = number_readback(feature, numeric_property, params[numeric_field])
+            one_direction(feature)
             if "Refine" in feature.PropertiesList and bool(feature.Refine):
                 raise RuntimeError("Native pattern Refine changed")
             return {
@@ -150,9 +156,3 @@ class PatternOperations:
         return self.execute_native(
             params, command=command, preflight=preflight,
             mutate=mutate, readback=readback)
-
-    def contribute(self):
-        return {
-            'PartDesign_LinearPattern': partial(self._create_pattern, command='PartDesign_LinearPattern'),
-            'PartDesign_PolarPattern': partial(self._create_pattern, command='PartDesign_PolarPattern'),
-        }

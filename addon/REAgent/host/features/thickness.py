@@ -1,8 +1,8 @@
 """Native Skin Thickness with explicit openings, side and corner join."""
 
-from REAgent.host.workspace.properties import _fixed_dressup_false, _number_readback, _set_bool, _set_enum, _set_number
-from REAgent.host.features.support.construction import _history_context, _shape_readback
-from REAgent.host.features.support.references import _current_faces, _link_sub_readback, _set_face_base
+from REAgent.host.workspace.properties import fixed_dressup_false, number_readback, set_bool, set_enum, set_number
+from REAgent.host.features.support.construction import history_context, shape_readback
+from REAgent.host.features.support.references import current_faces, link_sub_readback, set_face_base
 
 _JOIN = {"arc": "Arc", "intersection": "Intersection"}
 
@@ -11,16 +11,21 @@ class ThicknessOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
 
+    def contribute(self):
+        return {
+            'PartDesign_Thickness': self._create_thickness,
+        }
+
     def _create_thickness(self, params):
         name = params["feature_name"]
         context = [None]
         openings = [None]
 
         def preflight(document, group, request):
-            context[0] = _history_context(
+            context[0] = history_context(
                 document, group, request, require_solid=True)
             body, _profile, tip = context[0]
-            openings[0], _evidence = _current_faces(
+            openings[0], _evidence = current_faces(
                 body, group, request, tip, request["face_refs"],
                 "thickness_opening", "face_refs")
 
@@ -30,22 +35,22 @@ class ThicknessOperations:
             if feature.Name != name or feature.TypeId != "PartDesign::Thickness":
                 raise RuntimeError("Native Thickness type or identity differs")
             body.addObject(feature)
-            _set_face_base(feature, tip, openings[0])
-            _set_number(feature, "Value", request["thickness_mm"])
-            _set_enum(feature, "Mode", "Skin")
-            _set_enum(feature, "Join", _JOIN[request["join"]])
-            _set_bool(feature, "Reversed", request["direction"] == "inward")
-            _set_bool(feature, "Intersection", False)
+            set_face_base(feature, tip, openings[0])
+            set_number(feature, "Value", request["thickness_mm"])
+            set_enum(feature, "Mode", "Skin")
+            set_enum(feature, "Join", _JOIN[request["join"]])
+            set_bool(feature, "Reversed", request["direction"] == "inward")
+            set_bool(feature, "Intersection", False)
             for prop in ("Refine", "SupportTransform"):
-                _fixed_dressup_false(feature, prop)
+                fixed_dressup_false(feature, prop)
             return feature
 
         def readback(document, group, feature, _state):
             body, _profile, tip = context[0]
-            body_shape = _shape_readback(
+            body_shape = shape_readback(
                 document, body, feature, name, "PartDesign::Thickness", tip)
-            _link_sub_readback(feature, "Base", tip, openings[0])
-            thickness = _number_readback(
+            link_sub_readback(feature, "Base", tip, openings[0])
+            thickness = number_readback(
                 feature, "Value", params["thickness_mm"])
             if feature.Mode != "Skin" or feature.Join != _JOIN[params["join"]]:
                 raise RuntimeError("Native Thickness mode or join changed")
@@ -65,8 +70,3 @@ class ThicknessOperations:
         return self.execute_native(
             params, command="PartDesign_Thickness", preflight=preflight,
             mutate=mutate, readback=readback)
-
-    def contribute(self):
-        return {
-            'PartDesign_Thickness': self._create_thickness,
-        }

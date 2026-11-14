@@ -1,111 +1,94 @@
 """FreeCAD GUI entry point for the embedded STEP reconstruction agent."""
 
-import os
-import sys
-
-import FreeCAD as App
 import FreeCADGui as Gui
-from PySide import QtCore, QtGui
-
-try:
-    from PySide import QtWidgets
-except ImportError:
-    QtWidgets = QtGui
-
-try:
-    ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    # FreeCAD executes InitGui.py and does not always define __file__.
-    import inspect
-
-    ADDON_DIR = os.path.dirname(
-        os.path.abspath(inspect.getfile(inspect.currentframe()))
-    )
-ADDON_PARENT = os.path.dirname(ADDON_DIR)
-if ADDON_PARENT not in sys.path:
-    sys.path.insert(0, ADDON_PARENT)
+from PySide import QtWidgets
 
 
 class _RoleController:
-    """Own callback dependencies that FreeCAD must retain after loading InitGui.py."""
+    """Hold the shared role state and GUI dependencies for FreeCAD callbacks."""
 
-    def __init__(self, app, gui, qt_core, qt_widgets):
-        self._app = app
+    def __init__(self, gui, qt_widgets):
         self._gui = gui
-        self._qt_core = qt_core
         self._qt_widgets = qt_widgets
+        self._bridge = None
         self._role_label = None
 
-    def _set_role_label(self, role=None):
-        window = self._gui.getMainWindow()
-        if self._role_label is None:
-            self._role_label = self._qt_widgets.QLabel(window)
-            self._role_label.setMinimumWidth(230)
-            self._role_label.setAlignment(self._qt_core.Qt.AlignCenter)
-            window.statusBar().addPermanentWidget(self._role_label)
-        if role == "source":
-            self._role_label.setText("REAgent: SOURCE · 127.0.0.1:9876")
-            self._role_label.setStyleSheet("font-weight: bold; color: #2563eb;")
-            self._role_label.show()
-        elif role == "rebuild":
-            self._role_label.setText("REAgent: TARGET · 127.0.0.1:9877")
-            self._role_label.setStyleSheet("font-weight: bold; color: #059669;")
-            self._role_label.show()
-        else:
-            self._role_label.hide()
+    def selected_role(self):
+        return self._bridge.role if self._bridge is not None and self._bridge.running else None
 
     def select_role(self, role):
-        from REAgent.bootstrap import bridge
+        bridge = self._bridge
+        if self.selected_role() != role:
+            from REAgent.host.process_state import assert_role_release
+            from REAgent.host.server import BridgeServer
 
-        try:
-            message = bridge.select_role(role)
-        except Exception as exc:
-            self._app.Console.PrintError(
-                "[REAgent] role selection failed: %s\n" % exc
-            )
-            self._qt_widgets.QMessageBox.critical(
-                self._gui.getMainWindow(),
-                "REAgent",
-                "Cannot select this window as %s:\n%s"
-                % ("Source" if role == "source" else "Target", exc),
-            )
-            return
-        self._set_role_label(role)
-        self._app.Console.PrintMessage("[REAgent] %s\n" % message)
-        if role == "source":
-            self.open_panel()
+            try:
+                assert_role_release()
+                bridge = BridgeServer(role, assert_release=self._assert_release)
+                bridge.start()
+            except (OSError, RuntimeError) as exc:
+                self._qt_widgets.QMessageBox.critical(
+                    self._gui.getMainWindow(), "REAgent",
+                    f"Cannot select this window as {role.title()}:\n{exc}",
+                )
+                return False
+            self._bridge = bridge
+
+        if self._role_label is None:
+            window = self._gui.getMainWindow()
+            self._role_label = self._qt_widgets.QLabel(window)
+            window.statusBar().addPermanentWidget(self._role_label)
+            
+        color = "#2563eb" if bridge.role == "source" else "#059669"
+        self._role_label.setText(f"REAgent: {bridge.role.upper()} · {bridge.host}:{bridge.port}")
+        self._role_label.setStyleSheet(f"font-weight: bold; color: {color};")
+        self._role_label.show()
+        return True
 
     def open_panel(self):
-        try:
-            from REAgent.bootstrap import source_window_controller
+        window = self._gui.getMainWindow()
+        manager = self._source_controller(window)
+        if manager is None:
+            from REAgent.host.settings import read_profiles, save_profiles
+            from REAgent.ui.source_window import SourceWindowController
 
-            source_window_controller(self._gui.getMainWindow(), self._stop_now).show()
-        except Exception as exc:
-            self._app.Console.PrintError("[REAgent] Agent panel unavailable: %s\n" % exc)
-            self._qt_widgets.QMessageBox.warning(
-                self._gui.getMainWindow(), "REAgent", "Agent panel unavailable; check the complete Addon installation.\n%s" % exc)
+            manager = SourceWindowController(
+                window, self._stop_now, read_settings=read_profiles, save_settings=save_profiles
+            )
+            window._reagent_source_controller = manager
+        manager.show()
 
     def stop(self):
-        from REAgent.bootstrap import current_source_window_controller
-
-        manager = current_source_window_controller()
+        window = self._gui.getMainWindow()
+        manager = self._source_controller(window)
         if manager is not None:
             manager.request_close("release")
             return
-        self._stop_now()
+        try:
+            self._stop_now()
+        except RuntimeError as exc:
+            self._qt_widgets.QMessageBox.warning(window, "REAgent", str(exc))
 
     def _stop_now(self):
-        from REAgent.bootstrap import bridge
+        if self._bridge is not None:
+            self._bridge.stop()
+            self._bridge = None
+        if self._role_label is not None:
+            self._role_label.hide()
 
-        try:
-            message = bridge.stop_bridge()
-        except Exception as exc:
-            self._app.Console.PrintError("[REAgent] role release refused: %s\n" % exc)
-            self._qt_widgets.QMessageBox.warning(self._gui.getMainWindow(), "REAgent", str(exc))
-            return False
-        self._set_role_label(None)
-        self._app.Console.PrintMessage("[REAgent] %s\n" % message)
-        return True
+    @staticmethod
+    def _source_controller(window):
+        return getattr(window, "_reagent_source_controller", None)
+
+    def _assert_release(self):
+        from REAgent.host.process_state import assert_role_release
+
+        assert_role_release()
+        if self.selected_role() != "source":
+            return
+        manager = self._source_controller(self._gui.getMainWindow())
+        if manager is not None:
+            manager.assert_release()
 
 
 class SourceBridgeCommand:
@@ -119,17 +102,11 @@ class SourceBridgeCommand:
         }
 
     def IsActive(self):
-        from REAgent.bootstrap import bridge
-
-        return not bridge.bridge_is_running() or bridge.selected_role() == "source"
+        return self._controller.selected_role() in (None, "source")
 
     def Activated(self):
-        from REAgent.bootstrap import bridge
-
-        if bridge.selected_role() == "source":
+        if self._controller.selected_role() == "source" or self._controller.select_role("source"):
             self._controller.open_panel()
-        else:
-            self._controller.select_role("source")
 
 
 class TargetBridgeCommand:
@@ -143,12 +120,10 @@ class TargetBridgeCommand:
         }
 
     def IsActive(self):
-        from REAgent.bootstrap import bridge
-
-        return not bridge.bridge_is_running()
+        return self._controller.selected_role() is None
 
     def Activated(self):
-        self._controller.select_role("rebuild")
+        self._controller.select_role("target")
 
 
 class StopBridgeCommand:
@@ -162,18 +137,10 @@ class StopBridgeCommand:
         }
 
     def IsActive(self):
-        from REAgent.bootstrap import bridge
-
-        return bridge.bridge_is_running()
+        return self._controller.selected_role() is not None
 
     def Activated(self):
         self._controller.stop()
-
-
-_controller = _RoleController(App, Gui, QtCore, QtWidgets)
-Gui.addCommand("REAgentSource", SourceBridgeCommand(_controller))
-Gui.addCommand("REAgentTarget", TargetBridgeCommand(_controller))
-Gui.addCommand("REAgentStop", StopBridgeCommand(_controller))
 
 
 class REAgentWorkbench(Gui.Workbench):
@@ -193,4 +160,8 @@ class REAgentWorkbench(Gui.Workbench):
         return "Gui::PythonWorkbench"
 
 
+_controller = _RoleController(Gui, QtWidgets)
+Gui.addCommand("REAgentSource", SourceBridgeCommand(_controller))
+Gui.addCommand("REAgentTarget", TargetBridgeCommand(_controller))
+Gui.addCommand("REAgentStop", StopBridgeCommand(_controller))
 Gui.addWorkbench(REAgentWorkbench())

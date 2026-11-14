@@ -4,11 +4,11 @@ import math
 
 import FreeCAD as App
 
-from REAgent.host.analysis.measurements import _shape_summary
+from REAgent.host.analysis.measurements import summarize_shape
 from REAgent.protocol.features import DATUM_TYPES
-from REAgent.host.workspace.model import _placement_summary, _result_shape, _session_bodies
-from REAgent.host.workspace.properties import _encode, _metadata, _same_placement
-from REAgent.host.features.support.references import _role_object
+from REAgent.host.workspace.model import placement_summary, result_shape, session_bodies
+from REAgent.host.workspace.properties import encode, metadata, same_placement
+from REAgent.host.features.support.references import role_object
 
 _CS_ROLES = {
     "origin": ("Origin", "App::Point"),
@@ -21,7 +21,7 @@ _CS_ROLES = {
 }
 
 
-def _resolve_reference(document, body, reference, command):
+def resolve_reference(document, body, reference, command):
     kind = reference["kind"]
     if kind.startswith("origin_"):
         origin = body.Origin
@@ -32,7 +32,7 @@ def _resolve_reference(document, body, reference, command):
             "origin_axis": (reference.get("role"), "App::Line"),
             "origin_point": ("Origin", "App::Point"),
         }[kind]
-        obj = _role_object(origin, role, type_id, document)
+        obj = role_object(origin, role, type_id, document)
     elif kind.startswith("datum_"):
         obj = document.getObject(reference["datum_name"])
         expected = {"datum_plane": "Part::DatumPlane",
@@ -76,7 +76,7 @@ def _semantic_references(datum, document):
         raise RuntimeError("Coordinate System does not expose seven native role children")
     result = {}
     for semantic, (role, type_id) in _CS_ROLES.items():
-        _role_object(datum, role, type_id, document)
+        role_object(datum, role, type_id, document)
         result[semantic] = {"coordinate_system": datum.Name, "role": role}
     if len({child.Name for child in children}) != len(children):
         raise RuntimeError("Coordinate System native children are not distinct")
@@ -86,6 +86,14 @@ def _semantic_references(datum, document):
 class DatumOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
+
+    def contribute(self):
+        return {
+            'Part_DatumPlane': self._datum_plane,
+            'Part_DatumLine': self._datum_line,
+            'Part_DatumPoint': self._datum_point,
+            'Part_CoordinateSystem': self._coordinate_system,
+        }
 
     def _datum_plane(self, params):
         return self._create_datum(params, "Part_DatumPlane")
@@ -112,12 +120,12 @@ class DatumOperations:
 
         def preflight(document, group, request):
             body = document.getObject(body_name)
-            if body not in _session_bodies(group):
+            if body not in session_bodies(group):
                 raise ValueError("Datum Body is not owned by this session")
             if document.getObject(name) is not None:
                 raise ValueError("Datum name already exists: " + name)
             if request["mode"] == "attached":
-                support_object[0], support_subelements[0], map_mode[0] = _resolve_reference(
+                support_object[0], support_subelements[0], map_mode[0] = resolve_reference(
                     document, body, request["reference"], command)
             if command != "Part_DatumPoint":
                 axis = request["axis"]
@@ -128,8 +136,8 @@ class DatumOperations:
                 rotation = App.Rotation()
             expected_offset[0] = App.Placement(App.Vector(*request["position_mm"]), rotation)
             prior_tip[0] = body.Tip
-            shape = _result_shape(group)
-            prior_shape[0] = _shape_summary(shape) if shape is not None and not shape.isNull() else None
+            shape = result_shape(group)
+            prior_shape[0] = summarize_shape(shape) if shape is not None and not shape.isNull() else None
 
         def mutate(document, group, request, changes):
             body = document.getObject(body_name)
@@ -138,14 +146,14 @@ class DatumOperations:
                 raise RuntimeError("Native Datum type or identity differs from the contract")
             body.addObject(datum)
             if request["mode"] == "free":
-                placement = _metadata(datum, "Placement")
+                placement = metadata(datum, "Placement")
                 if not placement["writable"] or placement["codec"] != "placement":
                     raise ValueError("Native Datum Placement is not writable")
                 datum.Placement = expected_offset[0]
             else:
-                support = _metadata(datum, "AttachmentSupport")
-                mode = _metadata(datum, "MapMode")
-                offset = _metadata(datum, "AttachmentOffset")
+                support = metadata(datum, "AttachmentSupport")
+                mode = metadata(datum, "MapMode")
+                offset = metadata(datum, "AttachmentOffset")
                 if (not support["writable"] or support["codec"] != "link_sub_list"
                         or not mode["writable"] or mode["codec"] != "string"
                         or map_mode[0] not in mode.get("enum", [])
@@ -157,8 +165,8 @@ class DatumOperations:
             return datum
 
         def readback(document, group, datum, _state):
-            shape = _result_shape(group)
-            current = _shape_summary(shape) if shape is not None and not shape.isNull() else None
+            shape = result_shape(group)
+            current = summarize_shape(shape) if shape is not None and not shape.isNull() else None
             if current != prior_shape[0]:
                 raise RuntimeError("Datum creation changed the main Body result Shape")
             body = document.getObject(body_name)
@@ -166,25 +174,25 @@ class DatumOperations:
                     or datum not in body.Group or body.Tip is not prior_tip[0]):
                 raise RuntimeError("Native Datum identity, ownership or Tip did not read back")
             if params["mode"] == "free":
-                if not _same_placement(datum.Placement, expected_offset[0]):
+                if not same_placement(datum.Placement, expected_offset[0]):
                     raise RuntimeError("Native Datum free placement did not read back")
             else:
-                support = _metadata(datum, "AttachmentSupport")["value"]
-                mode = _metadata(datum, "MapMode")["value"]
+                support = metadata(datum, "AttachmentSupport")["value"]
+                mode = metadata(datum, "MapMode")["value"]
                 if (support != [{"object": {"object": support_object[0].Name},
                                  "subelements": support_subelements[0]}]
                         or mode != map_mode[0]
-                        or not _same_placement(datum.AttachmentOffset, expected_offset[0])):
+                        or not same_placement(datum.AttachmentOffset, expected_offset[0])):
                     raise RuntimeError("Native Datum attachment did not read back exactly")
             result = {"datum": datum.Name, "body": body.Name,
                       "type_id": datum.TypeId, "mode": params["mode"],
-                      "placement": _placement_summary(datum)}
+                      "placement": placement_summary(datum)}
             if params["mode"] == "attached":
                 result["reference"] = {"kind": params["reference"]["kind"],
                                        "object": support_object[0].Name,
                                        "subelements": support_subelements[0]}
                 result["map_mode"] = map_mode[0]
-                result["attachment_offset"] = _encode(datum.AttachmentOffset, "placement")
+                result["attachment_offset"] = encode(datum.AttachmentOffset, "placement")
             if command == "Part_CoordinateSystem":
                 result["semantic_references"] = _semantic_references(datum, document)
                 result["semantic_references_status"] = "native_role_readback"
@@ -194,11 +202,3 @@ class DatumOperations:
             params, command=command, preflight=preflight,
             mutate=mutate, readback=readback,
         )
-
-    def contribute(self):
-        return {
-            'Part_DatumPlane': self._datum_plane,
-            'Part_DatumLine': self._datum_line,
-            'Part_DatumPoint': self._datum_point,
-            'Part_CoordinateSystem': self._coordinate_system,
-        }

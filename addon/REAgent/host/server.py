@@ -8,21 +8,25 @@ import socket
 import FreeCAD as App
 from PySide import QtCore
 
-from REAgent.host.process_state import HOST, MAX_REQUEST_BYTES, POLL_INTERVAL_MS, _stamp_failure, PROCESS
-from REAgent.host.view.presentation import _main_window_state
-from REAgent.host.workspace.sessions import _ended_receipt
+from REAgent.host.process_state import HOST, MAX_REQUEST_BYTES, POLL_INTERVAL_MS, stamp_failure, PROCESS
+from REAgent.host.view.presentation import main_window_state
+from REAgent.host.workspace.sessions import ended_receipt
 from REAgent.protocol.operations import OPERATION_SPECS, request_side_effect
 from REAgent.protocol.definitions import ROLE_PORTS
 from REAgent.protocol.observations import validate_observation_role
-from REAgent.schema import validate_input_schema
-from REAgent.host.responses import _operation_failure, _operation_success
+from REAgent.json_schema import validate_input_schema
+from REAgent.host.responses import operation_failure, operation_success
 
 class BridgeServer:
     """Non-blocking local server polled by Qt on FreeCAD's main thread."""
 
+    @property
+    def running(self):
+        return self._listener is not None
+
     def __init__(self, role, *, assert_release):
         if role not in ROLE_PORTS:
-            raise ValueError("Bridge role must be source or rebuild")
+            raise ValueError("Bridge role must be source or target")
         self.assert_release = assert_release
         self.role = role
         self.host = HOST
@@ -32,10 +36,6 @@ class BridgeServer:
         self._clients = {}
         self.operations = assemble_operations(role, self.port)
 
-    @property
-    def running(self):
-        return self._listener is not None
-
     def start(self):
         if self.running:
             return "Bridge is already running at %s:%d." % (self.host, self.port)
@@ -44,7 +44,7 @@ class BridgeServer:
             raise RuntimeError("This FreeCAD window is already bound to another role")
         previous_role = PROCESS.INSTANCE_ROLE
         PROCESS.INSTANCE_ROLE = self.role
-        window = _main_window_state()
+        window = main_window_state()
         if not window["gui_available"] or not window["main_window_available"]:
             PROCESS.INSTANCE_ROLE = previous_role
             raise RuntimeError(
@@ -164,7 +164,7 @@ class BridgeServer:
                     "id": request_id,
                     "ok": True,
                     "result": result,
-                    "operation": _operation_success(method, result, params),
+                    "operation": operation_success(method, result, params),
                 },
             )
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -203,7 +203,7 @@ class BridgeServer:
             raise ValueError("An operation is still executing; retry after its response")
         task = PROCESS.ACTIVE_TASK
         if (method != "agent_start_session" and "session_id" in params
-                and not (method == "agent_close_session" and _ended_receipt(params) is not None)):
+                and not (method == "agent_close_session" and ended_receipt(params) is not None)):
             if (task is None or task["session_id"] != params["session_id"]
                     or task["role"] != PROCESS.INSTANCE_ROLE or task["instance_id"] != PROCESS.INSTANCE_ID):
                 raise ValueError("Native request does not match this GUI's retained task")
@@ -235,11 +235,11 @@ class BridgeServer:
         }
         try:
             value = handler(params)
-            if self.role == "rebuild" and effect == "none" and method == "agent_observe":
+            if self.role == "target" and effect == "none" and method == "agent_observe":
                 value["document_state"] = self.operations.diagnostic_state(params["document"])
             return value
         except Exception as exc:
-            _stamp_failure(exc)
+            stamp_failure(exc)
             raise
         finally:
             PROCESS.ACTIVE_OPERATION = None
@@ -250,7 +250,7 @@ class BridgeServer:
     ):
         if exception is None:
             exception = RuntimeError(message)
-        operation = _operation_failure(method, exception, code)
+        operation = operation_failure(method, exception, code)
         self._send(
             client,
             {

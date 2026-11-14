@@ -13,7 +13,7 @@ The images below show the source model, the reconstructed feature tree and compa
 </p>
 
 <p align="center">
-  <a href="docs/result.png"><img src="docs/result.png" alt="The reconstructed part and its native feature tree, including Sketch and Pad operations, in the Target window" width="1024"></a><br>
+  <a href="docs/result.png"><img src="docs/result.png" alt="The reconstructed part and its native feature tree, including Boolean fusion and fillets, in the Target window" width="1024"></a><br>
 </p>
 
 <p align="center">
@@ -37,49 +37,42 @@ After installation, `<FreeCAD installation directory>/Mod/REAgent/InitGui.py` sh
 ## Quick start
 
 1. **Bind the windows:** Start two separate, visible FreeCAD processes and switch both to the REAgent workbench. Click **Source** in one and **Target** in the other. Source opens the assistant panel and inspects the source model; Target reconstructs the model.
-2. **Configure the model:** Open **Settings** in the Source panel, choose **Anthropic**, **OpenAI** or **DeepSeek**, enter the **Model** and **API key**, then save. Set reasoning effort, context capacity and output budget according to the model's actual capabilities. The service used for reconstruction must support streaming responses, tool calls and image input through the corresponding protocol.
-3. **Start reconstruction:** Click **New task**, enter **/rebuild**, select a single-solid STEP/STP file and an output folder, then click **Start**. You can describe your requirements in ordinary messages first; ordinary messages do not create CAD models or call CAD tools by themselves.
-4. **Observe and adjust:** Follow progress in the conversation, browse observation images through **Image** and view the operation log through **Journal**.
-5. **Save the result:** Inspect the feature tree and check parameter editability in the Target process, then click **End task** to end the assistant task when finished.
-
-Enter **/** in the conversation input to view commands. **/status** shows task and context status; **/compact** compacts the conversation context.
+2. **Configure the model:** In the Source panel, open **Settings** and choose a provider such as **Anthropic**, **OpenAI**, or **DeepSeek**. Fill in **Model** and **API key**, then save. Set reasoning effort, context capacity, and output budget to match the model's capabilities. For reconstruction, the service must support streaming responses, tool calls, and image input through the corresponding protocol.
+3. **Start reconstruction:** In the Source panel, click **New task**, enter `/stp2cad`, and click **Send**. Choose a single-solid STEP/STP file and an output folder in the dialog, then click **Start**.
+4. **Observe and adjust:** Follow progress in the conversation. Open **Image** to browse the captured views and **Journal** to review the operation log. Use regular chat messages to request changes to the model.
+5. **Save the result:** In the Target window, inspect the feature tree and check that feature parameters are editable. In the Source panel, click **Save**. Confirm that the save succeeded, then click **End task**.
 
 ## System architecture
 
-The entire product is located in `addon/REAgent/`. `bootstrap.py` is the composition root: Source assembles the task panel, background worker and application session; Target assembles the host Bridge and native CAD operation entry points.
+The complete Addon lives in `addon/REAgent/`. `InitGui.py` registers the workbench and binds each FreeCAD process as Source or Target. Both roles run a local Bridge on the GUI thread.
 
 ```text
-Source window / GUI main thread
-  ui/: panel, settings, user actions and status display
-   |
-   v
-Source background worker (single)
-  session/ --> agent/ <--> model/ <--> Model service
-                 |
-                 | Tool calls / execution results
-                 v
-              rebuild/
-                 |
-                 +-- Local Bridge --> Source host/: read-only observation
-                 |                    Runs on the Source GUI main thread
-                 |
-                 +-- Local Bridge --> Target host/: native modeling and readback
-                                      Runs on the Target GUI main thread
-                                        |
-                                        +--> FCStd (explicit Save)
+Source panel (GUI thread)
+    |
+    v
+Source worker: application/ -> agent/ <-> model/ <-> Model service
+                               |
+                               v
+                               stp2cad/
+                               |
+                               +-- Local Bridge --> Source host/ (GUI thread)
+                               |                    Read-only observation
+                               |
+                               +-- Local Bridge --> Target host/ (GUI thread)
+                                                    Native modeling and explicit saving to FCStd
 ```
 
 | Module | Responsibility |
 | --- | --- |
-| `ui/` | The panel, model settings, image and log windows. `SourceWindowController` coordinates user actions, window closing and the worker lifecycle. |
-| `session/` | Uses `Session` to coordinate switching between ordinary chat and reconstruction, user actions and application state snapshots. |
-| `agent/` | Uses `Run` to own the active conversation context and organize the model/tool loop, pausing and compaction. `ModelRequests` manages how request results are recorded and incorporated. |
-| `model/` | Adapts Anthropic, OpenAI and DeepSeek, handling model configuration, streaming transport, message encoding and capacity estimation. |
-| `rebuild/` | `RebuildTools` provides reconstruction tools and modeling knowledge. `Controller` coordinates command discovery, evidence registration, revision guards, calls to both roles and the Journal. |
-| `host/` | Handles observation, native features, transactions, recomputation, result readback, recovery and saving within FreeCAD. `ProcessState` maintains each process's native task state. |
-| `protocol/` | Defines the shared contracts for operations, parameters, roles, geometry references, observations and artifacts used by both reconstruction control and host execution. |
+| `ui/` | Task panel, settings, image and log viewers, and the Source worker lifecycle. |
+| `application/` | Coordinates chat, reconstruction and user actions through `Session`. |
+| `agent/` | Manages conversation context, model requests, tool execution, pausing and context compaction. |
+| `model/` | Handles streaming requests and responses through the Messages, Responses and Chat Completions protocols. |
+| `stp2cad/` | Provides reconstruction tools and coordinates both hosts, evidence and the task journal. |
+| `host/` | Executes FreeCAD observation, native modeling transactions, recovery and saving on the GUI thread. |
+| `protocol/` | Defines the operation and data contracts shared by the reconstruction controller and hosts. |
 
-`values.py` and `schema.py` provide basic JSON handling and validation; `knowledge/` ships modeling rules and knowledge cards with the Addon.
+`json_values.py` and `json_schema.py` handle JSON values and validation. `knowledge/` contains the reconstruction guidance shipped with the Addon.
 
 ## License
 

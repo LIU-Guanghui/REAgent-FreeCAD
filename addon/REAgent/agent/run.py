@@ -2,41 +2,34 @@
 
 from threading import Lock
 from dataclasses import replace
+from contextlib import contextmanager
 
+from REAgent.model.client import ModelClient
+from REAgent.model.config import ModelConfig, input_limit_tokens
 from REAgent.model.errors import CapacityError, ModelError
-from REAgent.values import to_json_value, decode_json
+from REAgent.json_values import to_json_value, decode_json
 from .batch_slots import BatchSlots
 from .actions import Action, ReportState
 from .context import ActiveContext
 from .control import Control
+from .errors import AgentError
 from .loop import run
 from .projection import ContextModel
 from .model_requests import ModelRequests
-from .tools import EmptyTools, check_tools
+from .settings import config_fields, context_budget
+from .tools import EmptyTools, check_tools, project_calls
+
+
+@contextmanager
+def action_errors():
+    """Translate only model failures that reach the session boundary."""
+    try:
+        yield
+    except ModelError as exc:
+        raise AgentError(**exc.detail()) from None
 
 
 class Run:
-    def __init__(self, model, *, journal, on_state, on_event=None):
-        self.lock = Lock()
-        self.control = Control()
-        self.active = None
-        self.tools = EmptyTools()
-        self.model = model
-        self.context_model = ContextModel(model)
-        self.batches = BatchSlots()
-        self.requests = ModelRequests(self, model, journal)
-        self.call_ids = set()
-        self.on_state, self.on_event = on_state, on_event
-        self.status = "idle"
-        self.stream_chat = False
-        self.request_identity = {}
-        self.requirement_receipts = {}
-        self.last_adoption = None
-        self.report = None
-        self.used_handoffs = {}
-        self.cached_snapshot = {"status": "idle", "mode": None, "model_configured": True}
-        self.callback_error = self.estimate = self.context_info = self.proxy = self.last_compaction = None
-
     @property
     def conversation(self):
         return self.active.conversation if self.active is not None else None
@@ -53,6 +46,28 @@ class Run:
     def purpose(self):
         return "report" if self.report_only else "action"
 
+    def __init__(self, config, *, api_key, journal, on_state, on_event=None):
+        model = ModelClient(ModelConfig(**config), api_key=api_key)
+        self.lock = Lock()
+        self.control = Control()
+        self.active = None
+        self.tools = EmptyTools()
+        self._model = model
+        self.context_model = ContextModel(model)
+        self.batches = BatchSlots()
+        self.requests = ModelRequests(self, model, journal)
+        self.call_ids = set()
+        self.on_state, self.on_event = on_state, on_event
+        self.status = "idle"
+        self.stream_chat = False
+        self.request_identity = {}
+        self.requirement_receipts = {}
+        self.last_adoption = None
+        self.report = None
+        self.used_handoffs = {}
+        self.cached_snapshot = {"status": "idle", "mode": None, "model_configured": True}
+        self.callback_error = self.estimate = self.context_info = self.proxy = self.last_compaction = None
+
     def directory(self):
         if self.report_only:
             return {}
@@ -67,6 +82,19 @@ class Run:
     def enter(self):
         if not self.lock.acquire(blocking=False):
             raise RuntimeError("The original worker is still active; do not start another action")
+
+    def reset_task(self):
+        """Clear task bookkeeping while the caller holds the run lock."""
+        if self.batches.pending is not None or self.batches.human is not None:
+            raise AgentError("pending_results", "Record the original results or explicitly end the task before starting another")
+        self.requests.reset()
+        self.call_ids = set()
+        self.batches.clear()
+        self.estimate = self.context_info = self.last_compaction = None
+        self.callback_error = None
+        self.requirement_receipts.clear()
+        self.used_handoffs.clear()
+        self.last_adoption = self.report = None
 
     def activate(self, conversation, policy, binding, tools, *, action=None):
         check_tools(tools)
@@ -83,7 +111,7 @@ class Run:
             raise ModelError("missing_user_message", "The original user message is not retained")
         action = Action.create(scope, generation, text)
         self.replay_report()
-        self.requests._local_log("run.action_started", {
+        self.requests.local_log("run.action_started", {
             "run_id": action.id, "scope": scope, "source_generation": generation}, function="Run.begin_action")
         with self.control.lock:
             active = self.active
@@ -146,7 +174,7 @@ class Run:
             summary = dict(self.last_adoption)
             if rejection:
                 summary["batch_rejection"] = rejection
-            self.requests._local_log("model.request_adopted", summary,
+            self.requests.local_log("model.request_adopted", summary,
                                      function="Run.begin_batch", adopted=True)
 
     def record_result(self, index, result):
@@ -195,34 +223,35 @@ class Run:
         notifications = ()
         next_action = active.action
         if pending is not None:
+            calls = project_calls(pending.reply.calls)
             rows = list(pending.rows)
             if retention is not None:
                 adopted = retention["generation"] == generation and not paused
-                rows, notifications, adopted = self.tools.stage_retention(pending.reply, rows, retention, adopted)
+                rows, notifications, adopted = self.tools.stage_retention(calls, rows, retention, adopted)
                 if adopted:
                     candidate.retain(retention["group"], retention["policy"])
-                self.requests._local_log("context.retention_prepared", {
+                self.requests.local_log("context.retention_prepared", {
                     **retention["details"], "generation": retention["generation"],
                     "adoption": "ready" if adopted else "rejected", "checkpoint": candidate.checkpoint},
                     function="Run.prepare_retention")
             if handoff is not None:
                 ready = (not recover and handoff["generation"] == generation and not paused
                          and active.action.id == handoff["source_action"])
-                rows, notifications, adopted = self.tools.stage_handoff(pending.reply, rows, handoff, ready)
+                rows, notifications, adopted = self.tools.stage_handoff(calls, rows, handoff, ready)
                 if adopted:
                     next_action = handoff["action"]
-                self.requests._local_log("run.handoff_prepared", {
+                self.requests.local_log("run.handoff_prepared", {
                     "source_run_id": handoff["source_action"], "run_id": handoff["action"].id,
                     "user_generation": handoff["key"][1], "adoption": "ready" if adopted else "rejected"},
                     function="Run.prepare_handoff")
-            materials, observations = self.tools.reply_materials(pending.reply, rows)
+            materials, observations = self.tools.reply_materials(calls, rows)
             candidate.record_reply(pending.reply, materials, observations=observations)
         if human is not None:
             result, project = human
             candidate.record_human(project(result))
         for number, text in supplements:
             candidate.add_requirement(number, text)
-        policy = self.tools.prepare_context(active.policy, candidate)
+        policy = self.tools.prepare_context(active.policy, candidate.retained_tool_results())
         replacement = ActiveContext(candidate, policy, active.binding, next_action)
         last = tuple(row[1] for row in rows) if pending is not None and rows else self.batches.latest_results
         # All domain work, logging and callbacks precede this short compare/exchange.
@@ -243,7 +272,7 @@ class Run:
         if next_action is not active.action:
             self.tools.action_started(next_action, active.binding)
         if handoff is not None:
-            self.requests._local_log("run.handoff_committed", {
+            self.requests.local_log("run.handoff_committed", {
                 "source_run_id": handoff["source_action"], "run_id": handoff["action"].id,
                 "user_generation": handoff["key"][1],
                 "adoption": "adopted" if next_action is not active.action else "not_adopted"},
@@ -261,26 +290,7 @@ class Run:
                 "request_summary": lambda prepared, validate: self.requests.request(
                     "summary", prepared, generation, validate_reply=validate),
                 "commit": lambda candidate, source: self._adopt_context(candidate, source, generation),
-                "attempt_key": (generation, self.model.identity, self.model.config)}
-
-    def _adopt_context(self, candidate, source, generation):
-        active = self.active
-        revision = source.revision
-        if (self.batches.pending is not None or self.batches.human is not None or self.requests.model_result_pending
-                or self.requests.context_log_pending):
-            raise ModelError("pending_results", "Original results must be resolved before context adoption")
-        changed = candidate.last_compaction is not source.last_compaction
-        policy = self.tools.prepare_context(active.policy, candidate)
-        replacement = ActiveContext(candidate, policy, active.binding, active.action)
-        if changed:
-            self.requests._local_log("context.replacement_prepared", candidate.last_compaction, function="Run._adopt_context")
-        with self.control.lock:
-            if (self.control.paused or self.control.generation != generation or self.active is not active
-                    or active.conversation is not source or source.revision != revision):
-                raise ModelError("request_cancelled", "Context replacement cancelled; original history retained")
-            self.active = replacement
-            if changed:
-                self.last_compaction = candidate.last_compaction
+                "attempt_key": (generation, self._model.identity, self._model.config)}
 
     def record_human(self, result, project, *, function):
         if self.batches.human is not None:
@@ -309,7 +319,7 @@ class Run:
                 self.report = replace(self.report, requested=True)
         record = self.requests.capture(prepared, generation, published)
         self.estimate = dict(prepared.estimate)
-        self.proxy = self.model.proxy_status()
+        self.refresh_proxy_status()
         self.state("requesting_model")
         return record, published
 
@@ -328,7 +338,7 @@ class Run:
             self.estimate = dict(prepared.estimate)
             reply = self.requests.request("model", prepared, generation, record=record)
         self._adopt_receipt(record)
-        self.model.observe_usage(record.prepared.request, reply)
+        self._model.observe_usage(record.prepared.request, reply)
         self.call_ids.update(call.id for call in reply.calls)
         return reply
 
@@ -337,6 +347,94 @@ class Run:
             self.publish("model_reply", {**self.request_identity, "run_id": self.action.id if self.action else None,
                          "response_id": reply.id,
                          "text": reply.content or "", "progress": progress, "adopted": True})
+
+    def advance(self, *, resume):
+        return run(self, self.tools, resume=resume)
+
+    def compact(self):
+        self.enter()
+        with self.control.lock:
+            was_paused = self.control.paused
+        previous_status = self.status
+        try:
+            with action_errors():
+                if self.conversation is None:
+                    raise AgentError("nothing_to_compact", "Start a conversation before compacting context")
+                self.callback_error = None
+                generation, _paused = self.control.capture(resume=True)
+                self.requests.recover_model_outcome()
+                self.commit_batch(recover=True)
+                active = self.active
+                self.check(binding_only=True)
+                self.state("compacting_context")
+                active.conversation.compact(self.context_model, self.directory(), self.facts(),
+                                            **self.context_callbacks(generation))
+                cancelled = self.cancelled(generation)
+                return self.state("paused" if cancelled or was_paused else previous_status, "context_compacted")
+        except AgentError as exc:
+            state = self.state("paused", exc.code)
+            if exc.code == "request_cancelled":
+                return state
+            raise
+        except BaseException:
+            self.state("paused", "compaction_interrupted")
+            raise
+        finally:
+            with self.control.lock:
+                self.control.paused = self.control.paused or was_paused
+            self.lock.release()
+
+    def configure_model(self, config, *, api_key):
+        """Replace the model while the session holds the run lock."""
+        model = ModelClient(ModelConfig(**config), api_key=api_key)
+        if model.identity != self._model.identity:
+            pending = self.batches.pending
+            if self.conversation is not None:
+                conversation = self.conversation.fork()
+                conversation.discard_provider_state()
+                active = self.active
+                policy = self.tools.prepare_context(active.policy, conversation.retained_tool_results())
+                self.activate(conversation, policy, active.binding, self.tools, action=active.action)
+            if pending is not None:
+                pending.reply = replace(pending.reply, provider_state=None)
+        self._model = self.context_model.client = model
+        self.requests.use_model(model)
+
+    def update_model_key(self, config, *, api_key):
+        """Update credentials for the frozen configuration under the run lock."""
+        if config != config_fields(self._model.config):
+            return False
+        self._model.set_credentials(api_key=api_key)
+        return True
+
+    def require_visual_model(self):
+        self._model.require_visual()
+
+    def refresh_proxy_status(self):
+        self.proxy = self._model.proxy_status()
+
+    def model_budget(self):
+        config = self._model.config
+        return {**context_budget(config_fields(config)), "input_limit_tokens": input_limit_tokens(config)}
+
+    def _adopt_context(self, candidate, source, generation):
+        active = self.active
+        revision = source.revision
+        if (self.batches.pending is not None or self.batches.human is not None or self.requests.model_result_pending
+                or self.requests.context_log_pending):
+            raise ModelError("pending_results", "Original results must be resolved before context adoption")
+        changed = candidate.last_compaction is not source.last_compaction
+        policy = self.tools.prepare_context(active.policy, candidate.retained_tool_results())
+        replacement = ActiveContext(candidate, policy, active.binding, active.action)
+        if changed:
+            self.requests.local_log("context.replacement_prepared", candidate.last_compaction, function="Run._adopt_context")
+        with self.control.lock:
+            if (self.control.paused or self.control.generation != generation or self.active is not active
+                    or active.conversation is not source or source.revision != revision):
+                raise ModelError("request_cancelled", "Context replacement cancelled; original history retained")
+            self.active = replacement
+            if changed:
+                self.last_compaction = candidate.last_compaction
 
     def _adopt_receipt(self, record):
         slot = self.requests.receipt_candidate()
@@ -368,10 +466,3 @@ class Run:
             self.requests.reject_receipt(slot)
             self.publish("request_discarded", self.request_identity)
             raise ModelError("request_cancelled", "Original main request was not adopted; no delivery receipt issued")
-
-    def advance(self, *, resume):
-        return run(self, self.tools, resume=resume)
-
-    def use_model(self, model):
-        self.model = self.context_model.client = model
-        self.requests.use_model(model)

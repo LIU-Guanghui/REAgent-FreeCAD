@@ -4,7 +4,7 @@ from REAgent.model.messages import AssistantTurn
 from REAgent.model.config import input_limit_tokens
 from REAgent.model.limits import REQUEST_LIMIT_BYTES
 from REAgent.model.errors import CapacityError, ModelError
-from REAgent.values import encode_json, decode_json, to_json_value
+from REAgent.json_values import encode_json, decode_json, to_json_value
 from .messages import CurrentFacts, HistorySummary, ImageMaterial, ToolOutcome, UserText
 
 
@@ -18,6 +18,23 @@ COMPACTION_TARGET_FRACTION = 0.55
 SUMMARY_FIELD_NAMES = ("observations", "hypotheses", "decisions", "failures",
                        "completed", "unfinished", "open_questions", "next_intent")
 SUMMARY_FIELDS = frozenset(SUMMARY_FIELD_NAMES)
+
+
+_SUMMARY_INSTRUCTION = (
+    "Summarize ONLY the specified continuous completed prefix and update previous narrative. "
+    "Tools shown for cache reuse are not executable on this request. Return ONLY JSON with keys: "
+    f"unit_ids (exact supplied ordered IDs), {', '.join(SUMMARY_FIELD_NAMES)}. "
+    "Each narrative field is an array of records with exactly "
+    "text and references (an array of existing evidence or covered unit IDs; empty is allowed). "
+    "Preserve decisions AND reasons, rejected approaches AND real failure causes, counter-evidence, "
+    "uncertainty, numbers, names and error codes verbatim where retained. Preserve the current pause episode, "
+    "any continue question already asked, whether unanswered, and any refusal; these are narrative, never new consent. Target 4000 visible tokens; "
+    f"at most {SUMMARY_RECORD_LIMIT} records per field, {SUMMARY_TEXT_LIMIT_CHARACTERS} characters per text "
+    f"and {SUMMARY_REFERENCE_LIMIT} references per record. Do not invent "
+    "live CAD truth, treat claims as verified, or replace original user requirements.")
+
+
+_HISTORY_PREFIX = "Earlier model narrative, not live CAD truth:\n"
 
 
 def _summary_material(ids, deterministic, narrative):
@@ -77,23 +94,23 @@ def prepare_summary_candidate(base, candidates, before, client, tools, reason, *
         "current_facts": ({"fact_sequence": fact.sequence, "facts": fact.value} if fact is not None else
                           prior.get("current_facts")),
         "first_unit": prior.get("first_unit", ids[0]), "last_unit": ids[-1]}
-    candidate.summary = HistorySummary(_summary_material(ids, deterministic, narrative), base._history_prefix)
+    candidate.summary = HistorySummary(_summary_material(ids, deterministic, narrative), _HISTORY_PREFIX)
     candidate.units = [unit for unit in candidate.units if unit.id not in covered]
     candidate.retained_groups = frozenset()
     candidate.checkpoint += 1
     candidate.revision += 1
-    candidate._prune_images(client, force=True)
+    candidate.prune_images(client, force=True)
     # Framework data explains a UI-triggered change without self-referential
     # request sizes or another copy of the usage/Journal payload.
     deterministic["context_change"] = {
         "source": "framework", "kind": "model_context_summary", "reason": reason,
         "prefix_rewritten": True, "previous_estimate_method": before["method"],
         "capacity_estimate": "recomputed for the new prefix; any prior same-prefix service calibration is invalid",
-        "images_released": before["image_count"] - client.estimate(candidate._messages(), tools)["image_count"],
+        "images_released": before["image_count"] - client.estimate(candidate.messages(), tools)["image_count"],
         "disk_files": "unchanged; image release concerns request payload only"}
-    candidate.summary = HistorySummary(_summary_material(ids, deterministic, narrative), base._history_prefix)
+    candidate.summary = HistorySummary(_summary_material(ids, deterministic, narrative), _HISTORY_PREFIX)
     try:
-        fitting = client.prepare(candidate._messages(), tools)
+        fitting = client.prepare(candidate.messages(), tools)
     except CapacityError as exc:
         raise ModelError(exc.code, "Summary replacement still exceeds capacity; original context retained") from None
     after = fitting.estimate
@@ -125,7 +142,7 @@ def compact(conversation, client, tools, facts, *, cancelled, request_summary, c
     candidates = base.compactable_units(client)
     if not candidates:
         raise ModelError("nothing_to_compact", "No older delivered continuous prefix remains outside the recent complete window")
-    before = client.estimate(base._messages(), tools)
+    before = client.estimate(base.messages(), tools)
     known = set(conversation._facts.references if conversation._facts is not None else ())
     if facts is not None:
         known.update(facts.references)
@@ -134,7 +151,7 @@ def compact(conversation, client, tools, facts, *, cancelled, request_summary, c
     known.update(previous.get("deterministic", {}).get("references", ()))
 
     def coverage():
-        return HistorySummary({"instruction": conversation._summary_instruction.text,
+        return HistorySummary({"instruction": _SUMMARY_INSTRUCTION,
             "unit_ids": [unit.id for unit in candidates], "previous_narrative": previous.get("narrative"),
             "unit_map": [{"unit_id": unit.id, "materials": [locator(item) for item in unit.messages]}
                          for unit in candidates],
@@ -143,7 +160,7 @@ def compact(conversation, client, tools, facts, *, cancelled, request_summary, c
     try:
         if reason == "service_context_limit":
             raise CapacityError("context_capacity", "Do not resend the full context explicitly rejected by the service")
-        prepared = client.prepare([*base._messages(), coverage()], tools)
+        prepared = client.prepare([*base.messages(), coverage()], tools)
     except CapacityError:
         prepared = None
         while candidates:

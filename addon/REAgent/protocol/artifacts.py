@@ -13,7 +13,7 @@ ARTIFACT_SUFFIXES = {
     "paired": ("_paired", ".png"),
 }
 
-for _role in ("source", "rebuild"):
+for _role in ("source", "target"):
     for _direction in VIEW_DIRECTIONS:
         _key = _role + "_" + _direction
         ARTIFACT_SUFFIXES[_key] = ("_" + _key, ".png")

@@ -5,10 +5,10 @@ import time
 
 import Part
 
-from REAgent.host.analysis.evidence import _geometry_evidence, _semantic_regions
-from REAgent.host.analysis.math3d import _point_distance
-from REAgent.host.analysis.measurements import _bound_box_summary, _geometry_bound_box, _shape_center_of_mass
-from REAgent.host.numeric import _vector_dict
+from REAgent.host.analysis.evidence import geometry_evidence, semantic_regions
+from REAgent.host.analysis.math3d import point_distance
+from REAgent.host.analysis.measurements import bound_box_summary, geometry_bound_box, shape_center_of_mass
+from REAgent.host.numeric import vector_dict
 
 
 def _shape_sample_points(shape, deflection, maximum):
@@ -73,36 +73,36 @@ def _directed_surface_distance(shape, target, deflection, maximum):
     }
 
 
-def _bidirectional_surface_distance(source_shape, rebuild_shape, contract):
+def _bidirectional_surface_distance(source_shape, target_shape, contract):
     deflection = contract["surface_sampling_deflection_mm"]
     maximum = int(contract["max_surface_samples_per_direction"])
-    source_to_rebuild = _directed_surface_distance(
-        source_shape, rebuild_shape, deflection, maximum
+    source_to_target = _directed_surface_distance(
+        source_shape, target_shape, deflection, maximum
     )
-    rebuild_to_source = _directed_surface_distance(
-        rebuild_shape, source_shape, deflection, maximum
+    target_to_source = _directed_surface_distance(
+        target_shape, source_shape, deflection, maximum
     )
     available = (
-        source_to_rebuild["available"]
-        and rebuild_to_source["available"]
+        source_to_target["available"]
+        and target_to_source["available"]
     )
     return {
         "method": "tessellated_directed_point_to_boundary_faces",
         "approximate": True,
         "sampling_deflection_mm": deflection,
         "available": available,
-        "source_to_rebuild_max_mm": source_to_rebuild["max_mm"],
-        "rebuild_to_source_max_mm": rebuild_to_source["max_mm"],
+        "source_to_target_max_mm": source_to_target["max_mm"],
+        "target_to_source_max_mm": target_to_source["max_mm"],
         "symmetric_max_mm": (
             max(
-                source_to_rebuild["max_mm"],
-                rebuild_to_source["max_mm"],
+                source_to_target["max_mm"],
+                target_to_source["max_mm"],
             )
             if available
             else None
         ),
-        "source_sample_count": source_to_rebuild["sample_count"],
-        "rebuild_sample_count": rebuild_to_source["sample_count"],
+        "source_sample_count": source_to_target["sample_count"],
+        "target_sample_count": target_to_source["sample_count"],
     }
 
 
@@ -142,16 +142,16 @@ def _measurement(shape, name):
     if name == "area":
         return float(shape.Area), "mm2", "native_area"
     if name == "center_of_mass":
-        center = _shape_center_of_mass(shape)
+        center = shape_center_of_mass(shape)
         if center is None:
             raise ValueError("mass_properties_unavailable")
-        return _vector_dict(center), "mm", "native_mass_properties"
+        return vector_dict(center), "mm", "native_mass_properties"
     if name == "bounding_box":
-        return _bound_box_summary(_geometry_bound_box(shape)), "mm", "brep_optimal_without_triangulation_or_tolerance_expansion"
+        return bound_box_summary(geometry_bound_box(shape)), "mm", "brep_optimal_without_triangulation_or_tolerance_expansion"
     raise ValueError("Unknown measurement")
 
 
-def _compare_shapes(source, target, contract, options):
+def compare_shapes(source, target, contract, options):
     """Run only selected read-only computations; never accept a task."""
     checks = {}
     for name in options.get("measurements", []):
@@ -171,7 +171,7 @@ def _compare_shapes(source, target, contract, options):
             row.update(status="available", available=True, source=left, target=right,
                        delta=delta, units=unit, method=method)
             if name == "center_of_mass":
-                row["distance_mm"] = _point_distance(left, right)
+                row["distance_mm"] = point_distance(left, right)
             if name == "bounding_box":
                 row["tightness"] = "not_guaranteed_for_trimmed_geometry"
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
@@ -196,14 +196,14 @@ def _compare_shapes(source, target, contract, options):
     return checks
 
 
-def _residual_regions(source_shape, rebuild_shape, contract):
+def residual_regions(source_shape, target_shape, contract):
     """Explicit missing/excess cuts, with direction-local failures and filtering facts."""
-    source_evidence = _geometry_evidence(source_shape, contract, include_repetition=False)
-    source_regions = _semantic_regions(source_shape, source_evidence, contract)["regions"]
+    source_evidence = geometry_evidence(source_shape, contract, include_repetition=False)
+    source_regions = semantic_regions(source_shape, source_evidence, contract)["regions"]
     residuals, operations = [], {}
     for kind, left, right, operation in (
-        ("missing", source_shape, rebuild_shape, "source_minus_target"),
-        ("excess", rebuild_shape, source_shape, "target_minus_source"),
+        ("missing", source_shape, target_shape, "source_minus_target"),
+        ("excess", target_shape, source_shape, "target_minus_source"),
     ):
         row, difference = _boolean_shape(left, right, operation)
         operations[kind] = row
@@ -219,7 +219,7 @@ def _residual_regions(source_shape, rebuild_shape, contract):
                     row["filtered_component_count"] += 1
                     row["filtered_volume_mm3"] += volume
                     continue
-                boundary = _bound_box_summary(_geometry_bound_box(component))
+                boundary = bound_box_summary(geometry_bound_box(component))
                 associated = [region["region_id"] for region in source_regions
                               if _boxes_overlap(boundary, region.get("boundary"), contract["linear_tolerance_mm"])]
                 residuals.append({"residual_id": "%s-%03d" % (kind, index), "kind": kind,

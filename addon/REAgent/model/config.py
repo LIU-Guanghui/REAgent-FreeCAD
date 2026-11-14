@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit, urlunsplit
 from .registry import PROVIDERS
 from .limits import CONTEXT_RESERVE_TOKENS
-from REAgent.values import encode_json
+from REAgent.json_values import encode_json
 
 DEFAULT_OUTPUT_TOKENS = 128000
 

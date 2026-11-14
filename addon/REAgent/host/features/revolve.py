@@ -2,9 +2,9 @@
 
 from functools import partial
 
-from REAgent.host.workspace.properties import _metadata, _native_link, _number_readback, _set_bool, _set_enum, _set_number
-from REAgent.host.features.support.construction import _history_context, _profile_readback, _set_profile, _shape_readback
-from REAgent.host.features.support.references import _role_object
+from REAgent.host.workspace.properties import metadata, native_link, number_readback, set_bool, set_enum, set_number
+from REAgent.host.features.support.construction import history_context, profile_readback, set_profile, shape_readback
+from REAgent.host.features.support.references import role_object
 
 _REVOLVE_TYPES = {
     "PartDesign_Revolution": "PartDesign::Revolution",
@@ -12,7 +12,7 @@ _REVOLVE_TYPES = {
 }
 
 
-def _reference_axis(document, body, sketch, request):
+def reference_axis(document, body, sketch, request):
     kind = request["kind"]
     if kind == "sketch_axis":
         return sketch, "H_Axis" if request["axis"] == "horizontal" else "V_Axis"
@@ -26,13 +26,19 @@ def _reference_axis(document, body, sketch, request):
         if (cs is None or cs.TypeId != "Part::LocalCoordinateSystem"
                 or cs.Document is not document or cs not in body.Group):
             raise ValueError("Revolution axis requires a same-Body Coordinate System")
-        return _role_object(cs, request["role"], "App::Line", document), ""
+        return role_object(cs, request["role"], "App::Line", document), ""
     raise ValueError("Unsupported revolution axis kind")
 
 
 class RevolveOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
+
+    def contribute(self):
+        return {
+            'PartDesign_Revolution': partial(self._create_revolve, command='PartDesign_Revolution'),
+            'PartDesign_Groove': partial(self._create_revolve, command='PartDesign_Groove'),
+        }
 
     def _create_revolve(self, params, *, command):
         if command not in _REVOLVE_TYPES:
@@ -44,10 +50,10 @@ class RevolveOperations:
         axis = [None]
 
         def preflight(document, group, request):
-            context[0] = _history_context(
+            context[0] = history_context(
                 document, group, request, require_solid=not additive, sketch=True)
             body, sketch, _tip = context[0]
-            axis[0] = _reference_axis(document, body, sketch, request["axis"])
+            axis[0] = reference_axis(document, body, sketch, request["axis"])
 
         def mutate(document, group, request, changes):
             body, sketch, _tip = context[0]
@@ -55,32 +61,32 @@ class RevolveOperations:
             if feature.Name != name or feature.TypeId != type_id:
                 raise RuntimeError("Native revolve type or identity differs")
             body.addObject(feature)
-            _set_profile(feature, sketch)
-            reference = _metadata(feature, "ReferenceAxis")
+            set_profile(feature, sketch)
+            reference = metadata(feature, "ReferenceAxis")
             if not reference["writable"] or reference["codec"] != "link_sub":
                 raise ValueError("Native ReferenceAxis is not writable as a semantic link")
             feature.ReferenceAxis = (axis[0][0], [axis[0][1]])
-            _set_enum(feature, "Type", "Angle")
-            _set_number(feature, "Angle", request["angle_deg"])
-            _set_bool(feature, "Reversed", request["reversed"])
+            set_enum(feature, "Type", "Angle")
+            set_number(feature, "Angle", request["angle_deg"])
+            set_bool(feature, "Reversed", request["reversed"])
             if "Midplane" in feature.PropertiesList:
-                _set_bool(feature, "Midplane", False)
+                set_bool(feature, "Midplane", False)
             if "Refine" in feature.PropertiesList:
-                _set_bool(feature, "Refine", False)
+                set_bool(feature, "Refine", False)
             return feature
 
         def readback(document, group, feature, _state):
             body, sketch, tip = context[0]
-            body_shape = _shape_readback(document, body, feature, name, type_id, tip)
-            _profile_readback(feature, sketch)
+            body_shape = shape_readback(document, body, feature, name, type_id, tip)
+            profile_readback(feature, sketch)
             value = feature.ReferenceAxis
-            if (_native_link(value) is not axis[0][0]
+            if (native_link(value) is not axis[0][0]
                     or not isinstance(value, (tuple, list))
                     or list(value[1]) != [axis[0][1]]):
                 raise RuntimeError("Native ReferenceAxis did not retain its semantic link")
             if feature.Type != "Angle" or bool(feature.Reversed) != params["reversed"]:
                 raise RuntimeError("Native revolve mode or direction did not read back")
-            angle = _number_readback(feature, "Angle", params["angle_deg"])
+            angle = number_readback(feature, "Angle", params["angle_deg"])
             for prop in ("Midplane", "Refine"):
                 if prop in feature.PropertiesList and bool(getattr(feature, prop)):
                     raise RuntimeError("Native revolve fixed mode changed: " + prop)
@@ -94,9 +100,3 @@ class RevolveOperations:
             params, command=command, preflight=preflight,
             mutate=mutate, readback=readback,
         )
-
-    def contribute(self):
-        return {
-            'PartDesign_Revolution': partial(self._create_revolve, command='PartDesign_Revolution'),
-            'PartDesign_Groove': partial(self._create_revolve, command='PartDesign_Groove'),
-        }

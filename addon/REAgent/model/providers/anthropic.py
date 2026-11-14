@@ -6,7 +6,7 @@ import base64
 
 from REAgent.model.errors import ModelError
 from REAgent.model.providers.common import StreamState, checked_calls, material_text, token_count, usage_value
-from REAgent.values import decode_json, encode_json
+from REAgent.json_values import decode_json, encode_json
 from REAgent.model.capabilities import cache_mode
 
 PROTOCOL = "messages"
@@ -103,24 +103,6 @@ def normalize_usage(value):
 
 
 class Parser(StreamState):
-    def _transformations(self, value, *, required=False):
-        if "input_transformations" not in value and not required:
-            return
-        rows = value.get("input_transformations")
-        if not isinstance(rows, list):
-            raise ModelError("provider_capability_unconfirmed", "Service did not confirm its thinking binding contract")
-        counts = {}
-        for row in rows:
-            if not isinstance(row, dict):
-                raise ModelError("invalid_stream", "Invalid thinking transformation report")
-            if row.get("type") == "thinking_mismatch_allowed" and self.binding_controls:
-                raise ModelError("provider_capability_unconfirmed", "Service did not apply the requested thinking binding policy")
-            if row.get("type") == "thinking_dropped" and row.get("reason") in (
-                    "prefix_binding_mismatch", "model_binding_mismatch", "organization_binding_mismatch"):
-                reason = row["reason"]
-                counts[reason] = counts.get(reason, 0) + 1
-        self.diagnostics["thinking_dropped"] = counts
-
     def parse(self, events):
         identity, opened, finish = None, None, None
         blocks, calls, raw_usage = [], [], {}
@@ -231,3 +213,21 @@ class Parser(StreamState):
                                     (self.identity, tuple(blocks)), self.detail())
                 return
         raise ModelError("incomplete_stream", "Messages stream ended without message_stop")
+
+    def _transformations(self, value, *, required=False):
+        if "input_transformations" not in value and not required:
+            return
+        rows = value.get("input_transformations")
+        if not isinstance(rows, list):
+            raise ModelError("provider_capability_unconfirmed", "Service did not confirm its thinking binding contract")
+        counts = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ModelError("invalid_stream", "Invalid thinking transformation report")
+            if row.get("type") == "thinking_mismatch_allowed" and self.binding_controls:
+                raise ModelError("provider_capability_unconfirmed", "Service did not apply the requested thinking binding policy")
+            if row.get("type") == "thinking_dropped" and row.get("reason") in (
+                    "prefix_binding_mismatch", "model_binding_mismatch", "organization_binding_mismatch"):
+                reason = row["reason"]
+                counts[reason] = counts.get(reason, 0) + 1
+        self.diagnostics["thinking_dropped"] = counts

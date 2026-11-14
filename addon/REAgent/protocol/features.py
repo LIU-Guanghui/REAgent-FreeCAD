@@ -1,8 +1,8 @@
 """Native feature request definitions and cross-field relations."""
 
-from REAgent.protocol.definitions import NAME_SCHEMA, TEXT_SCHEMA, _DOCUMENT, _operation
-from REAgent.protocol.observations import _edge_ref_schema, _face_ref_schema
-from REAgent.schema import RequestValidationError, _array, _boolean, _branch, _conditional_form, _integer, _number, _schema, _string
+from REAgent.protocol.definitions import NAME_SCHEMA, TEXT_SCHEMA, _DOCUMENT, operation
+from REAgent.protocol.observations import edge_ref_schema, face_ref_schema
+from REAgent.json_schema import RequestValidationError, array, boolean, branch, conditional_form, integer, number, object_schema, string
 
 FEATURE_SPECS = {}
 
@@ -52,21 +52,21 @@ DOMAIN_MODE_GAPS = {
     ],
 }
 
-DOMAIN_EVIDENCE_SCHEMA = _array(
+DOMAIN_EVIDENCE_SCHEMA = array(
     "Successful observation evidence IDs from this session, including Target evidence for expected_revision; "
     "reconstruction also requires evidence for the bound Source. "
     "If no applicable Target observation exists, obtain one before writing; an empty Target supports global observation.",
     {"type": "string", "pattern": r"^evidence-[a-f0-9]{20}$"}, 1, 16,
 )
 
-TARGET_REVISION_SCHEMA = _string(
+TARGET_REVISION_SCHEMA = string(
     "Current Target revision matching at least one Target observation referenced in evidence. "
     "State and write receipts report revisions but do not issue observation evidence."
 )
 
-FEATURE_SPECS["PartDesign_Body"] = _operation(
+FEATURE_SPECS["PartDesign_Body"] = operation(
     "body", "Create and register one empty native tool Body in the bound Target.",
-    ("rebuild",), "committed",
+    ("target",), "committed",
     {"document": _DOCUMENT, "session_id": TEXT_SCHEMA,
      "body_name": {**NAME_SCHEMA, "description": "Unique native name for the tool Body"},
      "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
@@ -76,9 +76,9 @@ FEATURE_SPECS["PartDesign_Body"] = _operation(
     timeout_class="long",
 )
 
-FEATURE_SPECS["PartDesign_NewSketch"] = _operation(
+FEATURE_SPECS["PartDesign_NewSketch"] = operation(
     "sketch", "Create one empty native Sketch in an explicitly owned Body.",
-    ("rebuild",), "committed",
+    ("target",), "committed",
     {"document": _DOCUMENT, "session_id": TEXT_SCHEMA,
      "body_name": {**NAME_SCHEMA, "description": "Owned receiving Body"},
      "sketch_name": {**NAME_SCHEMA, "description": "Unique native Sketch name"},
@@ -89,20 +89,20 @@ FEATURE_SPECS["PartDesign_NewSketch"] = _operation(
     timeout_class="long",
 )
 
-FEATURE_SPECS["Sketcher_MapSketch"] = _operation(
+FEATURE_SPECS["Sketcher_MapSketch"] = operation(
     "sketch", "First attachment of an owned empty Sketch to an Origin, Datum or Coordinate System plane in the same Body.",
-    ("rebuild",), "committed",
+    ("target",), "committed",
     {"document": _DOCUMENT, "session_id": TEXT_SCHEMA,
      "body_name": {**NAME_SCHEMA, "description": "Owned receiving Body"},
      "sketch_name": {**NAME_SCHEMA, "description": "Owned, unattached Sketch"},
      "reference": {"oneOf": [
-         _branch("kind", "origin_plane", {
-             "role": _string("Same-Body Origin plane", ("XY_Plane", "XZ_Plane", "YZ_Plane"))}),
-         _branch("kind", "datum_plane", {
+         branch("kind", "origin_plane", {
+             "role": string("Same-Body Origin plane", ("XY_Plane", "XZ_Plane", "YZ_Plane"))}),
+         branch("kind", "datum_plane", {
              "datum_name": {**NAME_SCHEMA, "description": "Same-Body native Part::DatumPlane"}}),
-         _branch("kind", "coordinate_system_plane", {
+         branch("kind", "coordinate_system_plane", {
              "datum_name": {**NAME_SCHEMA, "description": "Same-Body native Part::LocalCoordinateSystem"},
-             "role": _string("Stable local plane role", ("XY_Plane", "XZ_Plane", "YZ_Plane"))}),
+             "role": string("Stable local plane role", ("XY_Plane", "XZ_Plane", "YZ_Plane"))}),
      ]},
      "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
      "expected_revision": TARGET_REVISION_SCHEMA},
@@ -111,13 +111,13 @@ FEATURE_SPECS["Sketcher_MapSketch"] = _operation(
     timeout_class="long",
 )
 
-FEATURE_SPECS["Sketcher_ValidateSketch"] = _operation(
+FEATURE_SPECS["Sketcher_ValidateSketch"] = operation(
     "sketch", "Read native Sketch constraint and geometry diagnostics without invoking repair.",
-    ("rebuild",), "none",
+    ("target",), "none",
     {"document": _DOCUMENT, "session_id": TEXT_SCHEMA,
      "body_name": {**NAME_SCHEMA, "description": "Owned Sketch Body"},
      "sketch_name": {**NAME_SCHEMA, "description": "Owned native Sketch"},
-     "tolerance_mm": {**_number("Positive Sketch geometry tolerance in millimetres"),
+     "tolerance_mm": {**number("Positive Sketch geometry tolerance in millimetres"),
                       "exclusiveMinimum": 0}},
     ("document", "session_id", "body_name", "sketch_name", "tolerance_mm"),
     ("No GUI editor or repair action is used.",),
@@ -125,49 +125,49 @@ FEATURE_SPECS["Sketcher_ValidateSketch"] = _operation(
 
 _SKETCH_ID = {"type": "string", "pattern": r"^[A-Za-z][A-Za-z0-9_]{0,49}$"}
 
-_SKETCH_POINT = _array("Sketch-plane point in millimetres", _number("Finite coordinate"), 2, 2)
+_SKETCH_POINT = array("Sketch-plane point in millimetres", number("Finite coordinate"), 2, 2)
 
-_SKETCH_CONSTRUCTION = _boolean("Construction geometry; omitted means false")
+_SKETCH_CONSTRUCTION = boolean("Construction geometry; omitted means false")
 
 _SKETCH_GEOMETRY = {"oneOf": [
-    _branch("kind", "line", {"id": _SKETCH_ID, "start": _SKETCH_POINT,
+    branch("kind", "line", {"id": _SKETCH_ID, "start": _SKETCH_POINT,
                               "end": _SKETCH_POINT, "construction": _SKETCH_CONSTRUCTION},
             ("id", "start", "end")),
-    _branch("kind", "circle", {"id": _SKETCH_ID, "center": _SKETCH_POINT,
-                                "radius_mm": {**_number("Positive radius"), "exclusiveMinimum": 0},
+    branch("kind", "circle", {"id": _SKETCH_ID, "center": _SKETCH_POINT,
+                                "radius_mm": {**number("Positive radius"), "exclusiveMinimum": 0},
                                 "construction": _SKETCH_CONSTRUCTION},
             ("id", "center", "radius_mm")),
-    _branch("kind", "arc", {"id": _SKETCH_ID, "center": _SKETCH_POINT,
-                             "radius_mm": {**_number("Positive radius"), "exclusiveMinimum": 0},
-                              "start_deg": _number("Start circle parameter in Sketch-plane degrees; preserve direction"),
-                              "end_deg": _number("End circle parameter in degrees; end_deg - start_deg must be greater than 0 and less than 360"),
+    branch("kind", "arc", {"id": _SKETCH_ID, "center": _SKETCH_POINT,
+                             "radius_mm": {**number("Positive radius"), "exclusiveMinimum": 0},
+                              "start_deg": number("Start circle parameter in Sketch-plane degrees; preserve direction"),
+                              "end_deg": number("End circle parameter in degrees; end_deg - start_deg must be greater than 0 and less than 360"),
                              "construction": _SKETCH_CONSTRUCTION},
             ("id", "center", "radius_mm", "start_deg", "end_deg")),
-    _branch("kind", "ellipse", {"id": _SKETCH_ID, "center": _SKETCH_POINT,
-                                 "major_radius_mm": {**_number("Positive major semiaxis"), "exclusiveMinimum": 0},
-                                 "minor_radius_mm": {**_number("Positive minor semiaxis"), "exclusiveMinimum": 0},
-                                 "direction_deg": _number("Major-axis angle in the Sketch plane"),
+    branch("kind", "ellipse", {"id": _SKETCH_ID, "center": _SKETCH_POINT,
+                                 "major_radius_mm": {**number("Positive major semiaxis"), "exclusiveMinimum": 0},
+                                 "minor_radius_mm": {**number("Positive minor semiaxis"), "exclusiveMinimum": 0},
+                                 "direction_deg": number("Major-axis angle in the Sketch plane"),
                                  "construction": _SKETCH_CONSTRUCTION},
             ("id", "center", "major_radius_mm", "minor_radius_mm", "direction_deg")),
-    _branch("kind", "ellipse_arc", {"id": _SKETCH_ID, "center": _SKETCH_POINT,
-                                     "major_radius_mm": {**_number("Positive major semiaxis"), "exclusiveMinimum": 0},
-                                     "minor_radius_mm": {**_number("Positive minor semiaxis"), "exclusiveMinimum": 0},
-                                     "direction_deg": _number("Major-axis angle in the Sketch plane"),
-                                      "start_deg": _number("Start ellipse carrier parameter in degrees, not its polar angle"),
-                                      "end_deg": _number("End ellipse parameter in degrees; end_deg - start_deg must be greater than 0 and less than 360"),
+    branch("kind", "ellipse_arc", {"id": _SKETCH_ID, "center": _SKETCH_POINT,
+                                     "major_radius_mm": {**number("Positive major semiaxis"), "exclusiveMinimum": 0},
+                                     "minor_radius_mm": {**number("Positive minor semiaxis"), "exclusiveMinimum": 0},
+                                     "direction_deg": number("Major-axis angle in the Sketch plane"),
+                                      "start_deg": number("Start ellipse carrier parameter in degrees, not its polar angle"),
+                                      "end_deg": number("End ellipse parameter in degrees; end_deg - start_deg must be greater than 0 and less than 360"),
                                      "construction": _SKETCH_CONSTRUCTION},
             ("id", "center", "major_radius_mm", "minor_radius_mm", "direction_deg", "start_deg", "end_deg")),
 ]}
 
-_SKETCH_POINT_REF = _schema({"geometry_id": _SKETCH_ID,
-                             "position": _string("Native Sketch point", ("start", "end", "center"))},
+_SKETCH_POINT_REF = object_schema({"geometry_id": _SKETCH_ID,
+                             "position": string("Native Sketch point", ("start", "end", "center"))},
                             ("geometry_id", "position"))
 
 _SKETCH_CONSTRAINT_PROPERTIES = {
     "geometry_id": _SKETCH_ID, "first_geometry": _SKETCH_ID,
     "second_geometry": _SKETCH_ID, "first_point": _SKETCH_POINT_REF,
     "second_point": _SKETCH_POINT_REF, "point": _SKETCH_POINT_REF,
-    "value": _number("Distance in millimetres or angle in degrees"),
+    "value": number("Distance in millimetres or angle in degrees"),
 }
 
 _SKETCH_CONSTRAINT_FIELDS = {
@@ -192,16 +192,16 @@ for _kind, _fields in _SKETCH_CONSTRAINT_FIELDS.items():
             **_constraint_properties["value"], "exclusiveMinimum": 0,
             **({"exclusiveMaximum": 360} if _kind == "Angle" else {}),
         }
-    _SKETCH_CONSTRAINT["oneOf"].append(_branch("kind", _kind, _constraint_properties))
+    _SKETCH_CONSTRAINT["oneOf"].append(branch("kind", _kind, _constraint_properties))
 
-FEATURE_SPECS["Sketcher_EditSketch"] = _operation(
+FEATURE_SPECS["Sketcher_EditSketch"] = operation(
     "sketch", "Fill one previously empty owned Sketch once with five geometry types and explicit constraints. Shared feature preflight validates cross-field arc/ellipse_arc spans.",
-    ("rebuild",), "committed",
+    ("target",), "committed",
     {"document": _DOCUMENT, "session_id": TEXT_SCHEMA,
      "body_name": {**NAME_SCHEMA, "description": "Owned Sketch Body"},
      "sketch_name": {**NAME_SCHEMA, "description": "Existing empty owned Sketch"},
-     "geometry": _array("One-shot native Sketch geometry", _SKETCH_GEOMETRY, 1, 256),
-     "constraints": _array("Explicit native Sketch constraints", _SKETCH_CONSTRAINT, 0, 512),
+     "geometry": array("One-shot native Sketch geometry", _SKETCH_GEOMETRY, 1, 256),
+     "constraints": array("Explicit native Sketch constraints", _SKETCH_CONSTRAINT, 0, 512),
      "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
      "expected_revision": TARGET_REVISION_SCHEMA},
     ("document", "session_id", "body_name", "sketch_name", "geometry", "constraints",
@@ -210,23 +210,23 @@ FEATURE_SPECS["Sketcher_EditSketch"] = _operation(
     timeout_class="long",
 )
 
-_POSITION_MM = _array("Free Body-local position or attached support-local offset in millimetres", _number("Finite coordinate"), 3, 3)
+_POSITION_MM = array("Free Body-local position or attached support-local offset in millimetres", number("Finite coordinate"), 3, 3)
 
-_ROTATION_AXIS = _array("Nonzero Body-local or attached support-local rotation axis", _number("Finite component"), 3, 3)
+_ROTATION_AXIS = array("Nonzero Body-local or attached support-local rotation axis", number("Finite component"), 3, 3)
 
-_ORIGIN_PLANE_REFERENCE = _branch("kind", "origin_plane", {
-    "role": _string("Same-Body Origin plane role", ("XY_Plane", "XZ_Plane", "YZ_Plane"))})
+_ORIGIN_PLANE_REFERENCE = branch("kind", "origin_plane", {
+    "role": string("Same-Body Origin plane role", ("XY_Plane", "XZ_Plane", "YZ_Plane"))})
 
-_ORIGIN_AXIS_REFERENCE = _branch("kind", "origin_axis", {
-    "role": _string("Same-Body Origin axis role", ("X_Axis", "Y_Axis", "Z_Axis"))})
+_ORIGIN_AXIS_REFERENCE = branch("kind", "origin_axis", {
+    "role": string("Same-Body Origin axis role", ("X_Axis", "Y_Axis", "Z_Axis"))})
 
-_ORIGIN_POINT_REFERENCE = _branch("kind", "origin_point", {})
+_ORIGIN_POINT_REFERENCE = branch("kind", "origin_point", {})
 
 def _datum_reference(kind):
-    return _branch("kind", kind, {
+    return branch("kind", kind, {
         "datum_name": {**NAME_SCHEMA, "description": "Same-Body native Datum name"}})
 
-_VERTEX_REFERENCE = _branch("kind", "feature_vertex", {
+_VERTEX_REFERENCE = branch("kind", "feature_vertex", {
     "feature_name": {**NAME_SCHEMA, "description": "Same-Body predecessor feature"},
     "vertex_index": {"type": "integer", "minimum": 1,
                      "description": "Explicit one-based native vertex index"}})
@@ -239,7 +239,7 @@ for _datum_command, _datum_kind in (
         "document": _DOCUMENT, "session_id": TEXT_SCHEMA,
         "body_name": {**NAME_SCHEMA, "description": "Owned receiving Body"},
         "datum_name": {**NAME_SCHEMA, "description": "Unique native Datum name"},
-        "mode": _string("Free placement or reference-relative attachment", ("free", "attached")),
+        "mode": string("Free placement or reference-relative attachment", ("free", "attached")),
         "position_mm": _POSITION_MM,
         "intent": TEXT_SCHEMA, "evidence": DOMAIN_EVIDENCE_SCHEMA,
         "expected_revision": TARGET_REVISION_SCHEMA,
@@ -258,19 +258,19 @@ for _datum_command, _datum_kind in (
     _datum_properties["reference"] = {"oneOf": _references[_datum_kind]}
     if _datum_kind != "point":
         _datum_properties.update(axis=_ROTATION_AXIS,
-                                 angle_deg=_number("Rotation around the free Body-local or attached support-local axis in degrees"))
+                                 angle_deg=number("Rotation around the free Body-local or attached support-local axis in degrees"))
         _datum_required += ("axis", "angle_deg")
-    FEATURE_SPECS[_datum_command] = _operation(
+    FEATURE_SPECS[_datum_command] = operation(
         "datum", "Create one owned native %s Datum with free or bounded same-Body attachment." % _datum_kind,
-        ("rebuild",), "committed", _datum_properties, _datum_required,
+        ("target",), "committed", _datum_properties, _datum_required,
         ("Current Target evidence belongs to this session; reconstruction additionally requires Source evidence.",
          "Free placement forbids reference; attached placement requires one explicit same-Body reference."),
         timeout_class="long",
     )
     _datum_schema = FEATURE_SPECS[_datum_command]["input_schema"]
     _datum_schema["oneOf"] = [
-        _conditional_form(_datum_schema, {"mode": "free"}, excluded=("reference",)),
-        _conditional_form(_datum_schema, {"mode": "attached"}, required=("reference",)),
+        conditional_form(_datum_schema, {"mode": "free"}, excluded=("reference",)),
+        conditional_form(_datum_schema, {"mode": "attached"}, required=("reference",)),
     ]
 
 PRIMITIVE_FAMILIES = {
@@ -334,8 +334,8 @@ PRIMITIVE_FAMILIES = {
 
 def _primitive_number(field, rule):
     if rule == "polygon":
-        return _integer("Number of regular prism sides", 3)
-    spec = _number("Finite native %s value in millimetres" % field)
+        return integer("Number of regular prism sides", 3)
+    spec = number("Finite native %s value in millimetres" % field)
     if rule == "positive":
         spec["exclusiveMinimum"] = 0
     elif rule == "nonnegative":
@@ -359,13 +359,13 @@ for _family, _family_spec in PRIMITIVE_FAMILIES.items():
         for _field, _native, _rule in _family_spec["inputs"]:
             _primitive_properties[_field] = _primitive_number(_field, _rule)
         _position_field = "center_mm" if _family == "Sphere" else "position_mm"
-        _primitive_properties[_position_field] = _array(
+        _primitive_properties[_position_field] = array(
             "Body-local %s in millimetres" % ("sphere center" if _family == "Sphere" else "position"),
-            _number("Finite coordinate"), 3, 3)
+            number("Finite coordinate"), 3, 3)
         if _family_spec["oriented"]:
-            _primitive_properties["axis"] = _array(
-                "Nonzero Body-local rotation axis", _number("Finite component"), 3, 3)
-            _primitive_properties["angle_deg"] = _number("Body-local rotation angle in degrees")
+            _primitive_properties["axis"] = array(
+                "Nonzero Body-local rotation axis", number("Finite component"), 3, 3)
+            _primitive_properties["angle_deg"] = number("Body-local rotation angle in degrees")
         for _field, _description in _family_spec.get("field_descriptions", {}).items():
             _primitive_properties[_field]["description"] = _description
         _required = ("document", "session_id", "body_name", "feature_name",
@@ -381,10 +381,10 @@ for _family, _family_spec in PRIMITIVE_FAMILIES.items():
             "oriented": _family_spec["oriented"],
             "position_field": _position_field,
         }
-        FEATURE_SPECS[_primitive_name] = _operation(
+        FEATURE_SPECS[_primitive_name] = operation(
             "primitive", "Create one native %s %s in an explicitly owned Body." %
             (_operation_kind.lower(), _family.lower()),
-            ("rebuild",), "committed", _primitive_properties, _required,
+            ("target",), "committed", _primitive_properties, _required,
             ("Current Target evidence and revision are required; reconstruction also requires Source evidence.",
              "Subtraction requires a prior valid single solid in the receiving Body."),
             ("Only the full, unslanted, unattached supported native form is supported.",),
@@ -424,36 +424,36 @@ _HISTORY_REQUIRED = ("document", "session_id", "body_name", "feature_name",
 
 _SKETCH_PROFILE = {**NAME_SCHEMA, "description": "Existing Sketch in the receiving Body"}
 
-_POSITIVE_LENGTH = {**_number("Positive native length in millimetres"), "exclusiveMinimum": 0}
+_POSITIVE_LENGTH = {**number("Positive native length in millimetres"), "exclusiveMinimum": 0}
 
 _REVOLUTION_AXIS = {"oneOf": [
-    _schema({"kind": _string("Sketch horizontal or vertical axis", ("sketch_axis",)),
-             "axis": _string("Native Sketch axis", ("horizontal", "vertical"))},
+    object_schema({"kind": string("Sketch horizontal or vertical axis", ("sketch_axis",)),
+             "axis": string("Native Sketch axis", ("horizontal", "vertical"))},
             ("kind", "axis")),
-    _schema({"kind": _string("Same-Body Datum Line", ("datum_line",)),
+    object_schema({"kind": string("Same-Body Datum Line", ("datum_line",)),
              "datum_name": NAME_SCHEMA}, ("kind", "datum_name")),
-    _schema({"kind": _string("Same-Body Coordinate System semantic axis", ("coordinate_system_axis",)),
+    object_schema({"kind": string("Same-Body Coordinate System semantic axis", ("coordinate_system_axis",)),
              "coordinate_system_name": NAME_SCHEMA,
-             "role": _string("Native Coordinate System axis role", ("X_Axis", "Y_Axis", "Z_Axis"))},
+             "role": string("Native Coordinate System axis role", ("X_Axis", "Y_Axis", "Z_Axis"))},
             ("kind", "coordinate_system_name", "role")),
 ]}
 
-_TRANSFORM_SOURCES = _array(
+_TRANSFORM_SOURCES = array(
     "One to 16 caller-ordered native additive/subtractive features from the current Body history",
     NAME_SCHEMA, 1, 16)
 
 _PATTERN_AXIS = {"oneOf": [
-    _schema({"kind": _string("Same-Body Origin axis", ("origin_axis",)),
-             "role": _string("Origin axis role", ("X_Axis", "Y_Axis", "Z_Axis"))},
+    object_schema({"kind": string("Same-Body Origin axis", ("origin_axis",)),
+             "role": string("Origin axis role", ("X_Axis", "Y_Axis", "Z_Axis"))},
             ("kind", "role")),
-    _schema({"kind": _string("Current predecessor straight edge", ("predecessor_edge",)),
-             "edge_ref": _edge_ref_schema("pattern_axis")},
+    object_schema({"kind": string("Current predecessor straight edge", ("predecessor_edge",)),
+             "edge_ref": edge_ref_schema("pattern_axis")},
             ("kind", "edge_ref")),
-    _schema({"kind": _string("Same-Body Datum Line", ("datum_line",)),
+    object_schema({"kind": string("Same-Body Datum Line", ("datum_line",)),
              "datum_name": NAME_SCHEMA}, ("kind", "datum_name")),
-    _schema({"kind": _string("Same-Body Coordinate System semantic child axis", ("coordinate_system_axis",)),
+    object_schema({"kind": string("Same-Body Coordinate System semantic child axis", ("coordinate_system_axis",)),
              "coordinate_system_name": NAME_SCHEMA,
-             "role": _string("Coordinate System axis role", ("X_Axis", "Y_Axis", "Z_Axis"))},
+             "role": string("Coordinate System axis role", ("X_Axis", "Y_Axis", "Z_Axis"))},
             ("kind", "coordinate_system_name", "role")),
 ]}
 
@@ -465,28 +465,28 @@ for _command, _spec in HISTORY_COMMANDS.items():
         _required += ("sketch_name",)
     if _spec["domain"] == "extrude":
         _properties.update(length_mm={**_POSITIVE_LENGTH, "description": "Full generating length from the Sketch plane in millimetres, including portions later trimmed by dress-ups or cuts."},
-                           reversed=_boolean("Explicit native direction reversal"))
+                           reversed=boolean("Explicit native direction reversal"))
         _required += ("length_mm", "reversed")
     elif _spec["domain"] == "revolve":
         _properties.update(axis=_REVOLUTION_AXIS,
-                           angle_deg={**_number("Native rotation angle in degrees"),
+                           angle_deg={**number("Native rotation angle in degrees"),
                                       "exclusiveMinimum": 0, "maximum": 360},
-                           reversed=_boolean("Explicit native direction reversal"))
+                           reversed=boolean("Explicit native direction reversal"))
         _required += ("axis", "angle_deg", "reversed")
     elif _spec["domain"] == "hole":
         _properties.update(
             diameter_mm=_POSITIVE_LENGTH,
-            depth_mode=_string("Finite depth or through all", ("dimension", "through_all")),
+            depth_mode=string("Finite depth or through all", ("dimension", "through_all")),
             depth_mm={**_POSITIVE_LENGTH, "description": "Finite depth in millimetres from the Sketch plane. Angled mode includes the conical tip (native DrillForDepth=true); measure to the tip, not just the cylindrical wall."},
-            drill_point=_string("Finite-depth bottom", ("flat", "angled")),
-            drill_point_angle_deg={**_number("Included angled drill-tip angle in degrees"),
+            drill_point=string("Finite-depth bottom", ("flat", "angled")),
+            drill_point_angle_deg={**number("Included angled drill-tip angle in degrees"),
                                    "exclusiveMinimum": 0, "exclusiveMaximum": 180},
-            mouth_mode=_string("Hole entrance", ("none", "counterbore", "countersink")),
+            mouth_mode=string("Hole entrance", ("none", "counterbore", "countersink")),
             mouth_diameter_mm={**_POSITIVE_LENGTH, "description": "Entrance diameter in millimetres; must exceed diameter_mm."},
             mouth_depth_mm={**_POSITIVE_LENGTH, "description": "Counterbore entrance depth from the Sketch plane in millimetres; forbidden for countersink/none."},
-            mouth_angle_deg={**_number("Included countersink angle in degrees"),
+            mouth_angle_deg={**number("Included countersink angle in degrees"),
                             "exclusiveMinimum": 0, "exclusiveMaximum": 180},
-            reversed=_boolean("Hole removal direction: false follows the negative Sketch normal, true the positive normal. Establish material side in the actual Sketch frame."),
+            reversed=boolean("Hole removal direction: false follows the negative Sketch normal, true the positive normal. Establish material side in the actual Sketch frame."),
         )
         _required += ("diameter_mm", "depth_mode", "mouth_mode", "reversed")
     elif _spec["domain"] == "loft":
@@ -504,8 +504,8 @@ for _command, _spec in HISTORY_COMMANDS.items():
     elif _spec["domain"] in ("fillet", "chamfer"):
         _properties.update(
             predecessor_name={**NAME_SCHEMA, "description": "Current solid Tip of the owned Body"},
-            edge_refs=_array("One to 64 explicit current Target predecessor edges",
-                             _edge_ref_schema("dressup_edge"), 1, DRESSUP_SCOPE["edge_limit"]),
+            edge_refs=array("One to 64 explicit current Target predecessor edges",
+                             edge_ref_schema("dressup_edge"), 1, DRESSUP_SCOPE["edge_limit"]),
         )
         _required += ("predecessor_name", "edge_refs")
         if _spec["domain"] == "fillet":
@@ -513,40 +513,40 @@ for _command, _spec in HISTORY_COMMANDS.items():
             _required += ("radius_mm",)
         else:
             _properties.update(
-                mode=_string("Native Chamfer mode", ("equal_distance", "two_distances")),
+                mode=string("Native Chamfer mode", ("equal_distance", "two_distances")),
                 size_mm=_POSITIVE_LENGTH,
                 size2_mm=_POSITIVE_LENGTH,
-                flip_direction=_boolean("Explicit two-distance direction flip"),
+                flip_direction=boolean("Explicit two-distance direction flip"),
             )
             _required += ("mode", "size_mm")
     elif _spec["domain"] in ("draft", "thickness"):
         role = "draft_target" if _spec["domain"] == "draft" else "thickness_opening"
         _properties.update(
             predecessor_name={**NAME_SCHEMA, "description": "Current solid Tip of the owned Body"},
-            face_refs=_array("One to 64 explicit current Target predecessor faces",
-                             _face_ref_schema(role), 1, 64),
+            face_refs=array("One to 64 explicit current Target predecessor faces",
+                             face_ref_schema(role), 1, 64),
         )
         _required += ("predecessor_name", "face_refs")
         if _spec["domain"] == "draft":
             _properties.update(
                 neutral_plane={"oneOf": [
-                    _schema({"kind": _string("Current predecessor planar face", ("predecessor_face",)),
-                             "face_ref": _face_ref_schema("draft_neutral")},
+                    object_schema({"kind": string("Current predecessor planar face", ("predecessor_face",)),
+                             "face_ref": face_ref_schema("draft_neutral")},
                             ("kind", "face_ref")),
-                    _schema({"kind": _string("Same-Body native origin plane", ("origin_plane",)),
-                             "role": _string("Origin plane role", ("XY_Plane", "XZ_Plane", "YZ_Plane"))},
+                    object_schema({"kind": string("Same-Body native origin plane", ("origin_plane",)),
+                             "role": string("Origin plane role", ("XY_Plane", "XZ_Plane", "YZ_Plane"))},
                             ("kind", "role")),
                 ]},
-                angle_deg={**_number("Positive native draft angle in degrees"),
+                angle_deg={**number("Positive native draft angle in degrees"),
                            "exclusiveMinimum": 0, "exclusiveMaximum": 90},
-                reversed=_boolean("Explicit native draft direction reversal"),
+                reversed=boolean("Explicit native draft direction reversal"),
             )
             _required += ("neutral_plane", "angle_deg", "reversed")
         else:
             _properties.update(
                 thickness_mm=_POSITIVE_LENGTH,
-                direction=_string("Thickness material side", ("inward", "outward")),
-                join=_string("Native corner join", ("arc", "intersection")),
+                direction=string("Thickness material side", ("inward", "outward")),
+                join=string("Native corner join", ("arc", "intersection")),
             )
             _required += ("thickness_mm", "direction", "join")
     elif _spec["domain"] in ("mirror", "pattern"):
@@ -559,11 +559,11 @@ for _command, _spec in HISTORY_COMMANDS.items():
             _mirror_datum_plane = _datum_reference("datum_plane")
             _mirror_datum_plane["properties"]["datum_name"]["description"] = "Same-Body native Part::DatumPlane"
             _properties["mirror_plane"] = {"oneOf": [
-                _schema({"kind": _string("Same-Body native Origin plane", ("origin_plane",)),
-                         "role": _string("Origin plane role", ("XY_Plane", "XZ_Plane", "YZ_Plane"))},
+                object_schema({"kind": string("Same-Body native Origin plane", ("origin_plane",)),
+                         "role": string("Origin plane role", ("XY_Plane", "XZ_Plane", "YZ_Plane"))},
                         ("kind", "role")),
-                _schema({"kind": _string("Current predecessor planar face", ("predecessor_face",)),
-                         "face_ref": _face_ref_schema("mirror_plane")},
+                object_schema({"kind": string("Current predecessor planar face", ("predecessor_face",)),
+                         "face_ref": face_ref_schema("mirror_plane")},
                         ("kind", "face_ref")),
                 _mirror_datum_plane,
             ]}
@@ -571,10 +571,10 @@ for _command, _spec in HISTORY_COMMANDS.items():
         else:
             _properties.update(
                 axis=_PATTERN_AXIS,
-                reversed=_boolean("Explicit native pattern direction reversal"),
-                extent_mode=_string("Preserve overall extent or per-step offset semantics",
+                reversed=boolean("Explicit native pattern direction reversal"),
+                extent_mode=string("Preserve overall extent or per-step offset semantics",
                                     ("overall", "offset")),
-                occurrences=_integer("Occurrences including the original", 2, 64),
+                occurrences=integer("Occurrences including the original", 2, 64),
             )
             _required += ("axis", "reversed", "extent_mode", "occurrences")
             if _command == "PartDesign_LinearPattern":
@@ -582,14 +582,14 @@ for _command, _spec in HISTORY_COMMANDS.items():
                 _required += ("distance_mm",)
             else:
                 _properties["angle_deg"] = {
-                    **_number("Positive native overall or per-step angle in degrees; offset × (occurrences - 1) must be less than 360"),
+                    **number("Positive native overall or per-step angle in degrees; offset × (occurrences - 1) must be less than 360"),
                     "exclusiveMinimum": 0, "maximum": 360,
                 }
                 _required += ("angle_deg",)
     else:
         _properties.update(
-            tool_body_names=_array("Ordered registered tool Bodies; exactly one for Common, 1-16 for Cut/Fuse", NAME_SCHEMA, 1, 16),
-            mode=_string("Native Boolean operation", ("Fuse", "Cut", "Common")),
+            tool_body_names=array("Ordered registered tool Bodies; exactly one for Common, 1-16 for Cut/Fuse", NAME_SCHEMA, 1, 16),
+            mode=string("Native Boolean operation", ("Fuse", "Cut", "Common")),
         )
         _required += ("tool_body_names", "mode")
     _limits = ()
@@ -609,9 +609,9 @@ for _command, _spec in HISTORY_COMMANDS.items():
         _limits = ("Transform tool shapes only; 1-16 ordered same-Body native tool features; explicit Origin plane, current predecessor planar face or same-Body Datum Plane with same-Body attachment supports throughout its Datum/Coordinate System support chain. No nested transform.",)
     elif _spec["domain"] == "pattern":
         _limits = ("Transform tool shapes only; 1-16 ordered source features, one explicit axis, 2-64 occurrences, overall/offset mode. No second direction, uneven spacing or nested transform.",)
-    FEATURE_SPECS[_command] = _operation(
+    FEATURE_SPECS[_command] = operation(
         _spec["domain"], "Create one native %s feature in an explicitly owned Body." % _command,
-        ("rebuild",), "committed", _properties, _required,
+        ("target",), "committed", _properties, _required,
         ("Current Target evidence and revision are required; reconstruction also requires Source evidence.",
          "Native references must belong to this Target session."),
         _limits, timeout_class="long",
@@ -631,7 +631,7 @@ FEATURE_SPECS["PartDesign_Boolean"]["input_schema"]["oneOf"] = [
 _hole_schema = FEATURE_SPECS["PartDesign_Hole"]["input_schema"]
 
 _hole_schema["oneOf"] = [
-    _conditional_form(_hole_schema, {**depth_choices, "mouth_mode": mouth},
+    conditional_form(_hole_schema, {**depth_choices, "mouth_mode": mouth},
                       (*depth_required, *mouth_required), (*depth_excluded, *mouth_excluded))
     for depth_choices, depth_required, depth_excluded in (
         ({"depth_mode": "dimension", "drill_point": "flat"}, ("depth_mm",),
@@ -651,9 +651,9 @@ _hole_schema["oneOf"] = [
 _chamfer_schema = FEATURE_SPECS["PartDesign_Chamfer"]["input_schema"]
 
 _chamfer_schema["oneOf"] = [
-    _conditional_form(_chamfer_schema, {"mode": "equal_distance"},
+    conditional_form(_chamfer_schema, {"mode": "equal_distance"},
                       excluded=("size2_mm", "flip_direction")),
-    _conditional_form(_chamfer_schema, {"mode": "two_distances"},
+    conditional_form(_chamfer_schema, {"mode": "two_distances"},
                       required=("size2_mm", "flip_direction")),
 ]
 
@@ -663,11 +663,11 @@ DATUM_TYPES = {
     "Part_DatumPoint": "Part::DatumPoint", "Part_CoordinateSystem": "Part::LocalCoordinateSystem",
 }
 
-_INDEX = _integer("Zero-based native Sketch index from the current observation", 0)
+_INDEX = integer("Zero-based native Sketch index from the current observation", 0)
 # Existing indexes are zero-based; new IDs belong only to this edit.
 _SKETCH_ADDRESS = {"oneOf": [
-    _branch("kind", "existing", {"index": _INDEX}),
-    _branch("kind", "new", {"id": _SKETCH_ID}),
+    branch("kind", "existing", {"index": _INDEX}),
+    branch("kind", "new", {"id": _SKETCH_ID}),
 ]}
 
 
@@ -678,7 +678,7 @@ def _sketch_edit_constraint(branch):
             properties[key] = _SKETCH_ADDRESS
     for key in ("first_point", "second_point", "point"):
         if key in properties:
-            properties[key] = _schema({"geometry": _SKETCH_ADDRESS,
+            properties[key] = object_schema({"geometry": _SKETCH_ADDRESS,
                                        "position": _SKETCH_POINT_REF["properties"]["position"]},
                                       ("geometry", "position"))
     return {**branch, "properties": properties}
@@ -706,20 +706,20 @@ def _sketch_constraint_forms():
 
 
 _SKETCH_OPERATIONS = _compact_sketch_form({"oneOf": [
-    _branch("op", "add_geometry", {"geometry": _SKETCH_GEOMETRY}),
-    _branch("op", "delete_geometry", {"index": _INDEX}),
-    _branch("op", "move_point", {"index": _INDEX,
+    branch("op", "add_geometry", {"geometry": _SKETCH_GEOMETRY}),
+    branch("op", "delete_geometry", {"index": _INDEX}),
+    branch("op", "move_point", {"index": _INDEX,
                                  "position": _SKETCH_POINT_REF["properties"]["position"],
                                  "point_mm": _SKETCH_POINT}),
-    _branch("op", "set_radius", {"index": _INDEX, "radius_mm": _POSITIVE_LENGTH}),
-    _branch("op", "set_length", {"index": _INDEX, "length_mm": _POSITIVE_LENGTH}),
-    _branch("op", "construction", {"index": _INDEX, "enabled": _boolean("Construction geometry")}),
-    _branch("op", "add_constraint", {"constraint": {"oneOf": _sketch_constraint_forms()}}),
-    _branch("op", "delete_constraint", {"index": _INDEX}),
-    _branch("op", "set_constraint_value", {"index": _INDEX,
-        "value": _number("Driving dimensional value in millimetres or degrees")}),
-    _branch("op", "constraint_active", {"index": _INDEX, "enabled": _boolean("Constraint enabled")}),
-    _branch("op", "constraint_driving", {"index": _INDEX, "enabled": _boolean("Driving constraint")}),
+    branch("op", "set_radius", {"index": _INDEX, "radius_mm": _POSITIVE_LENGTH}),
+    branch("op", "set_length", {"index": _INDEX, "length_mm": _POSITIVE_LENGTH}),
+    branch("op", "construction", {"index": _INDEX, "enabled": boolean("Construction geometry")}),
+    branch("op", "add_constraint", {"constraint": {"oneOf": _sketch_constraint_forms()}}),
+    branch("op", "delete_constraint", {"index": _INDEX}),
+    branch("op", "set_constraint_value", {"index": _INDEX,
+        "value": number("Driving dimensional value in millimetres or degrees")}),
+    branch("op", "constraint_active", {"index": _INDEX, "enabled": boolean("Constraint enabled")}),
+    branch("op", "constraint_driving", {"index": _INDEX, "enabled": boolean("Driving constraint")}),
 ]})
 
 EDIT_FEATURE_TYPES = {
@@ -731,7 +731,7 @@ EDIT_FEATURE_TYPES = {
 }
 
 _EDIT_PLACEMENT = {"position_mm": _POSITION_MM, "axis": _ROTATION_AXIS,
-                   "angle_deg": _number("Rotation angle in degrees")}
+                   "angle_deg": number("Rotation angle in degrees")}
 _EDIT_COMMON = {
     "document": _DOCUMENT, "session_id": TEXT_SCHEMA, "body_name": NAME_SCHEMA,
     "object_name": {**NAME_SCHEMA, "description": "Existing native Target object"},
@@ -745,10 +745,10 @@ def _edit_fields(type_id, command):
         return {"label": {"type": "string", "minLength": 1, "maxLength": 120}, **_EDIT_PLACEMENT}
     if type_id == "Sketcher::SketchObject":
         return {**_EDIT_PLACEMENT, "attachment": {"oneOf": [
-            _branch("mode", "free", {}),
-            _branch("mode", "attached", {"reference":
+            branch("mode", "free", {}),
+            branch("mode", "attached", {"reference":
                 FEATURE_SPECS["Sketcher_MapSketch"]["input_schema"]["properties"]["reference"]}),
-        ]}, "operations": _array(
+        ]}, "operations": array(
             "Use observed zero-based indexes or new geometry IDs in this edit. Set radius on an unconstrained circle or arc, or length on an unconstrained line. Use mm or degrees for driving dimensions.",
                                   _SKETCH_OPERATIONS, 1, 64)}
     hidden = set(_EDIT_COMMON) | {"feature_name", "datum_name", "predecessor_name"}
@@ -757,19 +757,19 @@ def _edit_fields(type_id, command):
     return fields
 
 
-FEATURE_SPECS["EditFeature"] = _operation(
+FEATURE_SPECS["EditFeature"] = operation(
     "edit", "Edit an observed existing Target object in place using its native type contract.",
-    ("rebuild",), "committed", _EDIT_COMMON, tuple(_EDIT_COMMON),
+    ("target",), "committed", _EDIT_COMMON, tuple(_EDIT_COMMON),
     ("Keep native identity and Body Tip. Re-observe the object and any replacement subelements at the current revision.",),
     timeout_class="long",
 )
 _edit_schema = FEATURE_SPECS["EditFeature"]["input_schema"]
-_edit_schema["properties"].update(type_id=_string("Observed native TypeId", tuple(EDIT_FEATURE_TYPES)),
+_edit_schema["properties"].update(type_id=string("Observed native TypeId", tuple(EDIT_FEATURE_TYPES)),
                                   changes={"type": "object"})
 _edit_schema["required"] += ["type_id", "changes"]
 _edit_schema["oneOf"] = [
-    _schema({**_EDIT_COMMON, "type_id": _string("Observed native TypeId", (type_id,)),
-             "changes": _schema(_edit_fields(type_id, command))},
+    object_schema({**_EDIT_COMMON, "type_id": string("Observed native TypeId", (type_id,)),
+             "changes": object_schema(_edit_fields(type_id, command))},
             _edit_schema["required"])
     for type_id, command in EDIT_FEATURE_TYPES.items()
 ]

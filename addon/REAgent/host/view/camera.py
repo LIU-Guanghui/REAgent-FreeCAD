@@ -6,12 +6,12 @@ import time
 import FreeCAD as App
 from PySide import QtCore, QtGui
 
-from REAgent.host.analysis.math3d import _normalized_vector
+from REAgent.host.analysis.math3d import normalized_vector
 from REAgent.host.view.cameras import VIEW_CAMERA_SPECS
 from REAgent.protocol.observations import VIEW_PROJECTIONS
 
 
-def _canonical_view_method(view, direction):
+def canonical_view_method(view, direction):
     try:
         specification = VIEW_CAMERA_SPECS[direction]
     except KeyError:
@@ -27,9 +27,9 @@ def _canonical_view_method(view, direction):
 def _rotation_from_camera_pose(camera_direction, up_direction):
     """Map camera-local right/up/back axes to one deterministic world pose."""
 
-    forward = _normalized_vector(camera_direction)
-    up = _normalized_vector(up_direction)
-    right = _normalized_vector(
+    forward = normalized_vector(camera_direction)
+    up = normalized_vector(up_direction)
+    right = normalized_vector(
         {
             "x": forward["y"] * up["z"] - forward["z"] * up["y"],
             "y": forward["z"] * up["x"] - forward["x"] * up["z"],
@@ -39,7 +39,7 @@ def _rotation_from_camera_pose(camera_direction, up_direction):
     if max(abs(value) for value in right.values()) <= 1e-12:
         raise ValueError("Camera direction and up direction must not be parallel")
     # Recompute up so numerical drift cannot introduce a skewed camera basis.
-    up = _normalized_vector(
+    up = normalized_vector(
         {
             "x": right["y"] * forward["z"] - right["z"] * forward["y"],
             "y": right["z"] * forward["x"] - right["x"] * forward["z"],
@@ -84,9 +84,9 @@ def _rotation_from_camera_pose(camera_direction, up_direction):
     return App.Rotation(qx / length, qy / length, qz / length, qw / length)
 
 
-def _apply_canonical_view(view, direction, scope):
+def apply_canonical_view(view, direction, scope):
     scope.assert_render_safe()
-    method, specification = _canonical_view_method(view, direction)
+    method, specification = canonical_view_method(view, direction)
     if specification["method"] == "setCameraOrientation":
         method(
             _rotation_from_camera_pose(
@@ -96,10 +96,10 @@ def _apply_canonical_view(view, direction, scope):
         )
     else:
         method()
-    _refresh_camera(scope)
+    refresh_camera(scope)
 
 
-def _set_orthographic_projection(view):
+def set_orthographic_projection(view):
     setter = getattr(view, "setCameraType", None)
     getter = getattr(view, "getCameraType", None)
     if not callable(setter) or not callable(getter):
@@ -141,7 +141,7 @@ def _camera_height(view):
     return value if math.isfinite(value) and value > 0 else None
 
 
-def _set_camera_height(view, value):
+def set_camera_height(view, value):
     field = _camera_height_field(view)
     if field is None:
         raise RuntimeError(
@@ -180,7 +180,7 @@ def _rotated_vector(orientation, vector):
     return {axis: values[axis] / length for axis in values}
 
 
-def _direction_error_deg(actual, expected):
+def direction_error_deg(actual, expected):
     if actual is None or expected is None:
         return None
     dot = sum(actual[axis] * expected[axis] for axis in ("x", "y", "z"))
@@ -188,16 +188,16 @@ def _direction_error_deg(actual, expected):
     return math.degrees(math.acos(dot))
 
 
-def _camera_metadata(view, direction, camera_height, width, height, *,
+def read_camera_metadata(view, direction, camera_height, width, height, *,
                      state=None, center=None, expected=None):
-    state = _camera_numeric_state(view) if state is None else state
+    state = camera_numeric_state(view) if state is None else state
     if expected is not None:
-        differences = _camera_state_differences(view, expected, actual=state)
+        differences = camera_state_differences(view, expected, actual=state)
         if differences:
             raise RuntimeError("Capture camera changed: " + "; ".join(differences))
     if center is not None:
         _verify_camera_focus(view, center, state=state)
-    method, specification = _canonical_view_method(view, direction)
+    method, specification = canonical_view_method(view, direction)
     del method
     camera_type = state["camera_type"]
     if camera_type.lower() != "orthographic":
@@ -210,10 +210,10 @@ def _camera_metadata(view, direction, camera_height, width, height, *,
     actual_up = _rotated_vector(orientation, {"x": 0.0, "y": 1.0, "z": 0.0})
     if actual_direction is None or actual_up is None:
         raise RuntimeError("Canonical camera pose could not be read")
-    direction_error = _direction_error_deg(
+    direction_error = direction_error_deg(
         actual_direction, specification["camera_direction"]
     )
-    up_error = _direction_error_deg(actual_up, specification["up_direction"])
+    up_error = direction_error_deg(actual_up, specification["up_direction"])
     errors = [error for error in (direction_error, up_error) if error is not None]
     pose_error = max(errors) if errors else 0.0
     if pose_error > 0.01:
@@ -247,7 +247,7 @@ def _camera_metadata(view, direction, camera_height, width, height, *,
 
 
 def _camera_framing(view, *, state=None):
-    state = _camera_numeric_state(view) if state is None else state
+    state = camera_numeric_state(view) if state is None else state
     forward = _rotated_vector(App.Rotation(*state["quaternion"]), dict(x=0., y=0., z=-1.))
     distance = state["fields"]["focalDistance"]
     if forward is None or distance <= 0:
@@ -259,8 +259,8 @@ def _camera_framing(view, *, state=None):
     return {"position_mm": position, "focal_distance_mm": distance, "focus_mm": focus}
 
 
-def _set_camera_focus(view, center, *, state=None):
-    state = _camera_numeric_state(view) if state is None else state
+def set_camera_focus(view, center, *, state=None):
+    state = camera_numeric_state(view) if state is None else state
     framing = _camera_framing(view, state=state)
     forward = _rotated_vector(App.Rotation(*state["quaternion"]), dict(x=0., y=0., z=-1.))
     if forward is None or any(not math.isfinite(center[axis]) for axis in ("x", "y", "z")):
@@ -281,7 +281,7 @@ def _verify_camera_focus(view, center, *, state=None):
         raise RuntimeError("Camera focus did not read back at the shared center")
 
 
-def _record_camera_failure(error, direction, phase, center, state):
+def record_camera_failure(error, direction, phase, center, state):
     """Keep one bounded failure-time snapshot, independent of later restoration."""
     detail = dict(getattr(error, "failure_detail", {}) or {})
     if "camera" in detail:
@@ -307,17 +307,17 @@ def _record_camera_failure(error, direction, phase, center, state):
     error.failure_detail = {**detail, "camera": camera}
 
 
-def _refresh_camera(scope):
+def refresh_camera(scope):
     scope.assert_render_safe()
     QtGui.QApplication.processEvents(QtCore.QEventLoop.ExcludeUserInputEvents | QtCore.QEventLoop.ExcludeSocketNotifiers)
     scope.assert_render_safe()
 
 
-def _wait_for_camera_stable(view, direction, scope, timeout_seconds=2.0, *,
+def wait_for_camera_stable(view, direction, scope, timeout_seconds=2.0, *,
                             phase="settle", center=None):
     """Return one complete stable snapshot without rereading fields per check."""
 
-    _method, specification = _canonical_view_method(view, direction)
+    _method, specification = canonical_view_method(view, direction)
     deadline = time.monotonic() + float(timeout_seconds)
     previous = None
     stable_samples = 0
@@ -327,28 +327,28 @@ def _wait_for_camera_stable(view, direction, scope, timeout_seconds=2.0, *,
             if time.monotonic() >= deadline:
                 break
             state = None
-            _refresh_camera(scope)
-            state = _camera_numeric_state(view)
+            refresh_camera(scope)
+            state = camera_numeric_state(view)
             orientation = App.Rotation(*state["quaternion"])
             actual_direction = _rotated_vector(orientation, dict(x=0., y=0., z=-1.))
             actual_up = _rotated_vector(orientation, dict(x=0., y=1., z=0.))
             if actual_direction is None or actual_up is None:
                 raise RuntimeError("Canonical camera pose could not be read")
-            stable = previous is not None and not _camera_state_differences(view, previous, actual=state)
+            stable = previous is not None and not camera_state_differences(view, previous, actual=state)
             stable_samples = stable_samples + 1 if stable else 0
             previous = state
-            errors = (_direction_error_deg(actual_direction, specification["camera_direction"]),
-                      _direction_error_deg(actual_up, specification["up_direction"]))
+            errors = (direction_error_deg(actual_direction, specification["camera_direction"]),
+                      direction_error_deg(actual_up, specification["up_direction"]))
             if stable_samples >= 2 and max(errors) <= 0.01:
                 return state
             time.sleep(0.02)
         raise RuntimeError("Canonical %s camera did not settle within %.1f seconds" % (direction, timeout_seconds))
     except Exception as exc:
-        _record_camera_failure(exc, direction, phase, center, state)
+        record_camera_failure(exc, direction, phase, center, state)
         raise
 
 
-def _camera_numeric_state(view):
+def camera_numeric_state(view):
     node = view.getCameraNode()
     camera_type = view.getCameraType()
     projection_field = {"Orthographic": "height", "Perspective": "heightAngle"}.get(camera_type)
@@ -371,9 +371,9 @@ def _camera_numeric_state(view):
             "viewport_mapping": int(node.viewportMapping.getValue())}
 
 
-def _camera_state_differences(view, expected, *, actual=None):
+def camera_state_differences(view, expected, *, actual=None):
     """Compare physical camera state, including equivalent q/-q rotations."""
-    actual = _camera_numeric_state(view) if actual is None else actual
+    actual = camera_numeric_state(view) if actual is None else actual
     differences = []
     if actual["camera_type"] != expected["camera_type"]:
         return ["camera_type: expected %s, actual %s" %
@@ -411,7 +411,7 @@ def _camera_state_differences(view, expected, *, actual=None):
     return differences
 
 
-def _restore_camera_state(view, state, *, errors=None):
+def restore_camera_state(view, state, *, errors=None):
     """Restore Coin fields without starting navigation animation; verify target."""
     failures = []
     if state is not None:
@@ -435,7 +435,7 @@ def _restore_camera_state(view, state, *, errors=None):
             while True:
                 QtGui.QApplication.processEvents(
                     QtCore.QEventLoop.ExcludeUserInputEvents | QtCore.QEventLoop.ExcludeSocketNotifiers)
-                differences = _camera_state_differences(view, expected)
+                differences = camera_state_differences(view, expected)
                 stable_samples = 0 if differences else stable_samples + 1
                 if stable_samples >= 3:
                     break
@@ -457,7 +457,7 @@ def _restore_camera_state(view, state, *, errors=None):
     return failures
 
 
-def _capture_complete_camera_state(view):
+def capture_complete_camera_state(view):
     """Capture immutable numeric fields as well as the native camera string."""
     try:
         if _coin is None:
@@ -465,12 +465,12 @@ def _capture_complete_camera_state(view):
         camera = view.getCamera()
         if not camera:
             raise RuntimeError("FreeCAD returned an empty camera")
-        return {"camera": camera, "numeric": _camera_numeric_state(view)}
+        return {"camera": camera, "numeric": camera_numeric_state(view)}
     except Exception as exc:
         raise RuntimeError("Cannot capture the complete view camera state: %s" % exc) from exc
 
 
-def _projection(value):
+def normalize_projection(value):
     value = "orthographic" if value is None else value
     if value not in VIEW_PROJECTIONS:
         raise ValueError(

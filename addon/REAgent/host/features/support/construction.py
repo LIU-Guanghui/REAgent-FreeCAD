@@ -3,16 +3,16 @@
 import FreeCAD as App
 import Part
 
-from REAgent.host.workspace.properties import _valid_name
-from REAgent.host.validation.structure import _single_solid_summary, result_state
-from REAgent.host.workspace.model import _enforce_single_solid_body, _session_bodies, _world_shape
-from REAgent.host.workspace.properties import _metadata, _native_link
+from REAgent.host.workspace.properties import valid_name
+from REAgent.host.validation.structure import single_solid_summary, result_state
+from REAgent.host.workspace.model import enforce_single_solid_body, session_bodies, copy_world_shape
+from REAgent.host.workspace.properties import metadata, native_link
 
 
-def _history_context(document, group, request, *, require_solid, sketch=False):
+def history_context(document, group, request, *, require_solid, sketch=False):
     body = document.getObject(request["body_name"])
     name = request["feature_name"]
-    if body not in _session_bodies(group):
+    if body not in session_bodies(group):
         raise ValueError("History feature Body is not owned by this session")
     if document.getObject(name) is not None:
         raise ValueError("History feature name already exists: " + name)
@@ -22,18 +22,18 @@ def _history_context(document, group, request, *, require_solid, sketch=False):
     if body.Tip is not None and body.Tip.TypeId not in (
             "Sketcher::SketchObject", "Part::DatumPlane", "Part::DatumLine",
             "Part::DatumPoint", "Part::LocalCoordinateSystem"):
-        prior = _single_solid_summary(shape, "Receiving Body")
+        prior = single_solid_summary(shape, "Receiving Body")
     elif shape is not None and not shape.isNull() and len(shape.Solids):
         raise ValueError("Receiving Body has a solid without a solid Tip")
     if require_solid and prior is None:
         raise ValueError("Subtractive history feature requires a prior valid single solid")
     profile = None
     if sketch:
-        profile = _closed_profile(document, body, request["sketch_name"])
+        profile = closed_profile(document, body, request["sketch_name"])
     return body, profile, body.Tip
 
 
-def _closed_profile(document, body, name):
+def closed_profile(document, body, name):
     profile = document.getObject(name)
     if (profile is None or profile.TypeId != "Sketcher::SketchObject"
             or profile.Document is not document or profile not in body.Group):
@@ -48,32 +48,32 @@ def _closed_profile(document, body, name):
     return profile
 
 
-def _set_profile(feature, sketch):
-    meta = _metadata(feature, "Profile")
+def set_profile(feature, sketch):
+    meta = metadata(feature, "Profile")
     if not meta["writable"] or meta["codec"] not in ("link", "link_sub"):
         raise ValueError("Native Profile is not a writable Sketch reference")
     feature.Profile = sketch
 
 
-def _profile_readback(feature, sketch):
-    if _native_link(feature.Profile) is not sketch or sketch not in feature.OutList:
+def profile_readback(feature, sketch):
+    if native_link(feature.Profile) is not sketch or sketch not in feature.OutList:
         raise RuntimeError("Native Profile did not retain its Sketch dependency")
 
 
-def _shape_readback(document, body, feature, name, type_id, prior_tip):
+def shape_readback(document, body, feature, name, type_id, prior_tip):
     if (document.getObject(name) is not feature or feature.Name != name
             or feature.TypeId != type_id or feature not in body.Group
             or body.Tip is not feature or feature is prior_tip):
         raise RuntimeError("Native history feature identity, ownership or Tip differs")
-    feature_shape = _single_solid_summary(feature.Shape, "History feature")
-    body_shape = _single_solid_summary(_world_shape(body), "Receiving Body")
+    feature_shape = single_solid_summary(feature.Shape, "History feature")
+    body_shape = single_solid_summary(copy_world_shape(body), "Receiving Body")
     if abs(feature_shape["volume_mm3"] - body_shape["volume_mm3"]) > max(
             1e-9, body_shape["volume_mm3"] * 1e-12):
         raise RuntimeError("Native feature and Body volume summaries disagree")
     return body_shape
 
 
-def _section_or_path(document, body, name, *, closed, path=False):
+def section_or_path(document, body, name, *, closed, path=False):
     """Read one pre-existing whole Sketch wire without changing its geometry."""
     sketch = document.getObject(name)
     if (sketch is None or sketch.TypeId != "Sketcher::SketchObject"
@@ -107,7 +107,7 @@ def _section_or_path(document, body, name, *, closed, path=False):
     return sketch, wires[0]
 
 
-def _distinct_section_planes(first, second):
+def distinct_section_planes(first, second):
     first_frame, second_frame = first.Placement, second.Placement
     normal = first_frame.Rotation.multVec(App.Vector(0, 0, 1))
     other = second_frame.Rotation.multVec(App.Vector(0, 0, 1))
@@ -116,7 +116,7 @@ def _distinct_section_planes(first, second):
         raise ValueError("Loft sections must lie on different Sketch planes")
 
 
-def _whole_sketch_link(value, sketch):
+def whole_sketch_link(value, sketch):
     if value is sketch:
         return True
     if isinstance(value, (tuple, list)) and len(value) == 2 and value[0] is sketch:
@@ -126,15 +126,15 @@ def _whole_sketch_link(value, sketch):
 
 def create_body(document, name, *, main=False):
     """Create one native Body inside the caller's existing transaction."""
-    name = _valid_name(name, "body")
+    name = valid_name(name, "body")
     if document.getObject(name) is not None:
         raise ValueError("Body name already exists: " + name)
     body = document.addObject("PartDesign::Body", name)
     if body.Name != name or body.TypeId != "PartDesign::Body":
         raise RuntimeError("Native Body creation did not retain its requested identity")
-    _enforce_single_solid_body(body)
+    enforce_single_solid_body(body)
     if main:
-        body.Label = "Rebuild"
+        body.Label = "Target"
         body.addProperty("App::PropertyStringList", "REAgentBodyNames", "REAgent")
         body.setEditorMode("REAgentBodyNames", 1)
     return body

@@ -3,7 +3,7 @@
 import hashlib
 
 
-def _file_sha256(path):
+def file_sha256(path):
     digest = hashlib.sha256()
     with open(path, "rb") as source_file:
         while True:

@@ -2,8 +2,8 @@
 
 import math
 
-from REAgent.host.numeric import _finite_number, _positive_number
-from REAgent.host.analysis.references import _normalize_semantic_entity_ref
+from REAgent.host.numeric import finite_number, positive_number
+from REAgent.host.analysis.references import normalize_semantic_entity_ref
 
 
 def _reject_unknown_parameters(parameters, allowed):
@@ -17,7 +17,7 @@ def _require_nonzero_vector(x_value, y_value, z_value, field):
         raise ValueError("%s must be non-zero" % field)
 
 
-def _dressup_edge_queries(value):
+def dressup_edge_queries(value):
     if value is None:
         return []
     if not isinstance(value, list) or not value or len(value) > 64:
@@ -41,11 +41,11 @@ def _dressup_edge_queries(value):
         if not isinstance(direction, list) or len(direction) != 3:
             raise ValueError(prefix + ".direction must be [x, y, z]")
         center = [
-            _finite_number(component, prefix + ".center_mm")
+            finite_number(component, prefix + ".center_mm")
             for component in center
         ]
         direction = [
-            _finite_number(component, prefix + ".direction")
+            finite_number(component, prefix + ".direction")
             for component in direction
         ]
         _require_nonzero_vector(
@@ -56,10 +56,10 @@ def _dressup_edge_queries(value):
                 "curve_type": curve_type,
                 "center_mm": center,
                 "direction": direction,
-                "length_mm": _positive_number(
+                "length_mm": positive_number(
                     query.get("length_mm"), prefix + ".length_mm"
                 ),
-                "tolerance_mm": _positive_number(
+                "tolerance_mm": positive_number(
                     query.get("tolerance_mm", 0.02), prefix + ".tolerance_mm"
                 ),
             }
@@ -67,7 +67,7 @@ def _dressup_edge_queries(value):
     return normalized
 
 
-def _dressup_edge_selectors(value):
+def dressup_edge_selectors(value):
     if value is None:
         return []
     if not isinstance(value, list) or not value or len(value) > 64:
@@ -100,7 +100,7 @@ def _dressup_edge_selectors(value):
     return normalized
 
 
-def _dressup_face_selectors(value):
+def dressup_face_selectors(value):
     if value is None:
         return []
     if not isinstance(value, list) or not value or len(value) > 64:
@@ -121,7 +121,7 @@ def _dressup_face_selectors(value):
     return normalized
 
 
-def _feature_semantic_refs(
+def feature_semantic_refs(
     value, expected_kind, expected_intended_role, parameter_name, maximum
 ):
     if value is None:
@@ -134,10 +134,10 @@ def _feature_semantic_refs(
     normalized = []
     for index, reference in enumerate(value):
         prefix = "parameters.%s[%d]" % (parameter_name, index)
-        normalized_ref = _normalize_semantic_entity_ref(
+        normalized_ref = normalize_semantic_entity_ref(
             reference,
             expected_kind=expected_kind,
-            expected_owner_role="rebuild",
+            expected_owner_role="target",
             expected_intended_role=expected_intended_role,
             prefix=prefix,
         )
@@ -400,7 +400,7 @@ def _edge_reference_resolution(
         detail = next(item for item in details if item["name"] == match_names[0])
         updated_reference = dict(reference)
         updated_reference["owner"] = {
-            **reference["owner"], "role": "rebuild", "revision": current_revision,
+            **reference["owner"], "role": "target", "revision": current_revision,
         }
         updated_reference["signatures"] = {
             "geometry": detail["geometry_signature"],
@@ -438,7 +438,7 @@ def _edge_reference_resolution(
     }
 
 
-def _resolve_dressup_selection(
+def resolve_dressup_selection(
     evidence, parameters, tolerance_contract, nearest_limit=3
 ):
     """Resolve explicit edge inputs and return per-input read-only diagnostics."""
@@ -534,7 +534,7 @@ def _resolve_dressup_selection(
     }
 
 
-def _resolve_face_selection(evidence, parameters, role, nearest_limit=3):
+def resolve_face_selection(evidence, parameters, role, nearest_limit=3):
     """Resolve explicit current faces without choosing among similar candidates."""
     if role not in ("draft_target", "draft_neutral", "thickness_opening",
                     "mirror_plane"):

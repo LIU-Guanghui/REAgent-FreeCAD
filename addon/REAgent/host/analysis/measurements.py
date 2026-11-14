@@ -2,14 +2,14 @@
 
 import math
 
-from REAgent.host.numeric import _vector_dict
+from REAgent.host.numeric import vector_dict
 
 
-def _shape_summary(shape):
+def summarize_shape(shape):
     if shape is None or shape.isNull():
         raise ValueError("STEP source contains a null shape")
-    bound_box = _geometry_bound_box(shape)
-    center = _shape_center_of_mass(shape)
+    bound_box = geometry_bound_box(shape)
+    center = shape_center_of_mass(shape)
     return {
         "shape_type": str(shape.ShapeType),
         "is_valid": bool(shape.isValid()),
@@ -31,13 +31,13 @@ def _shape_summary(shape):
         },
         "bounding_box_method": "brep_optimal_without_triangulation_or_tolerance_expansion",
         "bounding_box_tightness": "not_guaranteed_for_trimmed_geometry",
-        "center_of_mass_mm": _vector_dict(center) if center is not None else None,
+        "center_of_mass_mm": vector_dict(center) if center is not None else None,
         "center_of_mass_unavailable_reason": "mass_properties_unavailable" if center is None else None,
     }
 
 
-def _shape_center_of_mass(shape):
-    center = _mass_center(shape)
+def shape_center_of_mass(shape):
+    center = mass_center(shape)
     if center is not None:
         return center
 
@@ -46,7 +46,7 @@ def _shape_center_of_mass(shape):
     total_volume = sum(volumes)
     if (solids and all(math.isfinite(volume) and volume > 0 for volume in volumes)
             and math.isfinite(total_volume) and total_volume > 0):
-        solid_centers = [_mass_center(solid) for solid in solids]
+        solid_centers = [mass_center(solid) for solid in solids]
         if all(center is not None for center in solid_centers):
             coordinates = [sum(float(getattr(center, axis)) * volume
                                for volume, center in zip(volumes, solid_centers)) / total_volume
@@ -57,7 +57,7 @@ def _shape_center_of_mass(shape):
     return None
 
 
-def _mass_center(shape):
+def mass_center(shape):
     for property_name in ("CenterOfGravity", "CenterOfMass"):
         try:
             center = getattr(shape, property_name)
@@ -75,7 +75,7 @@ class _VectorSummary:
         self.z = z
 
 
-def _geometry_bound_box(shape):
+def geometry_bound_box(shape):
     if shape is None or shape.isNull():
         raise ValueError("Geometry bounds require a non-null Shape")
     try:
@@ -90,7 +90,7 @@ def _geometry_bound_box(shape):
     return box
 
 
-def _shape_summary_consistent(expected, actual):
+def shape_summary_consistent(expected, actual):
     """Numeric noise only, independent of Source/Target modeling tolerances."""
     if expected is None or actual is None:
         return expected is actual
@@ -115,7 +115,7 @@ def _shape_summary_consistent(expected, actual):
     return all(abs(left[axis] - right[axis]) <= linear for axis in ("x", "y", "z"))
 
 
-def _bound_box_summary(bound_box):
+def bound_box_summary(bound_box):
     return {
         "x_min": float(bound_box.XMin),
         "y_min": float(bound_box.YMin),
@@ -126,7 +126,7 @@ def _bound_box_summary(bound_box):
     }
 
 
-def _shape_tolerance(shape):
+def shape_tolerance(shape):
     try:
         return float(shape.getTolerance(1))
     except (AttributeError, RuntimeError, TypeError, ValueError):

@@ -4,7 +4,7 @@ import json
 
 from REAgent.ui import QtWidgets
 from REAgent.ui.panel import plain_label
-from REAgent.session.state_snapshots import comparison_contract, tool_message
+from REAgent.application.presentation import comparison_contract, tool_message
 
 
 class ComparisonDialog(QtWidgets.QDialog):

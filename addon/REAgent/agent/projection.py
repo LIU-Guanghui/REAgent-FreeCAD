@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from REAgent.model.messages import AssistantTurn, Image, ImageBlock, Instruction, TextBlock, ToolReply
-from REAgent.values import encode_json
+from REAgent.json_values import encode_json
 from .messages import CurrentFacts, HistorySummary, ImageMaterial, ToolOutcome, UserText
 
 
@@ -48,12 +48,12 @@ class ContextRequest:
 class ContextModel:
     """Context accounting uses the same projection as the eventual request."""
 
-    def __init__(self, client):
-        self.client = client
-
     @property
     def config(self):
         return self.client.config
+
+    def __init__(self, client):
+        self.client = client
 
     def estimate(self, messages, tools):
         return self.client.estimate(tuple(map(project, messages)), tools)

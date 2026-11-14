@@ -8,12 +8,13 @@ from enum import Enum
 import FreeCADGui as Gui
 
 from REAgent.ui import QtCore, QtWidgets
-from REAgent.model.limits import CONTEXT_RESERVE_TOKENS
+from REAgent.application.session import assert_source_release
+from REAgent.application.profiles import idle_context
 from REAgent.ui.panel import Panel
 from REAgent.ui.viewers import ImageViewer, TaskViewer
 from REAgent.ui.comparison import ComparisonDialog, comparison_text
-from REAgent.session.state_snapshots import preview_entries
-from REAgent.session.state_snapshots import tool_message
+from REAgent.application.presentation import preview_entries
+from REAgent.application.presentation import tool_message
 from REAgent.ui.settings import SettingsDialog, saved_settings
 from REAgent.ui.worker import Worker, tool_fault
 
@@ -114,110 +115,22 @@ class SourceWindowController(QtCore.QObject):
         self.panel.show()
         self.panel.raise_()
 
-    def _in_workbench(self):
-        workbench = Gui.activeWorkbench()
-        # A newly active handler may not have its internal __Workbench__ yet.
-        return workbench is not None and workbench is Gui.listWorkbenches().get("REAgentWorkbench")
-
-    def _workbench_changed(self, name):
-        if name != "REAgentWorkbench":
-            self.panel.hide()
-        self._workbench_timer.start(0)
-
-    def _sync_workbench(self):
-        if self._in_workbench():
-            self.show()
-        else:
-            self.panel.hide()
-
-    def _visibility_changed(self, visible):
-        # FreeCAD may restore Dock visibility after the workbench exit callback.
-        if visible and not self._in_workbench():
-            self._workbench_timer.start(0)
-
     def can_release(self):
         return (not self._busy and not self._task_open and not self._snapshot.get("controller")
                 and (self._worker is None or not self._worker.isRunning())
                 and not self._worker_retiring and not self._worker_failed)
 
-    def _notice(self, message):
+    def assert_release(self):
+        assert_source_release()
+
+    def notice(self, message):
         self._status_notice = message
         self.panel.status.setToolTip(message)
-
-    def _fault(self, message):
-        self.panel.message("error", message)
-
-    def _model_error(self, error):
-        text = error["code"] + ": " + error["message"]
-        request = (error.get("diagnostics") or {}).get("request") or {}
-        if request.get("output_tokens"):
-            text += ". Output budget: {:,} tokens".format(request["output_tokens"])
-            if request.get("kind") == "model":
-                text += (". The delivery receipt is retained; its report stopped." if request.get("purpose") == "report" else
-                         ". No tools from this failed decision were dispatched. Send a new message when ready.")
-        self._fault(text)
-
-    def _can_save(self):
-        facts = self._snapshot.get("controller") or {}
-        # A journal block alone must not prevent explicit preservation of a
-        # known Target. Controller/native guards decide the actual save result.
-        return bool(facts.get("target_document") and facts.get("session_status") == "ready"
-                    and not facts.get("write_block_sources", {}).get("controller"))
-
-    def _can_act(self, *, allow_busy=False, closing=False):
-        return not ((self._busy and not allow_busy) or self._worker_failed or self._worker_retiring
-                    or self._input_dialog is not None or (self._close_intent and not closing))
-
-    def _render(self):
-        facts = self._snapshot.get("controller") or {}
-        active = bool(facts)
-        chatting = self._snapshot.get("mode") == "chat"
-        live = active or chatting
-        idle = self._can_act()
-        writable = active and facts.get("session_status") == "ready" and not facts.get("target_writes_blocked")
-        viewing = self._input_dialog is None and self._close_intent is None
-        enabled = {"settings": idle and (not active or self._snapshot.get("status") in ("paused", "ready")),
-                   "rebuild": idle and self._task_open and not active, "pause": self._busy and self._close_intent is None,
-                   "compact": idle and live and bool((self._snapshot.get("context") or {}).get("can_compact")),
-                   "compare": idle and writable and not facts.get("source_basis_unknown"),
-                   "save": idle and self._can_save(), "journal": viewing and bool(self._journal_cache),
-                   "close": (self._task_open or live or self._busy) and viewing and not self._worker_failed,
-                   "status": viewing, "images": viewing and bool(self._image_entries)}
-        can_send = self._task_open and self._can_act(allow_busy=live)
-        self.panel.set_controls(enabled, can_new_task=idle and not self._task_open and not live, can_send=can_send)
-        self.panel.images.setToolTip("Task is ending." if self._close_intent else
-            "Close the input form first." if self._input_dialog is not None else
-            "No prepared images yet. Source initial views appear after capture and preparation." if not self._image_entries else
-            "Browse all %d prepared task images." % len(self._image_entries))
-        status = {"idle": "Ready", "ready": "Ready", "closed": "Ready", "paused": "Paused"}.get(self._snapshot.get("status"), "Working")
-        if self._busy:
-            status = "Pausing" if self._snapshot.get("pause", {}).get("paused") else "Working"
-        action = self._snapshot.get("action") or {}
-        resume_notice = ""
-        if action.get("scope") == "reconstruct":
-            resume_notice = "Reconstruction request: " + str(action.get("source_preview") or "")
-        if self._close_intent:
-            status = "Closing"
-        if self._worker_failed:
-            status = "Error"
-        elif self._worker_retiring:
-            status = "Closing"
-        elif active and (not writable or facts.get("source_basis_unknown")) and not self._busy and not self._close_intent:
-            status = "Blocked"
-        notice = self._status_notice or ""
-        self.panel.status.setText(status)
-        self.panel.status.setToolTip("\n".join(filter(None, (resume_notice, notice, str(self._snapshot.get("reason") or "")))))
-        self.panel.set_context(self.context_view())
-        self._update_viewer()
 
     def details(self):
         context = self._snapshot.get("context")
         if context is None or not (self._snapshot.get("controller") or self._snapshot.get("mode") == "chat"):
-            context = {"status": "not_started"}
-            if self._config is not None:
-                context.update(model=self._config.model, capacity_tokens=self._config.context_tokens,
-                               output_tokens=self._config.output_tokens, reserve_tokens=CONTEXT_RESERVE_TOKENS,
-                               reasoning_effort=self._config.reasoning_effort)
+            context = idle_context(self._config)
         return {"snapshot": self._snapshot, "task_open": self._task_open, "last_completed_batch": [
             {**{key: row[key] for key in ("function", "action_number", "request_number", "response_id",
                                          "generation", "tool_call_id", "is_error", "side_effect") if key in row},
@@ -227,7 +140,7 @@ class SourceWindowController(QtCore.QObject):
     def new_task(self):
         if (self._task_open or not self._can_act() or self._snapshot.get("controller")
                 or self._snapshot.get("mode") == "chat"):
-            self._notice("End the current task before starting another.")
+            self.notice("End the current task before starting another.")
             return False
         # This is an empty UI task; the first message creates the real conversation.
         self._task_open = True
@@ -268,7 +181,7 @@ class SourceWindowController(QtCore.QObject):
 
     def configure(self):
         if not self._can_act():
-            return self._notice("Wait for the current action before changing settings.")
+            return self.notice("Wait for the current action before changing settings.")
         locked = bool(self._snapshot.get("controller"))
         dialog = SettingsDialog(self.panel, read_settings=self._read_settings, save_settings=self._save_settings, config=self._config, profile_name=self._profile_name, lock_model=locked)
         if self.present(dialog) == QtWidgets.QDialog.Accepted:
@@ -286,19 +199,10 @@ class SourceWindowController(QtCore.QObject):
                 self._profile_name = dialog.profile_name
                 self._draft_credentials = dialog.take_credentials()
                 self._credential_dialog = dialog
-                self._notice("Model settings ready." + (" API key is available for this session only." if dialog.session_key_only else ""))
+                self.notice("Model settings ready." + (" API key is available for this session only." if dialog.session_key_only else ""))
         else:
             dialog.deleteLater()
         self._render()
-
-    def _clear_credentials(self):
-        if self._draft_credentials is not None:
-            self._draft_credentials.clear()
-            self._draft_credentials = None
-        if self._credential_dialog is not None:
-            self._credential_dialog.clear_credentials()
-            self._credential_dialog.deleteLater()
-            self._credential_dialog = None
 
     def present(self, dialog):
         """Keep modal input separate from execution and close its form before exit."""
@@ -315,40 +219,40 @@ class SourceWindowController(QtCore.QObject):
             if self._close_intent:
                 QtCore.QTimer.singleShot(0, lambda: self._advance_close("progress"))
 
-    def start(self, source, output, objective):
+    def stp2cad(self, source, output, objective):
         if not self._task_open or self._snapshot.get("controller"):
-            self._notice("Finish the current action/task before starting another.")
+            self.notice("Finish the current action/task before starting another.")
             return False
         if (not os.path.isabs(source) or not os.path.isfile(source)
                 or os.path.splitext(source)[1].lower() not in (".step", ".stp")
                 or not os.path.isabs(output) or not os.path.isdir(output)):
-            self._notice("Choose an existing absolute STEP path and an existing absolute output directory.")
+            self.notice("Choose an existing absolute STEP path and an existing absolute output directory.")
             return False
         if not self._snapshot.get("model_configured") and (self._config is None or self._draft_credentials is None):
             self.configure()
             if self._config is None or self._draft_credentials is None:
                 return False
-        if self.action("start", {"config": self._config, "credentials": self._draft_credentials,
-                                 "task": {"source_path": source, "output_dir": output, "observation_policy": "visual"},
-                                 "objective": objective}):
+        if self.action("stp2cad", {"config": self._config, "credentials": self._draft_credentials,
+                                   "task": {"source_path": source, "output_dir": output, "observation_policy": "visual"},
+                                   "objective": objective}):
             self._reset_views()
             self._results = ()
             self._progress = None
             self.panel.reset_task()
-            self._notice("STEP: " + source + "\nOutput: " + output)
+            self.notice("STEP: " + source + "\nOutput: " + output)
             self._render()
             return True
         return False
 
     def action(self, action, arguments=None, *, closing=False):
         if not self._can_act(closing=closing):
-            self._notice("The original worker is busy or closing; this action was not queued.")
+            self.notice("The original worker is busy or closing; this action was not queued.")
             return False
-        if action not in ("start", "chat", "configure", "advance", "compact", "close") and not self._snapshot.get("controller"):
-            self._notice("There is no retained task for this action.")
+        if action not in ("stp2cad", "chat", "configure", "advance", "compact", "close") and not self._snapshot.get("controller"):
+            self.notice("There is no retained task for this action.")
             return False
         if self._worker is None:
-            if action not in ("start", "chat"):
+            if action not in ("stp2cad", "chat"):
                 return False
             self._worker = Worker(self)
             self._worker.ready.connect(self._drain, QtCore.Qt.QueuedConnection)
@@ -357,9 +261,11 @@ class SourceWindowController(QtCore.QObject):
         try:
             if not self._worker.isRunning():
                 self._worker.reactivate()
+            if arguments is not None and arguments.get("config") is not None:
+                arguments = {**arguments, "config": dict(arguments["config"])}
             self._action_number = self._worker.submit(action, arguments, presentation_task=self._presentation_task)
         except (ValueError, RuntimeError) as exc:
-            self._notice(str(exc))
+            self.notice(str(exc))
             return False
         self._busy = True
         self._action = action
@@ -375,33 +281,28 @@ class SourceWindowController(QtCore.QObject):
         if self._worker is not None:
             self._worker.pause()
             self._invalidate_previews()
-            self._notice("Pause requested. The same worker will collect any in-flight result.")
+            self.notice("Pause requested. The same worker will collect any in-flight result.")
             self._render()
 
     def supplement(self, text):
         if (not self._can_act(allow_busy=True)
                 or not (self._snapshot.get("controller") or self._snapshot.get("mode") == "chat")):
-            self._notice("A correction needs the current live task outside shutdown.")
+            self.notice("A correction needs the current live task outside shutdown.")
             return False
         try:
             self._worker.supplement(text)
         except (ValueError, RuntimeError) as exc:
-            self._notice(str(exc))
+            self.notice(str(exc))
             return False
         self._invalidate_previews()
         facts = self._snapshot.get("controller") or {}
         if facts.get("target_writes_blocked"):
-            self._notice("Change request queued. Target writes are blocked. Inspect Status for the cause.")
+            self.notice("Change request queued. Target writes are blocked. Inspect Status for the cause.")
         else:
-            self._notice("Message queued; processing stays paused." if self._snapshot.get("pause", {}).get("manual") else
+            self.notice("Message queued; processing stays paused." if self._snapshot.get("pause", {}).get("manual") else
                          "Message queued. The current operation will finish before the Target conversation is processed.")
         self._render()
         return True
-
-    def _invalidate_previews(self):
-        self._snapshot = self._worker.snapshot()
-        self._obsolete_generation = self._snapshot["pause"].get("generation", -1)
-        self.panel.text.discard_previews()
 
     def compare(self):
         facts = self._snapshot.get("controller") or {}
@@ -437,6 +338,157 @@ class SourceWindowController(QtCore.QObject):
         if context.get("pending_results") or self._snapshot.get("pause", {}).get("queued") or self._busy:
             tooltip += " In-flight results or queued corrections are not fully included."
         return str(percent) + "%", "~" + short_token_count(used) + " / " + short_token_count(capacity), tooltip
+
+    def open_viewer(self, kind):
+        if kind not in ("status", "journal", "images", "comparison") or self._close_intent or self._input_dialog is not None:
+            return False
+        if kind == "journal" and not self._journal_cache:
+            return False
+        if kind == "images" and not self._image_entries:
+            return False
+        if kind == "comparison" and self._comparison is None:
+            return False
+        if self._viewer is not None and self._viewer_kind == kind:
+            self._viewer.raise_()
+            self._viewer.activateWindow()
+            return True
+        self._close_viewer()
+        viewer = ImageViewer(self._window) if kind == "images" else TaskViewer(self._window, kind)
+        self._viewer, self._viewer_kind = viewer, kind
+        def finished(_result):
+            if self._viewer is viewer:
+                self._viewer, self._viewer_kind = None, None
+            viewer.deleteLater()
+        viewer.finished.connect(finished)
+        self._update_viewer()
+        viewer.show()
+        return True
+
+    def request_close(self, intent):
+        self._advance_close("request", intent=CloseIntent(intent))
+
+    def cancel_close(self):
+        self._advance_close("cancel")
+        self._timer.stop()
+        if self._dialog is not None:
+            dialog, self._dialog = self._dialog, None
+            self._dialog_wait = False
+            dialog.close()
+            dialog.deleteLater()
+        self.pause()
+        self.notice("Close intent cancelled. Already dispatched work still returns; no model continuation was requested.")
+        self._render()
+
+    def eventFilter(self, watched, event):
+        if watched is self._window and event.type() == QtCore.QEvent.Close:
+            if self._native_close_permit:
+                self._native_close_permit = False
+                return False
+            event.ignore()
+            self.request_close("exit")
+            return True
+        return False
+
+    def _in_workbench(self):
+        workbench = Gui.activeWorkbench()
+        # A newly active handler may not have its internal __Workbench__ yet.
+        return workbench is not None and workbench is Gui.listWorkbenches().get("REAgentWorkbench")
+
+    def _workbench_changed(self, name):
+        if name != "REAgentWorkbench":
+            self.panel.hide()
+        self._workbench_timer.start(0)
+
+    def _sync_workbench(self):
+        if self._in_workbench():
+            self.show()
+        else:
+            self.panel.hide()
+
+    def _visibility_changed(self, visible):
+        # FreeCAD may restore Dock visibility after the workbench exit callback.
+        if visible and not self._in_workbench():
+            self._workbench_timer.start(0)
+
+    def _fault(self, message):
+        self.panel.message("error", message)
+
+    def _model_error(self, error):
+        text = error["code"] + ": " + error["message"]
+        request = (error.get("diagnostics") or {}).get("request") or {}
+        if request.get("output_tokens"):
+            text += ". Output budget: {:,} tokens".format(request["output_tokens"])
+            if request.get("kind") == "model":
+                text += (". The delivery receipt is retained; its report stopped." if request.get("purpose") == "report" else
+                         ". No tools from this failed decision were dispatched. Send a new message when ready.")
+        self._fault(text)
+
+    def _can_save(self):
+        facts = self._snapshot.get("controller") or {}
+        # A journal block alone must not prevent explicit preservation of a
+        # known Target. Controller/native guards decide the actual save result.
+        return bool(facts.get("target_document") and facts.get("session_status") == "ready"
+                    and not facts.get("write_block_sources", {}).get("controller"))
+
+    def _can_act(self, *, allow_busy=False, closing=False):
+        return not ((self._busy and not allow_busy) or self._worker_failed or self._worker_retiring
+                    or self._input_dialog is not None or (self._close_intent and not closing))
+
+    def _render(self):
+        facts = self._snapshot.get("controller") or {}
+        active = bool(facts)
+        chatting = self._snapshot.get("mode") == "chat"
+        live = active or chatting
+        idle = self._can_act()
+        writable = active and facts.get("session_status") == "ready" and not facts.get("target_writes_blocked")
+        viewing = self._input_dialog is None and self._close_intent is None
+        enabled = {"settings": idle and (not active or self._snapshot.get("status") in ("paused", "ready")),
+                   "stp2cad": idle and self._task_open and not active, "pause": self._busy and self._close_intent is None,
+                   "compact": idle and live and bool((self._snapshot.get("context") or {}).get("can_compact")),
+                   "compare": idle and writable and not facts.get("source_basis_unknown"),
+                   "save": idle and self._can_save(), "journal": viewing and bool(self._journal_cache),
+                   "close": (self._task_open or live or self._busy) and viewing and not self._worker_failed,
+                   "status": viewing, "images": viewing and bool(self._image_entries)}
+        can_send = self._task_open and self._can_act(allow_busy=live)
+        self.panel.set_controls(enabled, can_new_task=idle and not self._task_open and not live, can_send=can_send)
+        self.panel.images.setToolTip("Task is ending." if self._close_intent else
+            "Close the input form first." if self._input_dialog is not None else
+            "No prepared images yet. Source initial views appear after capture and preparation." if not self._image_entries else
+            "Browse all %d prepared task images." % len(self._image_entries))
+        status = {"idle": "Ready", "ready": "Ready", "closed": "Ready", "paused": "Paused"}.get(self._snapshot.get("status"), "Working")
+        if self._busy:
+            status = "Pausing" if self._snapshot.get("pause", {}).get("paused") else "Working"
+        action = self._snapshot.get("action") or {}
+        resume_notice = ""
+        if action.get("scope") == "reconstruct":
+            resume_notice = "Reconstruction request: " + str(action.get("source_preview") or "")
+        if self._close_intent:
+            status = "Closing"
+        if self._worker_failed:
+            status = "Error"
+        elif self._worker_retiring:
+            status = "Closing"
+        elif active and (not writable or facts.get("source_basis_unknown")) and not self._busy and not self._close_intent:
+            status = "Blocked"
+        notice = self._status_notice or ""
+        self.panel.status.setText(status)
+        self.panel.status.setToolTip("\n".join(filter(None, (resume_notice, notice, str(self._snapshot.get("reason") or "")))))
+        self.panel.set_context(self.context_view())
+        self._update_viewer()
+
+    def _clear_credentials(self):
+        if self._draft_credentials is not None:
+            self._draft_credentials.clear()
+            self._draft_credentials = None
+        if self._credential_dialog is not None:
+            self._credential_dialog.clear_credentials()
+            self._credential_dialog.deleteLater()
+            self._credential_dialog = None
+
+    def _invalidate_previews(self):
+        self._snapshot = self._worker.snapshot()
+        self._obsolete_generation = self._snapshot["pause"].get("generation", -1)
+        self.panel.text.discard_previews()
 
     def _close_viewer(self):
         viewer, self._viewer = self._viewer, None
@@ -475,31 +527,6 @@ class SourceWindowController(QtCore.QObject):
         self._snapshot = {**self._snapshot, "status": "closed"}
         if journal is not None:
             self._journal_cache["metadata"] = journal
-
-    def open_viewer(self, kind):
-        if kind not in ("status", "journal", "images", "comparison") or self._close_intent or self._input_dialog is not None:
-            return False
-        if kind == "journal" and not self._journal_cache:
-            return False
-        if kind == "images" and not self._image_entries:
-            return False
-        if kind == "comparison" and self._comparison is None:
-            return False
-        if self._viewer is not None and self._viewer_kind == kind:
-            self._viewer.raise_()
-            self._viewer.activateWindow()
-            return True
-        self._close_viewer()
-        viewer = ImageViewer(self._window) if kind == "images" else TaskViewer(self._window, kind)
-        self._viewer, self._viewer_kind = viewer, kind
-        def finished(_result):
-            if self._viewer is viewer:
-                self._viewer, self._viewer_kind = None, None
-            viewer.deleteLater()
-        viewer.finished.connect(finished)
-        self._update_viewer()
-        viewer.show()
-        return True
 
     def _receive_journal(self, event):
         cache = self._journal_cache
@@ -616,7 +643,7 @@ class SourceWindowController(QtCore.QObject):
                     text += f"\n{count} other {label} not executed. {unexecuted['reason']}"
                 self._fault(text)
         elif event.get("function") == "agent_save" and value.get("saved") is True:
-            self._notice("Model saved to " + str(value["saved_to"]))
+            self.notice("Model saved to " + str(value["saved_to"]))
         self._register_images(event["images"], value, event.get("session_id"))
 
     def _receive_state(self, snapshot):
@@ -695,7 +722,7 @@ class SourceWindowController(QtCore.QObject):
                 if completion["ok"]:
                     self._config = self._pending_config
                     self._profile_name = self._pending_profile
-                    self._notice("Model settings applied." + (" API key is available for this session only."
+                    self.notice("Model settings applied." + (" API key is available for this session only."
                                  if self._credential_dialog is not None and self._credential_dialog.session_key_only else ""))
                 self._pending_config = None
                 self._pending_profile = None
@@ -719,13 +746,13 @@ class SourceWindowController(QtCore.QObject):
                 final = completion["results"][-1]["value"] if completion["new_results"] else {}
                 self._task_ended(final.get("journal"))
                 if self._snapshot.get("controller"):
-                    self._notice("Task ended locally. Use End task to retry pending cleanup.")
+                    self.notice("Task ended locally. Use End task to retry pending cleanup.")
                 else:
-                    self._notice("Task ended. Surviving documents remain open.")
+                    self.notice("Task ended. Surviving documents remain open.")
             if completion["presentation_backlog"]:
-                self._notice("Paused after presentation backlog. Inspect retained results in Status.")
+                self.notice("Paused after presentation backlog. Inspect retained results in Status.")
             if completion["paused_before_start"]:
-                self._notice("Paused before this action began.")
+                self.notice("Paused before this action began.")
             self._dismiss_wait()
             if self._close_intent and completion["action"] == "close":
                 self._advance_close("task_completed")
@@ -739,21 +766,6 @@ class SourceWindowController(QtCore.QObject):
             self._dialog_wait = False
             dialog.close()
             dialog.deleteLater()
-
-    def request_close(self, intent):
-        self._advance_close("request", intent=CloseIntent(intent))
-
-    def cancel_close(self):
-        self._advance_close("cancel")
-        self._timer.stop()
-        if self._dialog is not None:
-            dialog, self._dialog = self._dialog, None
-            self._dialog_wait = False
-            dialog.close()
-            dialog.deleteLater()
-        self.pause()
-        self._notice("Close intent cancelled. Already dispatched work still returns; no model continuation was requested.")
-        self._render()
 
     def _advance_close(self, event, *, intent=None):
         """Commit the two close axes before callbacks; worker facts stay independent."""
@@ -820,7 +832,7 @@ class SourceWindowController(QtCore.QObject):
                 self._timer.stop()
                 self._render()
             elif step == "release_pending":
-                self._notice("Source or journal cleanup is pending. End task can retry; the main window can still exit.")
+                self.notice("Source or journal cleanup is pending. End task can retry; the main window can still exit.")
                 self.cancel_close()
             elif step == "thread":
                 self._worker_retiring = True
@@ -832,7 +844,7 @@ class SourceWindowController(QtCore.QObject):
                     self._timer.start(10000)
                 except RuntimeError as exc:
                     self._worker_retiring = False
-                    self._notice(str(exc))
+                    self.notice(str(exc))
                     self.cancel_close()
             else:
                 self._timer.stop()
@@ -846,20 +858,20 @@ class SourceWindowController(QtCore.QObject):
             return
         metadata = self._journal_cache.get("metadata") or {}
         if metadata and not metadata.get("complete"):
-            self._notice("The log is incomplete; some facts exist only in this process's memory.")
+            self.notice("The log is incomplete; some facts exist only in this process's memory.")
         self._native_close_permit = True
         accepted = False
         try:
             accepted = self._window.close()
         except RuntimeError as exc:
             if not self._window_gone:
-                self._notice("Native window close failed: " + str(exc)[:300])
+                self.notice("Native window close failed: " + str(exc)[:300])
         finally:
             self._native_close_permit = False
             self._advance_close("native_returned")
         if not self._window_gone:
             if not accepted:
-                self._notice("Window close cancelled. The task remains ended; images and journal are available.")
+                self.notice("Window close cancelled. The task remains ended; images and journal are available.")
             self._render()
 
     def _window_destroyed(self, *_args):
@@ -938,11 +950,9 @@ class SourceWindowController(QtCore.QObject):
         if not self.can_release():
             return
         try:
-            if not self._release_role():
-                self.cancel_close()
-                return
+            self._release_role()
         except Exception as exc:
-            self._fault("Role release failed. " + type(exc).__name__)
+            self._fault(f"Role release failed. {exc}")
             self.cancel_close()
             return
         self._reset_views()
@@ -955,13 +965,3 @@ class SourceWindowController(QtCore.QObject):
         self.panel.deleteLater()
         self._window._reagent_source_controller = None
         self.deleteLater()
-
-    def eventFilter(self, watched, event):
-        if watched is self._window and event.type() == QtCore.QEvent.Close:
-            if self._native_close_permit:
-                self._native_close_permit = False
-                return False
-            event.ignore()
-            self.request_close("exit")
-            return True
-        return False

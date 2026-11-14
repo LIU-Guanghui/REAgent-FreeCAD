@@ -5,8 +5,9 @@ import time
 
 from REAgent.model.messages import AssistantTurn
 from REAgent.model.errors import ModelError
+from .errors import AgentError
 from REAgent.model.capabilities import cache_mode
-from REAgent.values import to_json_value, encode_json, decode_json
+from REAgent.json_values import to_json_value, encode_json, decode_json
 from .messages import HistorySummary, ImageMaterial, UserText
 
 
@@ -34,6 +35,14 @@ class SendRecord:
 
 
 class ModelRequests:
+    @property
+    def context_log_pending(self):
+        return self._pending_context_log is not None
+
+    @property
+    def model_result_pending(self):
+        return self._model_outcome is not None
+
     def __init__(self, run, model, journal):
         self.run, self._model, self.journal = run, model, journal
         self._pending_context_log = None
@@ -77,14 +86,6 @@ class ModelRequests:
     def use_model(self, model):
         self._model = model
 
-    @property
-    def context_log_pending(self):
-        return self._pending_context_log is not None
-
-    @property
-    def model_result_pending(self):
-        return self._model_outcome is not None
-
     def begin_close(self):
         """Explicit ending abandons local context adoption, not the Recorder."""
         self._pending_context_log = None
@@ -110,29 +111,7 @@ class ModelRequests:
         if slot is not None:
             self._retain_unadopted(slot, "request_cancelled")
 
-    def _tally(self, kind, usage, identity):
-        self._last_usage = {"kind": kind, "provider": identity[0], "protocol": identity[1],
-                            "model": identity[3], "usage": usage}
-        key = (identity, kind)
-        if key not in self._usage_keys:
-            self._usage_keys[key] = str(len(self._usage_keys) + 1)
-        row = to_json_value(self._usage.get(self._usage_keys[key], {
-            "provider": identity[0], "protocol": identity[1], "model": identity[3], "kind": kind, "attempts": 0,
-            "counts": {name: {"known_sum": 0, "reported_requests": 0, "derived_requests": 0, "unknown_requests": 0}
-                       for name in ("input_tokens", "output_tokens", "total_tokens", "cache_read_tokens",
-                                    "cache_write_tokens", "cache_miss_tokens", "reasoning_tokens")}}))
-        row["attempts"] += 1
-        for name, count in row["counts"].items():
-            value = None if usage is None else usage.get(name, usage.get("details", {}).get(name))
-            if value is None:
-                count["unknown_requests"] += 1
-            else:
-                count["known_sum"] += value
-                count[usage["sources"].get(name, "reported") + "_requests"] += 1
-        self._usage[self._usage_keys[key]] = row
-        return {**self._last_usage, "totals": row}
-
-    def _local_log(self, event, summary, *, function, adopted=False):
+    def local_log(self, event, summary, *, function, adopted=False):
         """Persist local preparation or the retained outcome of a completed exchange."""
         if self.run.active is None or self.run.active.binding is None:
             return
@@ -153,24 +132,6 @@ class ModelRequests:
         if not meta["complete"]:
             raise ModelError("context_journal_pending", "The original local context journal is still incomplete")
         self._pending_context_log = None
-
-    def _request_log(self, slot, event=None, summary=None, *, persist=True, flush=False):
-        if slot["binding"] is None:
-            return {"complete": True, "appended_sequence": 0, "persisted_sequence": 0}
-        return self.journal(binding=slot["binding"], event=event, summary=summary,
-                                       duration_ms=(time.perf_counter() - slot["started"]) * 1000 if event else None,
-                                       persist=persist, flush=flush)
-
-    def _retain_unadopted(self, slot, reason="model_journal_pending"):
-        if slot.get("disposition_attempted"):
-            return
-        slot["disposition_attempted"] = True
-        try:
-            meta = self._request_log(slot, "model.decision_not_adopted", {
-                "request": slot["number"], "kind": slot["kind"], "reason": reason}, persist=False)
-            slot["disposition_sequence"] = meta["appended_sequence"]
-        except ModelError:
-            slot["disposition_sequence"] = None
 
     def recover_model_outcome(self):
         """Explicit Continue flushes the original log once, never an old decision."""
@@ -257,7 +218,7 @@ class ModelRequests:
                     raise ModelError("empty_report", "The confirmed delivery has no report text; its receipt remains available")
             if validate_reply is not None:
                 validate_reply(slot["reply"])
-        except ModelError as exc:
+        except (AgentError, ModelError) as exc:
             slot["error"] = exc
         except BaseException as exc:
             slot["error"] = ModelError("request_interrupted", "Model request processing was interrupted")
@@ -327,3 +288,43 @@ class ModelRequests:
         if slot["error"] is not None:
             raise slot["error"]
         return slot["reply"]
+
+    def _tally(self, kind, usage, identity):
+        self._last_usage = {"kind": kind, "provider": identity[0], "protocol": identity[1],
+                            "model": identity[3], "usage": usage}
+        key = (identity, kind)
+        if key not in self._usage_keys:
+            self._usage_keys[key] = str(len(self._usage_keys) + 1)
+        row = to_json_value(self._usage.get(self._usage_keys[key], {
+            "provider": identity[0], "protocol": identity[1], "model": identity[3], "kind": kind, "attempts": 0,
+            "counts": {name: {"known_sum": 0, "reported_requests": 0, "derived_requests": 0, "unknown_requests": 0}
+                       for name in ("input_tokens", "output_tokens", "total_tokens", "cache_read_tokens",
+                                    "cache_write_tokens", "cache_miss_tokens", "reasoning_tokens")}}))
+        row["attempts"] += 1
+        for name, count in row["counts"].items():
+            value = None if usage is None else usage.get(name, usage.get("details", {}).get(name))
+            if value is None:
+                count["unknown_requests"] += 1
+            else:
+                count["known_sum"] += value
+                count[usage["sources"].get(name, "reported") + "_requests"] += 1
+        self._usage[self._usage_keys[key]] = row
+        return {**self._last_usage, "totals": row}
+
+    def _request_log(self, slot, event=None, summary=None, *, persist=True, flush=False):
+        if slot["binding"] is None:
+            return {"complete": True, "appended_sequence": 0, "persisted_sequence": 0}
+        return self.journal(binding=slot["binding"], event=event, summary=summary,
+                                       duration_ms=(time.perf_counter() - slot["started"]) * 1000 if event else None,
+                                       persist=persist, flush=flush)
+
+    def _retain_unadopted(self, slot, reason="model_journal_pending"):
+        if slot.get("disposition_attempted"):
+            return
+        slot["disposition_attempted"] = True
+        try:
+            meta = self._request_log(slot, "model.decision_not_adopted", {
+                "request": slot["number"], "kind": slot["kind"], "reason": reason}, persist=False)
+            slot["disposition_sequence"] = meta["appended_sequence"]
+        except (AgentError, ModelError):
+            slot["disposition_sequence"] = None

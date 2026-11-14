@@ -6,7 +6,7 @@ _SEMANTIC_ENTITY_KINDS = {"face", "edge"}
 _SEMANTIC_AMBIGUITY_POLICIES = {"reject"}
 
 
-def _normalize_semantic_entity_ref(
+def normalize_semantic_entity_ref(
     value,
     expected_kind=None,
     expected_owner_role=None,
@@ -126,18 +126,18 @@ def _normalize_semantic_entity_ref(
     return normalized
 
 
-def _semantic_entity_ref_from_detail(
+def semantic_entity_ref_from_detail(
     detail,
     model_revision,
     entity_kind,
     intended_role,
     owner_name=None,
 ):
-    return _normalize_semantic_entity_ref(
+    return normalize_semantic_entity_ref(
         {
             "entity_kind": entity_kind,
             "intended_role": intended_role,
-            "owner": {"role": "rebuild", "revision": model_revision,
+            "owner": {"role": "target", "revision": model_revision,
                       **({"object_name": owner_name} if owner_name is not None else {})},
             "signatures": {
                 "geometry": detail["geometry_signature"],
@@ -157,12 +157,12 @@ def _semantic_entity_ref_from_detail(
             },
         },
         expected_kind=entity_kind,
-        expected_owner_role="rebuild",
+        expected_owner_role="target",
         expected_intended_role=intended_role,
     )
 
 
-def _face_names(value, face_count):
+def face_names(value, face_count):
     if value is None:
         return None
     if not isinstance(value, list) or not value:
@@ -181,7 +181,7 @@ def _face_names(value, face_count):
     return result
 
 
-def _edge_names(value, edge_count):
+def edge_names(value, edge_count):
     if value is None:
         return None
     if not isinstance(value, list) or not value:

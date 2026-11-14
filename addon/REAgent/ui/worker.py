@@ -4,13 +4,12 @@ from collections import deque
 from queue import Full, Queue
 from threading import Lock
 
-from REAgent.session.coordinator import Session
-from REAgent.model.errors import ModelError
-from REAgent.values import to_json_value
+from REAgent.application.session import Session, action_error
+from REAgent.json_values import to_json_value
 from REAgent.ui import QtCore
 
 
-_ACTIONS = frozenset(("start", "chat", "advance", "compare", "compact", "save", "close", "configure"))
+_ACTIONS = frozenset(("stp2cad", "chat", "advance", "compare", "compact", "save", "close", "configure"))
 def tool_fault(event):
     value = event.get("result") or {}
     if (value.get("caused_by_tool_call_id") or value.get("code") == "not_executed"
@@ -142,6 +141,68 @@ class Worker(QtCore.QThread):
             self._notified = False
         return events, completion
 
+    def run(self):
+        # No QObject is created here. The QThread object itself belongs to GUI;
+        # the blocking Python queue, Session and synchronous I/O run only here.
+        while True:
+            action, args = self._jobs.get()
+            if action == "park":
+                with self._lock:
+                    self._parked = True
+                return
+            if action == "shutdown":
+                with self._lock:
+                    self._session = None
+                    self._shutdown_complete = True
+                return
+            error = None
+            value = None
+            skipped = False
+            self._overflowed = False
+            self._overflow_fault = self._overflow_terminal = self._overflow_reply = None
+            previous_batch = self._session.last_batch if self._session is not None else None
+            try:
+                with self._lock:
+                    skipped = self._pause_intent and action in ("stp2cad", "chat", "advance", "compare", "compact")
+                if not skipped:
+                    value = self._perform(action, args)
+            except BaseException as exc:
+                # Credential/provider errors must not expose secret input or raw I/O diagnostics.
+                error = action_error(exc)
+                if self._session is not None:
+                    self._session.pause()
+            finally:
+                credentials = args.pop("credentials", None)
+                if credentials is not None:
+                    credentials.clear()
+                snapshot = self.snapshot()
+                rows = self._session.last_batch if self._session is not None else ()
+                identities = self._session.last_result_identities if self._session is not None else ()
+                packet = {"action": action, **self._identity, "snapshot": snapshot, "error": error,
+                          "comparison": self._session.comparison if self._session else None,
+                          "comparison_results": tuple({**identity, **self._identity,
+                              "value": to_json_value(row.value), "images": tuple(row.images),
+                              "is_error": row.is_error, "side_effect": row.side_effect}
+                              for identity, row in (self._session.comparison_rows if self._session else ())),
+                          "presentation_fallback": tuple(event for event in (
+                              self._overflow_reply, self._overflow_fault, self._overflow_terminal) if event is not None),
+                          "ok": error is None and not getattr(value, "is_error", False),
+                          "results": tuple({**identity, **self._identity, "value": to_json_value(row.value),
+                                            "images": tuple(row.images), "is_error": row.is_error,
+                                            "side_effect": row.side_effect}
+                                           for identity, row in zip(identities, rows)),
+                          "new_results": bool(rows) and rows is not previous_batch,
+                          "presentation_backlog": self._overflowed,
+                          "paused_before_start": skipped,
+                          "credentials_consumed": action in ("stp2cad", "chat", "configure")}
+                with self._lock:
+                    self._completion = packet
+                    self._busy = False
+                    wake = not self._notified
+                    self._notified = True
+                if wake:
+                    self.ready.emit()
+
     def _event(self, event):
         event = {**event, **self._identity}
         kind = event["event"]
@@ -196,19 +257,16 @@ class Worker(QtCore.QThread):
         return not paused
 
     def _perform(self, action, args):
-        if action in ("start", "chat"):
+        if action in ("stp2cad", "chat"):
             if self._session is not None and self._session.snapshot().get("controller") is not None:
                 raise RuntimeError("Finish the retained task first")
             if self._session is None:
-                try:
-                    session = Session(args["config"], on_event=self._event, **args["credentials"])
-                except ValueError as exc:
-                    raise ModelError("invalid_credentials", str(exc)) from None
+                session = Session(args["config"], on_event=self._event, **args["credentials"])
                 with self._lock:
                     self._session = session
             if action == "chat":
                 return self._session.chat(args["text"])
-            return self._session.start(args["task"], args["objective"])
+            return self._session.stp2cad(args["task"], args["objective"])
         if self._session is None:
             raise RuntimeError("Start a task first")
         if action == "advance":
@@ -224,71 +282,5 @@ class Worker(QtCore.QThread):
         if action == "close":
             return self._session.close()
         if action == "configure":
-            try:
-                return self._session.configure(args["config"], **args["credentials"])
-            except ValueError as exc:
-                raise ModelError("invalid_credentials", str(exc)) from None
+            return self._session.configure(args["config"], **args["credentials"])
         raise ValueError("Unknown human action")
-
-    def run(self):
-        # No QObject is created here. The QThread object itself belongs to GUI;
-        # the blocking Python queue, Session and synchronous I/O run only here.
-        while True:
-            action, args = self._jobs.get()
-            if action == "park":
-                with self._lock:
-                    self._parked = True
-                return
-            if action == "shutdown":
-                with self._lock:
-                    self._session = None
-                    self._shutdown_complete = True
-                return
-            error = None
-            value = None
-            skipped = False
-            self._overflowed = False
-            self._overflow_fault = self._overflow_terminal = self._overflow_reply = None
-            previous_batch = self._session.last_batch if self._session is not None else None
-            try:
-                with self._lock:
-                    skipped = self._pause_intent and action in ("start", "chat", "advance", "compare", "compact")
-                if not skipped:
-                    value = self._perform(action, args)
-            except BaseException as exc:
-                # Credential/provider errors must not expose secret input or raw I/O diagnostics.
-                error = exc.detail() if isinstance(exc, ModelError) else {
-                    "code": "worker_action_failed", "message": type(exc).__name__}
-                if self._session is not None:
-                    self._session.pause()
-            finally:
-                credentials = args.pop("credentials", None)
-                if credentials is not None:
-                    credentials.clear()
-                snapshot = self.snapshot()
-                rows = self._session.last_batch if self._session is not None else ()
-                identities = self._session.last_result_identities if self._session is not None else ()
-                packet = {"action": action, **self._identity, "snapshot": snapshot, "error": error,
-                          "comparison": self._session.comparison if self._session else None,
-                          "comparison_results": tuple({**identity, **self._identity,
-                              "value": to_json_value(row.value), "images": tuple(row.images),
-                              "is_error": row.is_error, "side_effect": row.side_effect}
-                              for identity, row in (self._session.comparison_rows if self._session else ())),
-                          "presentation_fallback": tuple(event for event in (
-                              self._overflow_reply, self._overflow_fault, self._overflow_terminal) if event is not None),
-                          "ok": error is None and not getattr(value, "is_error", False),
-                          "results": tuple({**identity, **self._identity, "value": to_json_value(row.value),
-                                            "images": tuple(row.images), "is_error": row.is_error,
-                                            "side_effect": row.side_effect}
-                                           for identity, row in zip(identities, rows)),
-                          "new_results": bool(rows) and rows is not previous_batch,
-                          "presentation_backlog": self._overflowed,
-                          "paused_before_start": skipped,
-                          "credentials_consumed": action in ("start", "chat", "configure")}
-                with self._lock:
-                    self._completion = packet
-                    self._busy = False
-                    wake = not self._notified
-                    self._notified = True
-                if wake:
-                    self.ready.emit()

@@ -1,10 +1,10 @@
 """Shared Bridge identity, error categories and envelope fields."""
 
-from REAgent.schema import _array, _schema, _string
+from REAgent.json_schema import array, object_schema, string
 
 PRODUCT_ID = "REAgentFreeCAD"
 
-ROLE_PORTS = {"source": 9876, "rebuild": 9877}
+ROLE_PORTS = {"source": 9876, "target": 9877}
 
 CAPABILITY_VIEWS = ("status", "catalog", "operation")
 
@@ -41,7 +41,7 @@ def resolve_retry_action(
         return "correct_request"
     return "do_not_retry"
 
-def _operation(
+def operation(
     domain,
     summary,
     roles,
@@ -58,35 +58,35 @@ def _operation(
         "roles": list(roles),
         "side_effect": side_effect,
         "timeout_class": timeout_class,
-        "input_schema": _schema(properties, required),
+        "input_schema": object_schema(properties, required),
         "preconditions": list(preconditions),
         "limits": list(limits),
     }
 
-_DOCUMENT = _string("Internal FreeCAD document name")
+_DOCUMENT = string("Internal FreeCAD document name")
 
-OUTPUT_DIR_SCHEMA = _string("Absolute task output directory for all session artifacts; created if missing")
+OUTPUT_DIR_SCHEMA = string("Absolute task output directory for all session artifacts; created if missing")
 
-SESSION_ARTIFACTS_SCHEMA = _schema({
-    "source_stem": _string("Unmodified STEP filename stem"),
-    "basename": _string("Exclusively allocated session artifact basename"),
+SESSION_ARTIFACTS_SCHEMA = object_schema({
+    "source_stem": string("Unmodified STEP filename stem"),
+    "basename": string("Exclusively allocated session artifact basename"),
     "output_dir": OUTPUT_DIR_SCHEMA,
-    "model_path": _string("Allocated output FCStd, not proof of a save"),
-    "journal_path": _string("Unique reconstruction process journal"),
+    "model_path": string("Allocated output FCStd, not proof of a save"),
+    "journal_path": string("Unique reconstruction process journal"),
 }, ("source_stem", "basename", "output_dir", "model_path", "journal_path"))
 
 NAME_SCHEMA = {"type": "string", "pattern": r"^[A-Za-z][A-Za-z0-9_]{0,99}$"}
 
-VALIDATION_OPTIONS_SCHEMA = _schema(
+VALIDATION_OPTIONS_SCHEMA = object_schema(
     {
         "parameter_audit": {"type": "boolean", "default": False,
                             "description": "Explicit transient parameter probes with verified restoration; never implicit in diagnostics or save."},
-        "measurements": {**_array("Requested descriptive whole-model measurements; omitted means none",
-            _string("Measured quantity", ("volume", "area", "center_of_mass", "bounding_box")), maximum=4), "uniqueItems": True},
+        "measurements": {**array("Requested descriptive whole-model measurements; omitted means none",
+            string("Measured quantity", ("volume", "area", "center_of_mass", "bounding_box")), maximum=4), "uniqueItems": True},
         "surface_sampling": {"type": "boolean", "default": False,
                              "description": "Explicit approximate bidirectional surface distances; never implicit"},
-        "boolean_operations": {**_array("Only these native operations run, each once; omitted means none",
-            _string("Fixed Boolean direction", ("common", "source_minus_target", "target_minus_source")), maximum=3), "uniqueItems": True},
+        "boolean_operations": {**array("Only these native operations run, each once; omitted means none",
+            string("Fixed Boolean direction", ("common", "source_minus_target", "target_minus_source")), maximum=3), "uniqueItems": True},
     }
 )
 

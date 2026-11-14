@@ -9,6 +9,10 @@ class PendingBatch:
     rows: list
     identity: dict
 
+    @property
+    def call_count(self):
+        return len(self.reply.calls)
+
 
 class BatchSlots:
     def __init__(self):

@@ -3,24 +3,18 @@
 import math
 
 from REAgent.protocol.features import EDIT_FEATURE_TYPES, HISTORY_COMMANDS, PRIMITIVE_COMMANDS, validate_feature_relations
-from REAgent.host.analysis.measurements import _shape_summary, _shape_summary_consistent
-from REAgent.host.analysis.topology import _stable_digest
-from REAgent.host.validation.structure import _single_solid_summary, result_state
-from REAgent.host.validation.tolerance import _ir_tolerance_contract
+from REAgent.host.analysis.measurements import shape_summary_consistent
+from REAgent.host.validation.structure import single_solid_summary, result_state
+from REAgent.host.validation.tolerance import ir_tolerance_contract
 from REAgent.host.workspace.model import (
-    _body_objects, _feature_owner, _feature_predecessor, _owned_objects, _session_bodies, _world_shape,
+    body_objects, feature_owner, feature_predecessor, owned_objects, session_bodies, copy_world_shape,
 )
-from REAgent.host.workspace.properties import _CODECS, _native_link, _same_placement
-from REAgent.host.workspace.state import _target_model_state
+from REAgent.host.workspace.properties import _CODECS, native_link, same_placement
+from REAgent.host.workspace.state import geometry_digest, object_geometry_state, owned_geometry_state, target_model_state
 from .edit_parameters import prepare_parameters
 from .edit_sketch import SketchEdit
-from .support.construction import _closed_profile, _section_or_path, _distinct_section_planes, _whole_sketch_link
-from .hole import _circle_profile
-
-
-def _geometry_summary(obj):
-    shape = _world_shape(obj)
-    return _shape_summary(shape) if shape is not None and not shape.isNull() else None
+from .support.construction import closed_profile, section_or_path, distinct_section_planes, whole_sketch_link
+from .hole import circle_profile
 
 
 def _model_dependencies(obj):
@@ -33,7 +27,7 @@ def _model_dependencies(obj):
 
 
 def _downstream(document, group, seeds):
-    owned = _owned_objects(group)
+    owned = owned_objects(group)
     dependencies = {obj.Name: _model_dependencies(obj) for obj in document.Objects}
     allowed = set(seeds)
     while True:
@@ -139,75 +133,71 @@ def _attachment_owners(state):
     return {row["object"]["object"] for row in (support if isinstance(support, list) else [support]) if row}
 
 def _verify_sketch_consumption(document, group, allowed):
-    for obj in _owned_objects(group):
+    for obj in owned_objects(group):
         if obj.Name not in allowed or obj.TypeId not in EDIT_FEATURE_TYPES:
             continue
         spec = HISTORY_COMMANDS.get(EDIT_FEATURE_TYPES[obj.TypeId], {})
         family = spec.get("domain")
         if family not in ("extrude", "revolve", "hole", "loft", "pipe"):
             continue
-        body = _feature_owner(group, obj)
-        profile = _native_link(obj.Profile)
-        if profile is None or not _whole_sketch_link(obj.Profile, profile):
+        body = feature_owner(group, obj)
+        profile = native_link(obj.Profile)
+        if profile is None or not whole_sketch_link(obj.Profile, profile):
             raise ValueError("Downstream native Profile is no longer a whole Sketch: " + obj.Name)
         if family in ("loft", "pipe"):
-            first, _ = _section_or_path(document, body, profile.Name, closed=True)
-            second = _native_link(obj.Sections[0] if family == "loft" else obj.Spine)
+            first, _ = section_or_path(document, body, profile.Name, closed=True)
+            second = native_link(obj.Sections[0] if family == "loft" else obj.Spine)
             path = family == "pipe"
-            second, _ = _section_or_path(document, body, second.Name, closed=not path, path=path)
+            second, _ = section_or_path(document, body, second.Name, closed=not path, path=path)
             if family == "loft":
-                _distinct_section_planes(first, second)
+                distinct_section_planes(first, second)
         else:
-            _closed_profile(document, body, profile.Name)
+            closed_profile(document, body, profile.Name)
             if family == "hole":
-                _circle_profile(profile)
+                circle_profile(profile)
 
 
 class EditScope:
-    def __init__(self):
-        self.target = None
-        self.parameters = self.sketch = None
-        self.companion_changes = []
-
-    @staticmethod
-    def geometry(group):
-        return _stable_digest({obj.Name: _geometry_summary(obj) for obj in _owned_objects(group)}, length=24)
-
     @property
     def has_changes(self):
         return bool(self.parameters.writes or self.parameters.install_axis_parent
                     or self.sketch is not None and self.sketch.has_changes)
+
+    def __init__(self):
+        self.target = None
+        self.parameters = self.sketch = None
+        self.companion_changes = []
 
     def preflight(self, document, group, request):
         result_state(group)
         obj = document.getObject(request["object_name"])
         if obj is None or obj.TypeId != request["type_id"] or obj.TypeId not in EDIT_FEATURE_TYPES:
             raise ValueError("Observed native edit object or TypeId no longer matches")
-        body = _feature_owner(group, obj)
+        body = feature_owner(group, obj)
         if body.Name != request["body_name"]:
             raise ValueError("Observed Body does not own this edit object")
         self.target = obj
         self.body = body
-        self.prior = prior = _feature_predecessor(body, obj)
+        self.prior = prior = feature_predecessor(body, obj)
         changes = request["changes"]
         self.parameters = prepare_parameters(document, group, body, obj, prior, changes)
-        self.tolerance = _ir_tolerance_contract(group)
+        self.tolerance = ir_tolerance_contract(group)
         if "operations" in changes:
             self.sketch = SketchEdit(obj, changes["operations"], self.tolerance)
         # Moving a Body or Coordinate System changes the frames of its native
         # members. Ordinary membership is excluded from dependency traversal.
         seeds = {obj.Name}
         if obj is body and "Placement" in self.parameters.writes:
-            seeds.update(member.Name for member in _body_objects(body))
+            seeds.update(member.Name for member in body_objects(body))
         elif obj.TypeId == "Part::LocalCoordinateSystem":
             seeds.update(child.Name for child in obj.OriginFeatures)
         self.affected = _downstream(document, group, seeds)
-        self.model_before = _target_model_state(document, group, include_history=False)
-        self.shapes_before = {item.Name: _geometry_summary(item) for item in _owned_objects(group)}
-        self.geometry_before = _stable_digest(self.shapes_before, length=24)
+        self.model_before = target_model_state(document, group, include_history=False)
+        self.shapes_before = owned_geometry_state(group)
+        self.geometry_before = geometry_digest(self.shapes_before)
         self.geometry_after = self.geometry_before
         self.sub_before = {}
-        for item in _owned_objects(group):
+        for item in owned_objects(group):
             if item is not obj:
                 facts = _subelement_facts(item, self.affected)
                 if facts:
@@ -229,7 +219,7 @@ class EditScope:
             _verify_subelements(obj, self.affected, refs, self.tolerance)
 
     def check_scope(self, document, group, before):
-        after = _target_model_state(document, group, include_history=False)
+        after = target_model_state(document, group, include_history=False)
         if any(after[key] != self.model_before[key] for key in (
                 "document_objects", "registered_bodies", "result", "tips")):
             raise RuntimeError("In-place edit changed native object identity, registration or Body Tip")
@@ -238,9 +228,9 @@ class EditScope:
             raise RuntimeError("In-place edit changed native Body membership")
         shapes = {}
         self.companion_changes = []
-        for item in _owned_objects(group):
+        for item in owned_objects(group):
             name = item.Name
-            shapes[name] = _geometry_summary(item)
+            shapes[name] = object_geometry_state(item)
             previous = self.model_before["objects"][name]
             current = after["objects"][name]
             allowed = set()
@@ -285,18 +275,18 @@ class EditScope:
                 error.failure_detail = {"reason": "unrequested_change", "object": name,
                                         "property": unrequested[0], "changed_fields": unrequested[:16]}
                 raise error
-            if name not in self.affected and not _shape_summary_consistent(self.shapes_before[name], shapes[name]):
+            if name not in self.affected and not shape_summary_consistent(self.shapes_before[name], shapes[name]):
                 raise RuntimeError("Edit changed unrelated geometry on " + name)
             command = EDIT_FEATURE_TYPES.get(item.TypeId)
             if name in self.affected and (command in PRIMITIVE_COMMANDS or command in HISTORY_COMMANDS):
-                _single_solid_summary(item.Shape, name)
+                single_solid_summary(item.Shape, name)
         _verify_sketch_consumption(document, group, self.affected)
-        self.geometry_after = _stable_digest(shapes, length=24)
+        self.geometry_after = geometry_digest(shapes)
 
     def readback(self, document, group, target, state):
         body, prior = self.body, self.prior
-        if (document.getObject(target.Name) is not target or _feature_owner(group, target) is not body
-                or _feature_predecessor(body, target) is not prior):
+        if (document.getObject(target.Name) is not target or feature_owner(group, target) is not body
+                or feature_predecessor(body, target) is not prior):
             raise RuntimeError("Native edit changed identity, ownership or predecessor")
         changed = self.parameters.readback()
         sketch = self.sketch.readback() if self.sketch is not None else None
@@ -305,24 +295,24 @@ class EditScope:
                   "predecessor": prior.Name if prior else None, "changes": changed,
                   "affected_objects": sorted(self.affected)[:64],
                   "affected_object_count": len(self.affected),
-                  "affected_bodies": [item.Name for item in _session_bodies(group) if item.Name in self.affected]}
+                  "affected_bodies": [item.Name for item in session_bodies(group) if item.Name in self.affected]}
         if self.companion_changes:
             result["companion_changes"] = self.companion_changes[:16]
             result["companion_change_count"] = len(self.companion_changes)
         command = EDIT_FEATURE_TYPES[target.TypeId]
         if command in PRIMITIVE_COMMANDS or command in HISTORY_COMMANDS:
-            result["feature_shape"] = _single_solid_summary(target.Shape, target.Name)
+            result["feature_shape"] = single_solid_summary(target.Shape, target.Name)
             if body.Tip is target:
-                body_shape = _single_solid_summary(_world_shape(body), body.Name)
+                body_shape = single_solid_summary(copy_world_shape(body), body.Name)
                 volume = body_shape["volume_mm3"]
                 if abs(result["feature_shape"]["volume_mm3"] - volume) > max(1e-9, volume * 1e-12):
                     raise RuntimeError("Edited Tip and Body have different volume")
                 result["body_shape"] = body_shape
         if "Placement" in self.parameters.expected:
             if body is target:
-                if not _same_placement(target.getGlobalPlacement(), target.Placement):
+                if not same_placement(target.getGlobalPlacement(), target.Placement):
                     raise RuntimeError("Body world placement does not match its native placement")
-            elif not _same_placement(target.getGlobalPlacement(),
+            elif not same_placement(target.getGlobalPlacement(),
                                      body.getGlobalPlacement().multiply(target.Placement)):
                 raise RuntimeError("Edited local placement disagrees with its Body frame")
         if sketch is not None:
@@ -334,11 +324,11 @@ class EditOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
 
+    def contribute(self):
+        return {"EditFeature": self._edit_feature}
+
     def _edit_feature(self, request):
         validate_feature_relations("EditFeature", request)
         scope = EditScope()
         return self.execute_native(request, command="EditFeature", edit=scope, preflight=scope.preflight,
                                    mutate=scope.mutate, readback=scope.readback)
-
-    def contribute(self):
-        return {"EditFeature": self._edit_feature}

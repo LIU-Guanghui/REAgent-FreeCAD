@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from REAgent.values import decode_json, encode_json
+from REAgent.json_values import decode_json, encode_json
 
 
 CONTEXT_TOOL_METHODS = ("directory", "check", "facts", "prepare_context", "prepare_receipt", "reply_materials")
@@ -23,6 +23,17 @@ def check_tools(tools):
 class ToolDefinition:
     name: str
     specification: str
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+def project_calls(calls):
+    return tuple(ToolCall(call.id, call.name, call.arguments) for call in calls)
 
 
 def freeze_tools(contributions, required):
@@ -54,19 +65,19 @@ class EmptyTools:
     def facts(self, policy, action=None):
         return None
 
-    def prepare_context(self, policy, conversation):
+    def prepare_context(self, policy, tool_results):
         return None
 
     def prepare_receipt(self, policy, observations, *, purpose="action"):
         return None
 
-    def reply_materials(self, reply, rows):
-        if reply.calls or rows:
+    def reply_materials(self, calls, rows):
+        if calls or rows:
             raise ValueError("No tools exist in this conversation")
         return (), ()
 
     def action_started(self, action, binding):
         return None
 
-    def suppress_reply(self, reply):
+    def suppress_reply(self, calls):
         return False

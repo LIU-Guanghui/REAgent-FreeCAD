@@ -2,8 +2,8 @@
 
 from functools import partial
 
-from REAgent.host.workspace.properties import _metadata
-from REAgent.host.features.support.construction import _history_context, _profile_readback, _section_or_path, _set_profile, _shape_readback, _whole_sketch_link
+from REAgent.host.workspace.properties import metadata
+from REAgent.host.features.support.construction import history_context, profile_readback, section_or_path, set_profile, shape_readback, whole_sketch_link
 
 _PIPE_TYPES = {
     "PartDesign_AdditivePipe": "PartDesign::AdditivePipe",
@@ -17,7 +17,7 @@ _PIPE_FIXED_ENUMS = {
 
 
 def _fixed_enum(feature, prop, value):
-    meta = _metadata(feature, prop)
+    meta = metadata(feature, prop)
     if meta["codec"] != "string" or value not in meta.get("enum", []):
         raise ValueError("Native Pipe mode is unavailable: " + prop + "=" + value)
     if meta["writable"]:
@@ -27,7 +27,7 @@ def _fixed_enum(feature, prop, value):
 
 
 def _fixed_false(feature, prop):
-    meta = _metadata(feature, prop)
+    meta = metadata(feature, prop)
     if meta["codec"] != "bool":
         raise ValueError("Native Pipe option is not Boolean: " + prop)
     if meta["writable"]:
@@ -40,6 +40,12 @@ class PipeOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
 
+    def contribute(self):
+        return {
+            'PartDesign_AdditivePipe': partial(self._create_pipe, command='PartDesign_AdditivePipe'),
+            'PartDesign_SubtractivePipe': partial(self._create_pipe, command='PartDesign_SubtractivePipe'),
+        }
+
     def _create_pipe(self, params, *, command):
         if command not in _PIPE_TYPES:
             raise ValueError("Unknown native Pipe command")
@@ -51,14 +57,14 @@ class PipeOperations:
         path_closed = [None]
 
         def preflight(document, group, request):
-            context[0] = _history_context(
+            context[0] = history_context(
                 document, group, request, require_solid=not additive)
             body = context[0][0]
             if request["profile_sketch_name"] == request["path_sketch_name"]:
                 raise ValueError("Pipe profile and path must be different Sketches")
-            profile, _ = _section_or_path(
+            profile, _ = section_or_path(
                 document, body, request["profile_sketch_name"], closed=True)
-            path, wire = _section_or_path(
+            path, wire = section_or_path(
                 document, body, request["path_sketch_name"], closed=False, path=True)
             inputs[0] = (profile, path)
             path_closed[0] = bool(wire.isClosed())
@@ -70,8 +76,8 @@ class PipeOperations:
             if feature.Name != name or feature.TypeId != type_id:
                 raise RuntimeError("Native Pipe type or identity differs")
             body.addObject(feature)
-            _set_profile(feature, profile)
-            meta = _metadata(feature, "Spine")
+            set_profile(feature, profile)
+            meta = metadata(feature, "Spine")
             if not meta["writable"] or meta["codec"] not in ("link", "link_sub"):
                 raise ValueError("Native Pipe Spine is not a writable whole-Sketch link")
             feature.Spine = path
@@ -87,9 +93,9 @@ class PipeOperations:
         def readback(document, group, feature, _state):
             body, _profile, tip = context[0]
             profile, path = inputs[0]
-            body_shape = _shape_readback(document, body, feature, name, type_id, tip)
-            _profile_readback(feature, profile)
-            if not _whole_sketch_link(feature.Spine, path) or path not in feature.OutList:
+            body_shape = shape_readback(document, body, feature, name, type_id, tip)
+            profile_readback(feature, profile)
+            if not whole_sketch_link(feature.Spine, path) or path not in feature.OutList:
                 raise RuntimeError("Native Pipe Spine did not retain the whole path Sketch")
             for prop, value in _PIPE_FIXED_ENUMS.items():
                 if getattr(feature, prop) != value:
@@ -108,9 +114,3 @@ class PipeOperations:
             params, command=command, preflight=preflight,
             mutate=mutate, readback=readback,
         )
-
-    def contribute(self):
-        return {
-            'PartDesign_AdditivePipe': partial(self._create_pipe, command='PartDesign_AdditivePipe'),
-            'PartDesign_SubtractivePipe': partial(self._create_pipe, command='PartDesign_SubtractivePipe'),
-        }

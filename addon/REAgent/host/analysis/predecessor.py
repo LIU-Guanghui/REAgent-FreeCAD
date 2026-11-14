@@ -1,7 +1,7 @@
 """Core read-only predecessor bounds for late dress-up evidence.
 
 This module deliberately works on the JSON-like geometry evidence returned by
-``evidence._geometry_evidence``.  It never asks OCCT to remove faces, heal a
+``evidence.geometry_evidence``.  It never asks OCCT to remove faces, heal a
 shape, or construct a temporary document. The result is a bounded hypothesis
 about the sharp predecessor envelope that a Fillet may have trimmed; it is not
 a reconstructed Shape and it is never sufficient by itself to create a

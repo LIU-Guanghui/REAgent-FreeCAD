@@ -6,7 +6,7 @@ import base64
 
 from REAgent.model.errors import ModelError
 from REAgent.model.providers.common import StreamState, checked_calls, material_text, standard_usage
-from REAgent.values import decode_json
+from REAgent.json_values import decode_json
 
 PROTOCOL = "responses"
 PATH = "/responses"

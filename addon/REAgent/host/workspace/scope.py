@@ -8,24 +8,24 @@ import FreeCAD as App
 import FreeCADGui as Gui
 from PySide import QtCore, QtGui
 
-from REAgent.host.process_state import _operation_stage, _stamp_failure, PROCESS
+from REAgent.host.process_state import operation_stage, stamp_failure, PROCESS
 from REAgent.protocol.artifacts import ARTIFACT_NUMBER_LIMIT, artifact_filename
-from REAgent.host.validation.tolerance import _ir_tolerance_contract, _source_tolerance_contract
-from REAgent.host.view.camera import _camera_state_differences, _capture_complete_camera_state, _restore_camera_state
-from REAgent.host.workspace.model import _compact_json, _source_objects, _workspace
-from REAgent.host.workspace.recovery import _block, _fact_differences, _recompute_preserving_history, _transaction_ready
-from REAgent.host.workspace.state import _document_history_state, _geometry_differences, _presentation_state, _source_geometry_state, _source_model_state, _target_geometry_state, _target_model_state
+from REAgent.host.validation.tolerance import ir_tolerance_contract, source_tolerance_contract
+from REAgent.host.view.camera import camera_state_differences, capture_complete_camera_state, restore_camera_state
+from REAgent.host.workspace.model import compact_json, source_objects, workspace
+from REAgent.host.workspace.recovery import block_document_writes, fact_differences, recompute_preserving_history, transaction_ready
+from REAgent.host.workspace.state import document_history_state, geometry_differences, presentation_state, source_geometry_state, source_model_state, target_geometry_state, target_model_state
 
 
 def _observation_baseline(document, group, source):
-    model = (_target_model_state(document, group, include_history=False) if group
-             else _source_model_state(source, include_history=False))
-    geometry = _target_geometry_state(group) if group else _source_geometry_state(source)
-    tolerance = _ir_tolerance_contract(group) if group else _source_tolerance_contract(source)
+    model = (target_model_state(document, group, include_history=False) if group
+             else source_model_state(source, include_history=False))
+    geometry = target_geometry_state(group) if group else source_geometry_state(source)
+    tolerance = ir_tolerance_contract(group) if group else source_tolerance_contract(source)
     view = Gui.activeDocument().activeView()
     return {"model": model, "geometry": geometry, "tolerance": tolerance, "view": view,
-            "camera": _capture_complete_camera_state(view), "display": _presentation_state(document),
-            "history": _document_history_state(document)}
+            "camera": capture_complete_camera_state(view), "display": presentation_state(document),
+            "history": document_history_state(document)}
 
 
 def _observation_readback(document, group, source, before, history_owned, errors):
@@ -33,24 +33,24 @@ def _observation_readback(document, group, source, before, history_owned, errors
                 "model_unchanged": None, "result_geometry_unchanged": None,
                 "history_restored": None, "presentation_restored": None}
     try:
-        differences = _fact_differences(before["model"],
-            _target_model_state(document, group, include_history=False) if group
-            else _source_model_state(source, include_history=False), "model")
+        differences = fact_differences(before["model"],
+            target_model_state(document, group, include_history=False) if group
+            else source_model_state(source, include_history=False), "model")
         recovery["model_unchanged"] = not differences
         for item in differences[:8]:
             errors.add("model: " + item["field"] + ": " + item.get("reason", "value_changed"))
     except Exception as exc:
         errors.add("model: final state readback failed: " + str(exc)[:180])
     try:
-        differences = _geometry_differences(before["geometry"],
-            _target_geometry_state(group) if group else _source_geometry_state(source), before["tolerance"])
+        differences = geometry_differences(before["geometry"],
+            target_geometry_state(group) if group else source_geometry_state(source), before["tolerance"])
         recovery["result_geometry_unchanged"] = not differences
         for item in differences[:8]:
-            errors.add("geometry: " + _compact_json(item))
+            errors.add("geometry: " + compact_json(item))
     except Exception as exc:
         errors.add("geometry: final Result readback failed: " + str(exc)[:180])
     try:
-        same_history = _document_history_state(document) == before["history"] and App.getActiveTransaction() is None
+        same_history = document_history_state(document) == before["history"] and App.getActiveTransaction() is None
         recovery["history_restored"] = same_history if history_owned else None
         if not same_history:
             recovery["history_restored"] = False
@@ -58,9 +58,9 @@ def _observation_readback(document, group, source, before, history_owned, errors
     except Exception as exc:
         errors.add("history: final readback failed: " + str(exc)[:180])
     try:
-        differences = _camera_state_differences(before["view"], before["camera"]["numeric"])
+        differences = camera_state_differences(before["view"], before["camera"]["numeric"])
         presentation_same = (App.activeDocument() is document
-                             and _presentation_state(document) == before["display"] and not differences)
+                             and presentation_state(document) == before["display"] and not differences)
         recovery["presentation_restored"] = presentation_same
         for difference in differences:
             errors.add(difference)
@@ -72,10 +72,10 @@ def _observation_readback(document, group, source, before, history_owned, errors
 
 
 class ObservationScopeOperations:
-    def _isolated_observation(self, document, render, params, *, temporary=True):
+    def isolated_observation(self, document, render, params, *, temporary=True):
         """Certify one observation only after its owned transient scope exits."""
         if temporary:
-            _transaction_ready(document)
+            transaction_ready(document)
         elif App.activeDocument() is not document or any(
                 doc.HasPendingTransaction for doc in App.listDocuments().values()):
             raise ValueError("Observation requires the bound active document without a user transaction")
@@ -83,8 +83,8 @@ class ObservationScopeOperations:
             raise ValueError("Temporary observation cannot erase a native redo branch")
         if App.getActiveTransaction() is not None:
             raise ValueError("Finish the application transaction before an observation")
-        group = _workspace(document) if PROCESS.INSTANCE_ROLE == "rebuild" else None
-        source = None if group else _source_objects(document.Name)[1]
+        group = workspace(document) if PROCESS.INSTANCE_ROLE == "target" else None
+        source = None if group else source_objects(document.Name)[1]
         before = _observation_baseline(document, group, source)
         view = before["view"]
         scope = _ObservationScope(document, temporary)
@@ -93,7 +93,7 @@ class ObservationScopeOperations:
         history_ownership_confirmed = True
         App.addDocumentObserver(scope)
         try:
-            _operation_stage("observation", mutating=True)
+            operation_stage("observation", mutating=True)
             if temporary:
                 scope.phase = "opening"
                 # FreeCAD materializes the document transaction on the first
@@ -104,7 +104,7 @@ class ObservationScopeOperations:
             scope.phase = "rendering"
             value = render(params, scope)
         except Exception as exc:
-            error = _stamp_failure(exc)
+            error = stamp_failure(exc)
         finally:
             try:
                 if temporary:
@@ -120,7 +120,7 @@ class ObservationScopeOperations:
                             and App.getActiveTransaction() is None
                             and not document.HasPendingTransaction)
                         if group and materialized and history_ownership_confirmed:
-                            _recompute_preserving_history(document)
+                            recompute_preserving_history(document)
                     else:
                         history_ownership_confirmed = False
                         final_errors.add("history: observation transaction consumed, replaced or unconfirmed")
@@ -147,7 +147,7 @@ class ObservationScopeOperations:
         except Exception as exc:
             final_errors.add("presentation: final refresh failed: " + str(exc))
             if error is None:
-                error = _stamp_failure(exc)
+                error = stamp_failure(exc)
         try:
             App.removeDocumentObserver(scope)
         except Exception as exc:
@@ -181,7 +181,7 @@ class ObservationScopeOperations:
                       "residual_files": residual[:8], "residual_file_count": len(residual),
                       "residual_files_omitted": max(0, len(residual) - 8)}
             if not durable_restored:
-                failure = _block(document, "Observation durable recovery is unconfirmed")
+                failure = block_document_writes(document, "Observation durable recovery is unconfirmed")
                 detail["target_writes_blocked"] = True
                 PROCESS.AUDIT_BLOCKS[document.Name] = (document, detail)
             elif not confirmed:
@@ -195,7 +195,7 @@ class ObservationScopeOperations:
             if failure is error:
                 failure.view_reason = _view_failure_reason(error)
                 raise failure
-            raise _stamp_failure(failure) from error
+            raise stamp_failure(failure) from error
         cleanup = scope.cleanup_temporary_images()
         return {**value, "restored": True, "recovery": recovery, "image_cleanup": cleanup}
 
@@ -424,7 +424,7 @@ def _restore_view_operation(
                 obj.ViewObject.Visibility = expected["Visibility"]
         except Exception as exc:
             add_error("visibility.%s" % name, exc)
-    _restore_camera_state(view, camera_state, errors=errors)
+    restore_camera_state(view, camera_state, errors=errors)
     if previous_active is not None:
         try:
             App.setActiveDocument(previous_active.Name)
@@ -458,7 +458,7 @@ def _restore_view_operation(
                     )
     if view is not None and camera_state is not None:
         try:
-            for difference in _camera_state_differences(view, camera_state["numeric"]):
+            for difference in camera_state_differences(view, camera_state["numeric"]):
                 errors.add(difference)
         except Exception as exc:
             add_error("camera_readback", exc)
@@ -471,7 +471,7 @@ def _restore_view_operation(
     return errors
 
 
-def _cleanup_observation_previews(document, scope, previews):
+def cleanup_observation_previews(document, scope, previews):
     for preview in previews:
         if preview is None:
             continue

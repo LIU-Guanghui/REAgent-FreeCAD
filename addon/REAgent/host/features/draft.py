@@ -1,13 +1,18 @@
 """Native Draft on exact current Target faces and an explicit neutral plane."""
 
-from REAgent.host.workspace.properties import _fixed_dressup_false, _metadata, _number_readback, _set_bool, _set_number
-from REAgent.host.features.support.construction import _history_context, _shape_readback
-from REAgent.host.features.support.references import _current_faces, _link_sub_readback, _role_object, _set_face_base
+from REAgent.host.workspace.properties import fixed_dressup_false, metadata, number_readback, set_bool, set_number
+from REAgent.host.features.support.construction import history_context, shape_readback
+from REAgent.host.features.support.references import current_faces, link_sub_readback, role_object, set_face_base
 
 
 class DraftOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
+
+    def contribute(self):
+        return {
+            'PartDesign_Draft': self._create_draft,
+        }
 
     def _create_draft(self, params):
         name = params["feature_name"]
@@ -16,13 +21,13 @@ class DraftOperations:
         neutral = [None]
 
         def preflight(document, group, request):
-            context[0] = _history_context(
+            context[0] = history_context(
                 document, group, request, require_solid=True)
             body, _profile, tip = context[0]
-            selected[0], evidence = _current_faces(
+            selected[0], evidence = current_faces(
                 body, group, request, tip, request["face_refs"],
                 "draft_target", "face_refs")
-            neutral[0] = _neutral_plane(document, body, group, tip, request, evidence)
+            neutral[0] = neutral_plane(document, body, group, tip, request, evidence)
 
         def mutate(document, group, request, changes):
             body, _profile, tip = context[0]
@@ -30,23 +35,23 @@ class DraftOperations:
             if feature.Name != name or feature.TypeId != "PartDesign::Draft":
                 raise RuntimeError("Native Draft type or identity differs")
             body.addObject(feature)
-            _set_face_base(feature, tip, selected[0])
+            set_face_base(feature, tip, selected[0])
             _set_neutral_plane(feature, *neutral[0])
-            _set_number(feature, "Angle", request["angle_deg"])
-            _set_bool(feature, "Reversed", request["reversed"])
+            set_number(feature, "Angle", request["angle_deg"])
+            set_bool(feature, "Reversed", request["reversed"])
             for prop in ("Refine", "SupportTransform"):
-                _fixed_dressup_false(feature, prop)
+                fixed_dressup_false(feature, prop)
             if feature.PullDirection is not None:
                 raise RuntimeError("Native Draft has a custom PullDirection")
             return feature
 
         def readback(document, group, feature, _state):
             body, _profile, tip = context[0]
-            body_shape = _shape_readback(
+            body_shape = shape_readback(
                 document, body, feature, name, "PartDesign::Draft", tip)
-            _link_sub_readback(feature, "Base", tip, selected[0])
-            _link_sub_readback(feature, "NeutralPlane", *neutral[0])
-            angle = _number_readback(feature, "Angle", params["angle_deg"])
+            link_sub_readback(feature, "Base", tip, selected[0])
+            link_sub_readback(feature, "NeutralPlane", *neutral[0])
+            angle = number_readback(feature, "Angle", params["angle_deg"])
             if bool(feature.Reversed) != params["reversed"]:
                 raise RuntimeError("Native Draft direction changed")
             if feature.PullDirection is not None:
@@ -65,16 +70,11 @@ class DraftOperations:
             params, command="PartDesign_Draft", preflight=preflight,
             mutate=mutate, readback=readback)
 
-    def contribute(self):
-        return {
-            'PartDesign_Draft': self._create_draft,
-        }
 
-
-def _neutral_plane(document, body, group, tip, request, evidence):
+def neutral_plane(document, body, group, tip, request, evidence):
     choice = request["neutral_plane"]
     if choice["kind"] == "predecessor_face":
-        names, _ = _current_faces(
+        names, _ = current_faces(
             body, group, request, tip, [choice["face_ref"]],
             "draft_neutral", "neutral_plane.face_ref", evidence=evidence)
         detail = next(face for face in evidence["faces"] if face["name"] == names[0])
@@ -85,13 +85,13 @@ def _neutral_plane(document, body, group, tip, request, evidence):
         origin = body.Origin
         if origin is None:
             raise ValueError("Draft Body has no native Origin")
-        plane = _role_object(origin, choice["role"], "App::Plane", document)
+        plane = role_object(origin, choice["role"], "App::Plane", document)
         return plane, [""]
     raise ValueError("Unsupported Draft neutral plane kind")
 
 
 def _set_neutral_plane(feature, object_ref, names):
-    meta = _metadata(feature, "NeutralPlane")
+    meta = metadata(feature, "NeutralPlane")
     if not meta["writable"] or meta["codec"] != "link_sub":
         raise ValueError("Native Draft NeutralPlane is not a writable LinkSub")
     feature.NeutralPlane = (object_ref, names)

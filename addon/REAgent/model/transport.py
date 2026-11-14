@@ -126,16 +126,16 @@ class _ControlledConnection:
         super().connect()
         self._budget.checkpoint()
 
-    def _tunnel(self):
-        super()._tunnel()
-        self.sock.settimeout(self._budget.wait())
-
     def send(self, data):
         if self.sock is None:
             self.connect()
         self.sock.settimeout(self._budget.wait())
         super().send(data)
         self._budget.checkpoint()
+
+    def _tunnel(self):
+        super()._tunnel()
+        self.sock.settimeout(self._budget.wait())
 
 
 class _HTTPConnection(_ControlledConnection, HTTPConnection):

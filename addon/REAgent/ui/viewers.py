@@ -4,7 +4,7 @@ import json
 
 from REAgent.ui import QtCore, QtGui, QtWidgets
 from REAgent.ui.panel import plain_label
-from REAgent.session.state_snapshots import read_preview_image
+from REAgent.application.presentation import read_preview_image
 
 class ImageView(QtWidgets.QGraphicsView):
     zoom_changed = QtCore.Signal(float)

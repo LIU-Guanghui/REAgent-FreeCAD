@@ -7,14 +7,14 @@ import re
 
 import FreeCAD as App
 
-from REAgent.host.numeric import _vector_dict
+from REAgent.host.numeric import vector_dict
 from REAgent.protocol.observations import entity_record
-from REAgent.host.analysis.math3d import _normalized_vector, _parallel_line_distance, _plane_distance, _point_distance, _vector_length, _vectors_parallel
-from REAgent.host.analysis.measurements import _bound_box_summary, _geometry_bound_box, _mass_center, _shape_tolerance
-from REAgent.host.analysis.sampling import _face_surface_sample
+from REAgent.host.analysis.math3d import normalized_vector, parallel_line_distance, plane_distance, point_distance, vector_length, vectors_parallel
+from REAgent.host.analysis.measurements import bound_box_summary, geometry_bound_box, mass_center, shape_tolerance
+from REAgent.host.analysis.sampling import face_surface_sample
 
 
-def _edge_detail(edge, index, adjacent_faces, contract):
+def edge_detail(edge, index, adjacent_faces, contract):
     name = "Edge%d" % index
     # OCCT can expose internal or degenerate edges whose Curve accessor raises
     # instead of returning a curve.  Keep those edges in the evidence set as
@@ -31,8 +31,8 @@ def _edge_detail(edge, index, adjacent_faces, contract):
     for vertex in list(getattr(edge, "Vertexes", [])):
         point = getattr(vertex, "Point", None)
         if point is not None:
-            vertices.append(_vector_dict(point))
-    center = _mass_center(edge)
+            vertices.append(vector_dict(point))
+    center = mass_center(edge)
     try:
         closed = bool(edge.isClosed())
     except (AttributeError, RuntimeError, TypeError):
@@ -48,19 +48,19 @@ def _edge_detail(edge, index, adjacent_faces, contract):
         and abs(parameter_range[1] - parameter_range[0]) > 1e-12
     ):
         try:
-            midpoint = _vector_dict(
+            midpoint = vector_dict(
                 edge.valueAt((parameter_range[0] + parameter_range[1]) / 2.0)
             )
         except (AttributeError, RuntimeError, TypeError, ValueError):
             midpoint = None
-    local_tolerance = _shape_tolerance(edge)
+    local_tolerance = shape_tolerance(edge)
     return entity_record("edge", {
         "name": name,
         "index": index,
         "curve_type": curve_type,
         "orientation": str(getattr(edge, "Orientation", "Unknown")),
         "length_mm": length,
-        "center_mm": _vector_dict(center) if center is not None else None,
+        "center_mm": vector_dict(center) if center is not None else None,
         "center_unavailable_reason": "kernel_mass_center_unavailable" if center is None else None,
         "endpoints_mm": vertices,
         "midpoint_mm": midpoint,
@@ -96,7 +96,7 @@ def _curve_parameters(curve):
 
 def _optional_parameters(native, vectors, scalars):
     result, unavailable, errors = {}, [], []
-    for properties, convert in ((vectors, _vector_dict), (scalars, float)):
+    for properties, convert in ((vectors, vector_dict), (scalars, float)):
         for name in properties:
             field = _snake_case(name)
             try:
@@ -112,13 +112,13 @@ def _optional_parameters(native, vectors, scalars):
     return result
 
 
-def _wire_details(face, face_name, global_edges, edge_by_name, contract):
+def describe_wires(face, face_name, global_edges, edge_by_name, contract):
     result = []
     outer_wire = getattr(face, "OuterWire", None)
     for index, wire in enumerate(list(getattr(face, "Wires", []))):
         edge_names = []
         for wire_edge in list(getattr(wire, "Edges", [])):
-            edge_index = _same_shape_index(wire_edge, global_edges)
+            edge_index = same_shape_index(wire_edge, global_edges)
             if edge_index is not None:
                 edge_names.append("Edge%d" % (edge_index + 1))
         if outer_wire is None:
@@ -133,11 +133,11 @@ def _wire_details(face, face_name, global_edges, edge_by_name, contract):
             for name in edge_names
             if name in edge_by_name
         ]
-        signature = _stable_digest(
+        signature = stable_digest(
             {
                 "role": "outer" if is_outer else "inner",
                 "ordered_edges": _canonical_cycle(edge_signatures),
-                "perimeter": _quantize(
+                "perimeter": quantize(
                     sum(
                         edge_by_name[name]["length_mm"]
                         for name in edge_names
@@ -172,7 +172,7 @@ def _canonical_cycle(values):
     return min(sequences)
 
 
-def _quantize(value, tolerance):
+def quantize(value, tolerance):
     tolerance = max(float(tolerance), 1e-12)
     return int(round(float(value) / tolerance))
 
@@ -181,9 +181,9 @@ def _quantized_vector(vector, tolerance, include_position=True):
     if vector is None or not include_position:
         return None
     return [
-        _quantize(vector["x"], tolerance),
-        _quantize(vector["y"], tolerance),
-        _quantize(vector["z"], tolerance),
+        quantize(vector["x"], tolerance),
+        quantize(vector["y"], tolerance),
+        quantize(vector["z"], tolerance),
     ]
 
 
@@ -217,11 +217,11 @@ def _quantized_parameters(parameters, contract, include_position=True):
                 if "angle" in name
                 else contract["linear_tolerance_mm"]
             )
-            result[name] = _quantize(value, tolerance)
+            result[name] = quantize(value, tolerance)
     return result
 
 
-def _edge_fingerprint(edge, contract, include_position):
+def edge_fingerprint(edge, contract, include_position):
     endpoints = [
         _quantized_vector(
             endpoint,
@@ -233,7 +233,7 @@ def _edge_fingerprint(edge, contract, include_position):
     endpoints = sorted(endpoint for endpoint in endpoints if endpoint is not None)
     return {
         "curve_type": edge["curve_type"],
-        "length": _quantize(
+        "length": quantize(
             edge["length_mm"], contract["linear_tolerance_mm"]
         ),
         "center": _quantized_vector(
@@ -251,13 +251,13 @@ def _edge_fingerprint(edge, contract, include_position):
     }
 
 
-def _edge_geometry_fingerprint(edge, contract):
-    fingerprint = _edge_fingerprint(edge, contract, include_position=True)
+def edge_geometry_fingerprint(edge, contract):
+    fingerprint = edge_fingerprint(edge, contract, include_position=True)
     fingerprint.pop("adjacent_face_count", None)
     return fingerprint
 
 
-def _edge_topology_fingerprint(edge, surface_by_name):
+def edge_topology_fingerprint(edge, surface_by_name):
     return {
         "orientation": edge["orientation"],
         "vertex_count": len(edge["endpoints_mm"]),
@@ -270,7 +270,7 @@ def _edge_topology_fingerprint(edge, surface_by_name):
     }
 
 
-def _face_fingerprint(
+def face_fingerprint(
     face, edge_by_name, surface_by_name, contract, include_position
 ):
     edge_signatures = sorted(
@@ -282,13 +282,13 @@ def _face_fingerprint(
     )
     bound_box = face["bounding_box_mm"]
     box_dimensions = sorted(
-        _quantize(bound_box[name], contract["linear_tolerance_mm"])
+        quantize(bound_box[name], contract["linear_tolerance_mm"])
         for name in ("x_length", "y_length", "z_length")
     )
     return {
         "surface_type": face["surface_type"],
         "orientation": face["orientation"],
-        "area": _quantize(
+        "area": quantize(
             face["area_mm2"], contract["area_tolerance_mm2"]
         ),
         "center": _quantized_vector(
@@ -309,23 +309,23 @@ def _face_fingerprint(
     }
 
 
-def _face_geometry_fingerprint(face, contract):
+def face_geometry_fingerprint(face, contract):
     bound_box = face["bounding_box_mm"]
     return {
         "surface_type": face["surface_type"],
-        "area": _quantize(face["area_mm2"], contract["area_tolerance_mm2"]),
+        "area": quantize(face["area_mm2"], contract["area_tolerance_mm2"]),
         "center": _quantized_vector(
             face["center_mm"], contract["linear_tolerance_mm"], True
         ),
         "box_dimensions": sorted(
-            _quantize(bound_box[name], contract["linear_tolerance_mm"])
+            quantize(bound_box[name], contract["linear_tolerance_mm"])
             for name in ("x_length", "y_length", "z_length")
         ),
         "surface": _quantized_parameters(face["surface"], contract, True),
     }
 
 
-def _face_topology_fingerprint(face, edge_by_name, surface_by_name):
+def face_topology_fingerprint(face, edge_by_name, surface_by_name):
     return {
         "orientation": face["orientation"],
         "wire_roles": sorted(wire["role"] for wire in face["wires"]),
@@ -341,14 +341,14 @@ def _face_topology_fingerprint(face, edge_by_name, surface_by_name):
     }
 
 
-def _stable_digest(value, length=20):
+def stable_digest(value, length=20):
     payload = json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     )
     return hashlib.sha256(payload.encode("ascii")).hexdigest()[:length]
 
 
-def _resolve_geometry_selectors(value, stable_selection):
+def resolve_geometry_selectors(value, stable_selection):
     if value is None:
         return {
             "face_names": [],
@@ -401,7 +401,7 @@ def _resolve_geometry_selectors(value, stable_selection):
     }
 
 
-def _dihedral_relations(
+def dihedral_relations(
     shape, faces, edges, face_details, edge_details, contract
 ):
     face_by_name = {face["name"]: face for face in face_details}
@@ -472,7 +472,7 @@ def _edge_face_normals(edge, left_face, right_face):
     for face in (left_face, right_face):
         try:
             u_value, v_value = face.Surface.parameter(point)
-            result.append(_vector_dict(face.normalAt(u_value, v_value)))
+            result.append(vector_dict(face.normalAt(u_value, v_value)))
         except (AttributeError, RuntimeError, TypeError, ValueError):
             result.append(None)
     return tuple(result)
@@ -481,8 +481,8 @@ def _edge_face_normals(edge, left_face, right_face):
 def _normal_angle_deg(left, right):
     if left is None or right is None:
         return None
-    left_length = _vector_length(left)
-    right_length = _vector_length(right)
+    left_length = vector_length(left)
+    right_length = vector_length(right)
     if left_length == 0 or right_length == 0:
         return None
     cosine = (
@@ -504,7 +504,7 @@ def _material_side_probe(shape, edge, normals, contract):
         start, end = edge.ParameterRange
         point = edge.valueAt((float(start) + float(end)) / 2.0)
         scale = max(contract["linear_tolerance_mm"] * 10.0, 1e-4)
-        normalized = [_normalized_vector(normal) for normal in normals]
+        normalized = [normalized_vector(normal) for normal in normals]
         inside_count = 0
         for left_sign, right_sign in (
             (-1.0, -1.0),
@@ -554,25 +554,25 @@ def _material_side_probe(shape, edge, normals, contract):
     }
 
 
-def _face_detail(face, index, adjacency, contract):
+def face_detail(face, index, adjacency, contract):
     name = "Face%d" % index
     surface = face.Surface
     surface_type = type(surface).__name__
     parameter_range = [float(value) for value in face.ParameterRange]
-    center = _mass_center(face)
+    center = mass_center(face)
     return entity_record("face", {
         "name": name,
         "index": index,
         "surface_type": surface_type,
         "orientation": str(face.Orientation),
         "area_mm2": float(face.Area),
-        "center_mm": _vector_dict(center) if center is not None else None,
+        "center_mm": vector_dict(center) if center is not None else None,
         "center_unavailable_reason": "kernel_mass_center_unavailable" if center is None else None,
-        "surface_sample": _face_surface_sample(face, contract),
+        "surface_sample": face_surface_sample(face, contract),
         "parameter_range": parameter_range,
         "wire_count": len(face.Wires),
         "edge_count": len(face.Edges),
-        "bounding_box_mm": _bound_box_summary(_geometry_bound_box(face)),
+        "bounding_box_mm": bound_box_summary(geometry_bound_box(face)),
         "surface": _surface_parameters(surface, surface_type),
         "adjacent_faces": list(adjacency[name]),
     })
@@ -595,7 +595,7 @@ def _surface_parameters(surface, surface_type):
     return _optional_parameters(surface, vector_properties.get(surface_type, ()), scalar_properties.get(surface_type, ()))
 
 
-def _geometric_relations(faces, tolerance):
+def geometric_relations(faces, tolerance):
     relations = {
         "parallel_plane_pairs": [],
         "coplanar_plane_pairs": [],
@@ -614,14 +614,14 @@ def _geometric_relations(faces, tolerance):
             if left_type == right_type == "Plane":
                 left_axis = left_surface.get("axis")
                 right_axis = right_surface.get("axis")
-                if _vectors_parallel(left_axis, right_axis):
+                if vectors_parallel(left_axis, right_axis):
                     relations["parallel_plane_pairs"].append(pair)
                     left_position = left_surface.get("position")
                     right_position = right_surface.get("position")
                     if (
                         left_position is not None
                         and right_position is not None
-                        and _plane_distance(
+                        and plane_distance(
                             left_position, right_position, left_axis
                         )
                         <= tolerance
@@ -634,10 +634,10 @@ def _geometric_relations(faces, tolerance):
                 left_center = left_surface.get("center")
                 right_center = right_surface.get("center")
                 if (
-                    _vectors_parallel(left_axis, right_axis)
+                    vectors_parallel(left_axis, right_axis)
                     and left_center is not None
                     and right_center is not None
-                    and _parallel_line_distance(
+                    and parallel_line_distance(
                         left_center, right_center, left_axis
                     )
                     <= tolerance
@@ -650,7 +650,7 @@ def _geometric_relations(faces, tolerance):
                 if (
                     left_center is not None
                     and right_center is not None
-                    and _point_distance(left_center, right_center) <= tolerance
+                    and point_distance(left_center, right_center) <= tolerance
                 ):
                     relations["concentric_surface_pairs"].append(pair)
 
@@ -666,7 +666,7 @@ def _geometric_relations(faces, tolerance):
     return relations
 
 
-def _same_shape_index(candidate, shapes):
+def same_shape_index(candidate, shapes):
     for index, shape in enumerate(shapes):
         try:
             if candidate.isSame(shape):
@@ -677,7 +677,7 @@ def _same_shape_index(candidate, shapes):
     return None
 
 
-def _transient_name_index(name):
+def transient_name_index(name):
     match = re.search(r"([0-9]+)$", name)
     return int(match.group(1)) if match else 0
 

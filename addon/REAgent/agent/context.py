@@ -5,13 +5,14 @@ from .compaction import (REQUEST_PRESSURE_BYTES, REQUEST_PRESSURE_FRACTION, comp
 from copy import copy
 from dataclasses import dataclass, replace
 
-from REAgent.model.messages import AssistantTurn
+from REAgent.model.messages import AssistantTurn, Instruction
 from REAgent.model.config import input_limit_tokens
 from REAgent.model.limits import (
     IMAGE_SOFT_TARGET_COUNT, IMAGE_SOFT_TARGET_TOKENS, RECENT_WINDOW_FRACTION,
     RECENT_WINDOW_MAX_TOKENS)
 from REAgent.agent.messages import ImageMaterial, ToolOutcome, UserText
 from REAgent.model.errors import CapacityError, ModelError
+from .tools import project_calls
 
 
 @dataclass(frozen=True)
@@ -31,10 +32,8 @@ class ConversationUnit:
 
 
 class Conversation:
-    def __init__(self, instructions, objective, *, summary_instruction, history_prefix):
-        self.instructions = instructions
-        self._summary_instruction = summary_instruction
-        self._history_prefix = history_prefix
+    def __init__(self, instructions, objective):
+        self.set_instructions(instructions)
         self.requirements, self.units = [], []
         self.summary = self._facts = self.last_compaction = None
         self.revision = self.checkpoint = self._sequence = self._fact_sequence = 0
@@ -42,18 +41,15 @@ class Conversation:
         self.retained_groups = frozenset()
         self.add_requirement(0, objective)
 
+    def set_instructions(self, text):
+        self.instructions = Instruction(text)
+
     def fork(self):
         candidate = copy(self)
         candidate.units, candidate.requirements = list(self.units), list(self.requirements)
         candidate._delivered_units, candidate._delivered_images = set(self._delivered_units), set(self._delivered_images)
         candidate._attempts = set(self._attempts)
         return candidate
-
-    def _append(self, messages, *, observations=(), user_requirements=()):
-        self._sequence += 1
-        self.units.append(ConversationUnit("unit-%s" % self._sequence, tuple(messages), tuple(observations),
-                                           tuple(user_requirements)))
-        self.revision += 1
 
     def add_requirement(self, generation, text):
         if not isinstance(text, str) or not text.strip():
@@ -78,6 +74,16 @@ class Conversation:
 
     def record_human(self, material):
         self._append((material,))
+
+    def retained_tool_results(self):
+        for unit in self.units:
+            reply = next((item for item in unit.messages if isinstance(item, AssistantTurn)), None)
+            if reply is None:
+                continue
+            outcomes = {item.call_id: item for item in unit.messages if isinstance(item, ToolOutcome)}
+            for call in project_calls(reply.calls):
+                if call.id in outcomes:
+                    yield call, outcomes[call.id]
 
     def receipt(self, unit_ids, delivery_ids):
         """Only a successful adopted MAIN request calls this, never a summary."""
@@ -110,14 +116,14 @@ class Conversation:
             self.retained_groups = frozenset(groups)
             self.revision += 1
 
-    def _messages(self):
+    def messages(self):
         return [self.instructions, *(() if self.summary is None else (self.summary,)),
                 *(message for unit in self.units for message in unit.messages)]
 
     def estimate(self, client, tools, facts):
         candidate = self.fork()
         candidate.record_facts(facts)
-        return client.estimate(candidate._messages(), tools)
+        return client.estimate(candidate.messages(), tools)
 
     def compactable_units(self, client):
         if len(self.units) < 2:
@@ -137,7 +143,7 @@ class Conversation:
                 break
         return self.units[:cut]
 
-    def _prune_images(self, client, *, force=False):
+    def prune_images(self, client, *, force=False):
         images = [item for unit in self.units for item in unit.messages if isinstance(item, ImageMaterial) and item.images]
         count = sum(len(item.images) for item in images)
         tokens = sum(row["tokens_estimate"] for item in images for row in client.image_estimates((item,)))
@@ -174,11 +180,11 @@ class Conversation:
             raise ModelError("request_cancelled", "Context preparation stopped before staging")
         candidate = self.fork()
         candidate.record_facts(facts)
-        before = client.estimate(candidate._messages(), tools)
-        removed = candidate._prune_images(client, force=before["request_bytes"] >= REQUEST_PRESSURE_BYTES)
+        before = client.estimate(candidate.messages(), tools)
+        removed = candidate.prune_images(client, force=before["request_bytes"] >= REQUEST_PRESSURE_BYTES)
         capacity = None
         try:
-            prepared = client.prepare(candidate._messages(), tools)
+            prepared = client.prepare(candidate.messages(), tools)
         except CapacityError as exc:
             prepared, capacity = None, exc
         limit = input_limit_tokens(client.config)
@@ -208,3 +214,9 @@ class Conversation:
 
     def compact(self, client, tools, facts, **callbacks):
         return compact(self, client, tools, facts, **callbacks)
+
+    def _append(self, messages, *, observations=(), user_requirements=()):
+        self._sequence += 1
+        self.units.append(ConversationUnit("unit-%s" % self._sequence, tuple(messages), tuple(observations),
+                                           tuple(user_requirements)))
+        self.revision += 1

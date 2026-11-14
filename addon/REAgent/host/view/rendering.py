@@ -7,14 +7,14 @@ import FreeCAD as App
 import Part
 from PySide import QtCore, QtGui
 
-from REAgent.host.analysis.measurements import _geometry_bound_box
+from REAgent.host.analysis.measurements import geometry_bound_box
 from REAgent.protocol.observations import DEFAULT_VIEW_DIRECTIONS, IMAGE_CONTENT_LIMITS, view_direction_label
 from REAgent.host.view.cameras import VIEW_CAMERA_SPECS
-from REAgent.host.file_digest import _file_sha256
-from REAgent.host.view.camera import _apply_canonical_view, _camera_metadata, _camera_numeric_state, _camera_state_differences, _canonical_view_method, _direction_error_deg, _projection, _refresh_camera, _record_camera_failure, _set_camera_height, _set_camera_focus, _set_orthographic_projection, _wait_for_camera_stable
+from REAgent.host.file_digest import file_sha256
+from REAgent.host.view.camera import apply_canonical_view, read_camera_metadata, camera_numeric_state, camera_state_differences, canonical_view_method, direction_error_deg, normalize_projection, refresh_camera, record_camera_failure, set_camera_height, set_camera_focus, set_orthographic_projection, wait_for_camera_stable
 
 
-def _existing_directory(value):
+def existing_directory(value):
     if not isinstance(value, str) or not value or not os.path.isabs(value):
         raise ValueError("Bound output directory must be a non-empty absolute path")
     path = os.path.normpath(value)
@@ -23,15 +23,15 @@ def _existing_directory(value):
     return path
 
 
-def _view_directions(value):
+def view_directions(value):
     return DEFAULT_VIEW_DIRECTIONS if value is None else tuple(dict.fromkeys(value))
 
 
-def _display_mode(value):
+def normalize_display_mode(value):
     return "flat_lines" if value is None else value
 
 
-def _view_precondition(message, code):
+def view_precondition(message, code):
     failure = ValueError(message)
     failure.error_class = "precondition"
     failure.error_code = code
@@ -39,7 +39,7 @@ def _view_precondition(message, code):
     return failure
 
 
-    # _camera_metadata will report the actual vectors and a useful error if a
+    # read_camera_metadata will report the actual vectors and a useful error if a
     # host did not settle on the declared standard pose.
 
 
@@ -67,7 +67,7 @@ def _render_item_groups(value):
     return render_group, style_group
 
 
-def _render_canonical_views(view, items, *args, scope, transparency=0, **kwargs):
+def render_canonical_views(view, items, *args, scope, transparency=0, **kwargs):
     """Render with explicit opacity; retain local cleanup facts for the scope owner."""
     scope.assert_render_safe()
     operation_error = None
@@ -156,9 +156,9 @@ def _render_canonical_views_core(
 ):
     """Render role-local objects with one verified orthographic camera scale.
 
-    ``items`` maps output prefixes (for example ``source``/``rebuild``) to
+    ``items`` maps output prefixes (for example ``source``/``target``) to
     temporary ViewObjects.  All objects are framed together, then captured one
-    at a time with the same camera height, so a Source/Rebuild pair and the
+    at a time with the same camera height, so a Source/Target pair and the
     canonical front/top/left views are pixel-scale comparable.
     """
 
@@ -168,10 +168,10 @@ def _render_canonical_views_core(
     if not directions:
         raise ValueError("Canonical rendering requires at least one direction")
     for direction in directions:
-        _canonical_view_method(view, direction)
+        canonical_view_method(view, direction)
     requested_display_mode = display_mode
-    display_mode = _display_mode(display_mode)
-    projection = _projection(projection)
+    display_mode = normalize_display_mode(display_mode)
+    projection = normalize_projection(projection)
     normalized_items = {}
     render_objects = []
     actual_display_modes = []
@@ -212,19 +212,19 @@ def _render_canonical_views_core(
     actual_display_mode = unique_actual_modes[0]
 
     if camera_metadata is None:
-        _set_orthographic_projection(view)
+        set_orthographic_projection(view)
         for view_object in render_objects:
             view_object.Visibility = True
         heights = []
         for direction in directions:
             state = None
             try:
-                _apply_canonical_view(view, direction, scope)
+                apply_canonical_view(view, direction, scope)
                 view.fitAll()
-                state = _wait_for_camera_stable(view, direction, scope, phase="fit")
+                state = wait_for_camera_stable(view, direction, scope, phase="fit")
                 heights.append(state["fields"]["height"])
             except Exception as exc:
-                _record_camera_failure(exc, direction, "fit", None, state)
+                record_camera_failure(exc, direction, "fit", None, state)
                 raise
         center = None
         if framing_box is not None:
@@ -245,7 +245,7 @@ def _render_canonical_views_core(
                     vertical = abs(sum((corner[a] - center[a]) * up[a] for a in center))
                     horizontal = abs(sum((corner[a] - center[a]) * right[a] for a in center))
                     heights.append(2 * max(vertical, horizontal * height / width))
-        common_height = _set_camera_height(view, max(heights) * 1.05)
+        common_height = set_camera_height(view, max(heights) * 1.05)
         camera_metadata = {
             "projection": projection,
             "requested_display_mode": requested_display_mode,
@@ -274,34 +274,34 @@ def _render_canonical_views_core(
         center = camera_metadata.get("scale", {}).get("focus_mm")
         if common_height is None:
             raise ValueError("Shared canonical camera has no scale")
-        _set_orthographic_projection(view)
+        set_orthographic_projection(view)
 
     for direction in directions:
         state = None
         phase = "settle_initial"
         try:
-            _apply_canonical_view(view, direction, scope)
-            settled = _wait_for_camera_stable(view, direction, scope, phase=phase, center=center)
+            apply_canonical_view(view, direction, scope)
+            settled = wait_for_camera_stable(view, direction, scope, phase=phase, center=center)
             phase = "stop_animation"
             view.stopAnimating()
-            state = _camera_numeric_state(view)
-            differences = _camera_state_differences(view, settled, actual=state)
+            state = camera_numeric_state(view)
+            differences = camera_state_differences(view, settled, actual=state)
             if differences:
                 raise RuntimeError("Camera changed while stopping animation: " + "; ".join(differences))
             phase = "calibrate"
             basis = state
             state = None
-            _set_camera_height(view, common_height)
+            set_camera_height(view, common_height)
             if center is not None:
-                _set_camera_focus(view, center, state=basis)
+                set_camera_focus(view, center, state=basis)
             phase = "settle_after_calibrate"
-            state = _wait_for_camera_stable(view, direction, scope, phase=phase, center=center)
+            state = wait_for_camera_stable(view, direction, scope, phase=phase, center=center)
             phase = "validate_camera"
-            actual_camera = _camera_metadata(
+            actual_camera = read_camera_metadata(
                 view, direction, common_height, width, height, state=state, center=center)
             previous_camera = camera_metadata.setdefault("camera", {}).get(direction)
             if previous_camera is not None and any(
-                _direction_error_deg(previous_camera[key], actual_camera[key]) > 0.01
+                direction_error_deg(previous_camera[key], actual_camera[key]) > 0.01
                 for key in ("actual_camera_direction", "actual_up_direction")
             ):
                 raise RuntimeError("Shared canonical camera pose changed for %s" % direction)
@@ -312,19 +312,19 @@ def _render_canonical_views_core(
                 state = None
                 for other in render_objects:
                     other.Visibility = other in group
-                _refresh_camera(scope)
-                state = _camera_numeric_state(view)
-                _camera_metadata(view, direction, common_height, width, height,
+                refresh_camera(scope)
+                state = camera_numeric_state(view)
+                read_camera_metadata(view, direction, common_height, width, height,
                                  state=state, center=center, expected=settled)
                 phase = "capture"
                 capture(label, direction, view, camera_metadata)
                 phase = "after_capture"
                 state = None
-                state = _camera_numeric_state(view)
-                _camera_metadata(view, direction, common_height, width, height,
+                state = camera_numeric_state(view)
+                read_camera_metadata(view, direction, common_height, width, height,
                                  state=state, center=center, expected=settled)
         except Exception as exc:
-            _record_camera_failure(exc, direction, phase, center, state)
+            record_camera_failure(exc, direction, phase, center, state)
             raise
     scope.assert_render_safe()
     for view_object in render_objects:
@@ -332,7 +332,7 @@ def _render_canonical_views_core(
     return camera_metadata
 
 
-def _focus_box(value):
+def focus_box(value):
     if value is None:
         return None, None
     fields = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
@@ -374,7 +374,7 @@ def _set_display_mode(view_object, label, requested):
 
     if view_object is None:
         raise ValueError("%s has no GUI view object" % label)
-    requested = _display_mode(requested)
+    requested = normalize_display_mode(requested)
     host_mode = _FREECAD_DISPLAY_MODES[requested]
     display_modes = list(view_object.listDisplayModes())
     if host_mode not in display_modes:
@@ -390,7 +390,7 @@ def _set_display_mode(view_object, label, requested):
     return previous, actual
 
 
-def _normalize_view_query(query):
+def normalize_view_query(query):
     """Apply view defaults and cross-field semantics after Bridge validation."""
     paired = query.get("paired", False)
     include_section = query.get("include_section", False)
@@ -400,7 +400,7 @@ def _normalize_view_query(query):
         raise ValueError("section_axis requires include_section=true")
     section_axis = query.get("section_axis", "y")
     normalized = {
-        "views": list(_view_directions(query.get("views"))),
+        "views": list(view_directions(query.get("views"))),
         "width": query.get("width", 640),
         "height": query.get("height", 480),
         "output_long_edge_px": query.get("output_long_edge_px", 1536),
@@ -411,7 +411,7 @@ def _normalize_view_query(query):
         "include_section": include_section,
     }
     if "display_mode" in query:
-        normalized["display_mode"] = _display_mode(query["display_mode"])
+        normalized["display_mode"] = normalize_display_mode(query["display_mode"])
     if include_section:
         normalized["section_axis"] = section_axis
     return normalized
@@ -447,7 +447,7 @@ def _image_artifact(path, *, layout, capture_id, capture_number, role, revision)
     if (dimensions.width(), dimensions.height()) != (layout["width_px"], layout["height_px"]):
         raise ValueError("Final PNG dimensions differ from the planned canvas")
     return {"path": os.path.abspath(path), "capture_id": capture_id, "capture_number": capture_number,
-            "sha256": _file_sha256(path), "size_bytes": size,
+            "sha256": file_sha256(path), "size_bytes": size,
             "width_px": layout["width_px"], "height_px": layout["height_px"],
             "evidence_status": "generated", "role": role, "revision": revision}
 
@@ -469,26 +469,6 @@ class _CaptureOutput:
         self.key = self.canvas = None
         self.seen, self.outputs, self.frames = set(), {}, []
         self.total_bytes = 0
-
-    def _close_canvas(self):
-        if self.canvas is None:
-            return
-        layout = self.layouts[self.key]
-        expected = {(cell["role"], cell["direction"]) for cell in layout["cells"]}
-        if not expected <= self.seen:
-            raise ValueError("Cannot publish an incomplete canvas")
-        path = self.paths[self.key]
-        if not self.canvas.save(path, "PNG"):
-            raise RuntimeError("Cannot encode final view PNG")
-        self.canvas = None
-        role = "paired" if len(self.revisions) > 1 else next(iter(self.revisions))
-        revision = dict(self.revisions) if role == "paired" else self.revisions[role]
-        manifest = _image_artifact(path, layout=layout, capture_id=self.scope.capture_id,
-            capture_number=self.scope.capture_number, role=role, revision=revision)
-        self.total_bytes += manifest["size_bytes"]
-        if self.total_bytes > IMAGE_CONTENT_LIMITS["max_total_bytes"]:
-            raise ValueError("Encoded complete PNG group exceeds byte capacity")
-        self.outputs[self.key] = {"path": path, "layout": layout, "manifest": manifest}
 
     def capture(self, role, direction, view, camera):
         output_direction = "section" if self.section is not None and self.section.get("capturing") else direction
@@ -570,11 +550,31 @@ class _CaptureOutput:
             raise ValueError("Complete capture is missing cells or final PNGs")
         return {"outputs": self.outputs, "images": self.frames}
 
+    def _close_canvas(self):
+        if self.canvas is None:
+            return
+        layout = self.layouts[self.key]
+        expected = {(cell["role"], cell["direction"]) for cell in layout["cells"]}
+        if not expected <= self.seen:
+            raise ValueError("Cannot publish an incomplete canvas")
+        path = self.paths[self.key]
+        if not self.canvas.save(path, "PNG"):
+            raise RuntimeError("Cannot encode final view PNG")
+        self.canvas = None
+        role = "paired" if len(self.revisions) > 1 else next(iter(self.revisions))
+        revision = dict(self.revisions) if role == "paired" else self.revisions[role]
+        manifest = _image_artifact(path, layout=layout, capture_id=self.scope.capture_id,
+            capture_number=self.scope.capture_number, role=role, revision=revision)
+        self.total_bytes += manifest["size_bytes"]
+        if self.total_bytes > IMAGE_CONTENT_LIMITS["max_total_bytes"]:
+            raise ValueError("Encoded complete PNG group exceeds byte capacity")
+        self.outputs[self.key] = {"path": path, "layout": layout, "manifest": manifest}
 
-def _section_preview_shapes(source, target, axis):
+
+def section_preview_shapes(source, target, axis):
     """One world half-space, including both operands' entire retained side."""
     shapes = {"source": source, "target": target}
-    bounds = {role: _geometry_bound_box(shape) for role, shape in shapes.items()}
+    bounds = {role: geometry_bound_box(shape) for role, shape in shapes.items()}
     axes = ("x", "y", "z")
     minimum = {a: min(float(getattr(box, a.upper() + "Min")) for box in bounds.values()) for a in axes}
     maximum = {a: max(float(getattr(box, a.upper() + "Max")) for box in bounds.values()) for a in axes}
@@ -615,7 +615,7 @@ def _section_preview_shapes(source, target, axis):
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             row.update(status="failed", reason=str(exc)[:300], exception_type=type(exc).__name__)
     if len(result) != 2:
-        failure = _view_precondition("Section has no comparable renderable solids; inspect per-role results", "section_unavailable")
+        failure = view_precondition("Section has no comparable renderable solids; inspect per-role results", "section_unavailable")
         failure.failure_detail = {"section": metadata}
         raise failure
     return result, metadata

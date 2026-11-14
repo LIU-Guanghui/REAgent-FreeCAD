@@ -5,10 +5,10 @@ import math
 import FreeCAD as App
 import Sketcher
 
-from REAgent.host.workspace.model import _depends_on
+from REAgent.host.workspace.model import depends_on
 from REAgent.host.workspace.properties import sketch_content_state
-from .sketch import (_POINT_POSITIONS, _constraints_preflight, _geometry_preflight,
-                     _native_constraint, _native_geometry)
+from .sketch import (_POINT_POSITIONS, constraints_preflight, geometry_preflight,
+                     native_constraint, native_geometry)
 
 
 _GEOMETRY_KINDS = {"LineSegment": "line", "Circle": "circle", "ArcOfCircle": "arc",
@@ -59,6 +59,11 @@ def _external_points(sketch, content):
 
 
 class SketchEdit:
+    @property
+    def has_changes(self):
+        return bool(self.actions or self.added_geometry or self.added_constraints
+                    or self.deleted_geometry or self.deleted_constraints)
+
     def __init__(self, sketch, operations, tolerance):
         self.sketch = sketch
         self.before = before = sketch_content_state(sketch)
@@ -73,7 +78,7 @@ class SketchEdit:
         self.deleted_constraints = set()
         geometry_count, constraint_count = len(before["geometry"]), len(before["constraints"])
         consumers = [obj for obj in sketch.Document.Objects if obj is not sketch
-                     and obj.TypeId != "PartDesign::Body" and _depends_on(obj, sketch)]
+                     and obj.TypeId != "PartDesign::Body" and depends_on(obj, sketch)]
         by_id = {_geometry_id(i): {"kind": _GEOMETRY_KINDS.get(type(geo).__name__)}
                  for i, geo in enumerate(sketch.Geometry)}
         original_ids = set(by_id)
@@ -123,14 +128,14 @@ class SketchEdit:
                 if i not in self.deleted_constraints
             ):
                 raise ValueError(f"Sketch geometry {action['index']} has constraints. Edit its driving dimension instead.")
-        added = _geometry_preflight(self.added_geometry, epsilon)
+        added = geometry_preflight(self.added_geometry, epsilon)
         if original_ids & added.keys():
             raise ValueError("New Sketch geometry IDs must differ from existing element identifiers")
         for item in self.added_geometry:
             if item["kind"] in ("arc", "ellipse_arc") and not 0 < item["end_deg"] - item["start_deg"] < 360:
                 raise ValueError("Sketch arc requires a positive span under 360 degrees")
         by_id.update(added)
-        _constraints_preflight(self.added_constraints, by_id)
+        constraints_preflight(self.added_constraints, by_id)
         if geometry_count - len(self.deleted_geometry) + len(self.added_geometry) > 256:
             raise ValueError("Edited Sketch would exceed 256 native geometry elements")
         if constraint_count - len(self.deleted_constraints) + len(self.added_constraints) > 512:
@@ -140,64 +145,6 @@ class SketchEdit:
         self.constraint_indices = {index: final for final, index in enumerate(
             index for index in range(constraint_count) if index not in self.deleted_constraints)}
 
-    def _prepare_action(self, operation, row):
-        op, index = operation["op"], operation["index"]
-        prepared = dict(operation)
-        self.checks.append(prepared)
-        if op == "move_point":
-            attr = _POINT_KEYS[operation["position"]]
-            if attr not in row:
-                raise ValueError("Selected Sketch geometry has no requested point")
-            if math.dist(row[attr], [*operation["point_mm"], 0.0]) <= self.epsilon:
-                return
-        elif op == "set_radius":
-            if _GEOMETRY_KINDS.get(type(self.sketch.Geometry[index]).__name__) not in ("circle", "arc"):
-                raise ValueError("set_radius requires a native Sketch circle or circular arc")
-            radius = operation["radius_mm"]
-            if radius <= self.epsilon:
-                raise ValueError("Sketch radius is below the geometry tolerance")
-            if math.isclose(row["Radius"], radius, abs_tol=self.numeric_epsilon, rel_tol=0):
-                return
-        elif op == "set_length":
-            if _GEOMETRY_KINDS.get(type(self.sketch.Geometry[index]).__name__) != "line":
-                raise ValueError("set_length requires a native Sketch line segment")
-            length = operation["length_mm"]
-            start, end = row["StartPoint"], row["EndPoint"]
-            current = math.dist(start, end)
-            if min(current, length) <= self.epsilon:
-                raise ValueError("Sketch line is below the geometry tolerance")
-            prepared["end"] = [a + (b-a)*length/current for a, b in zip(start, end)]
-            if math.isclose(current, length, abs_tol=self.numeric_epsilon, rel_tol=0):
-                return
-        elif op == "construction":
-            if row["construction"] == operation["enabled"]:
-                return
-        else:
-            if row["expression"]:
-                raise ValueError("The selected Sketch constraint is expression-driven")
-            if op == "set_constraint_value":
-                if row["driving"] is not True or not row["active"] or not row.get("value_unit"):
-                    raise ValueError("Only active driving dimensional constraints have an editable value")
-                value = operation["value"]
-                if row["value_unit"] == "rad":
-                    value = math.radians(value)
-                prepared["value"] = value
-                if math.isclose(row["Value"], value, rel_tol=1e-12, abs_tol=1e-9):
-                    return
-            elif op == "constraint_driving":
-                if row["driving"] is None:
-                    raise ValueError("Only dimensional constraints have a driving mode")
-                if row["driving"] == operation["enabled"]:
-                    return
-            elif row["active"] == operation["enabled"]:
-                return
-        self.actions.append(prepared)
-
-    @property
-    def has_changes(self):
-        return bool(self.actions or self.added_geometry or self.added_constraints
-                    or self.deleted_geometry or self.deleted_constraints)
-
     def write(self):
         sketch = self.sketch
         for index in sorted(self.deleted_constraints, reverse=True):
@@ -205,7 +152,7 @@ class SketchEdit:
         for index in sorted(self.deleted_geometry, reverse=True):
             sketch.delGeometry(index)
         for item in self.added_geometry:
-            index = sketch.addGeometry(_native_geometry(item), item.get("construction", False))
+            index = sketch.addGeometry(native_geometry(item), item.get("construction", False))
             if type(index) is not int or index != len(self.indices):
                 raise RuntimeError("Native Sketch geometry did not append at the expected index")
             self.indices[item["id"]] = index
@@ -237,7 +184,7 @@ class SketchEdit:
                 else:
                     sketch.setActive(index, operation["enabled"])
         for item in self.added_constraints:
-            sketch.addConstraint(_native_constraint(item, self.indices))
+            sketch.addConstraint(native_constraint(item, self.indices))
         if sketch.solve() != 0:
             raise ValueError("Native Sketch solver rejected the edit")
 
@@ -275,7 +222,7 @@ class SketchEdit:
                 raise RuntimeError(f"Sketch geometry {original} changed its kind or construction state")
         for i, item in enumerate(self.added_constraints, start=len(self.constraint_indices)):
             row = actual["constraints"][i]
-            native = _native_constraint(item, self.indices)
+            native = native_constraint(item, self.indices)
             if any(row.get(key) != getattr(native, key) for key in (
                     "Type", "First", "Second", "Third", "FirstPos", "SecondPos", "ThirdPos")):
                 raise RuntimeError("New Sketch constraint did not retain its intended references")
@@ -334,3 +281,56 @@ class SketchEdit:
                 "added_geometry": len(self.added_geometry), "removed_geometry": len(self.deleted_geometry),
                 "added_constraints": len(self.added_constraints), "removed_constraints": len(self.deleted_constraints),
                 "updated": updated}
+
+    def _prepare_action(self, operation, row):
+        op, index = operation["op"], operation["index"]
+        prepared = dict(operation)
+        self.checks.append(prepared)
+        if op == "move_point":
+            attr = _POINT_KEYS[operation["position"]]
+            if attr not in row:
+                raise ValueError("Selected Sketch geometry has no requested point")
+            if math.dist(row[attr], [*operation["point_mm"], 0.0]) <= self.epsilon:
+                return
+        elif op == "set_radius":
+            if _GEOMETRY_KINDS.get(type(self.sketch.Geometry[index]).__name__) not in ("circle", "arc"):
+                raise ValueError("set_radius requires a native Sketch circle or circular arc")
+            radius = operation["radius_mm"]
+            if radius <= self.epsilon:
+                raise ValueError("Sketch radius is below the geometry tolerance")
+            if math.isclose(row["Radius"], radius, abs_tol=self.numeric_epsilon, rel_tol=0):
+                return
+        elif op == "set_length":
+            if _GEOMETRY_KINDS.get(type(self.sketch.Geometry[index]).__name__) != "line":
+                raise ValueError("set_length requires a native Sketch line segment")
+            length = operation["length_mm"]
+            start, end = row["StartPoint"], row["EndPoint"]
+            current = math.dist(start, end)
+            if min(current, length) <= self.epsilon:
+                raise ValueError("Sketch line is below the geometry tolerance")
+            prepared["end"] = [a + (b-a)*length/current for a, b in zip(start, end)]
+            if math.isclose(current, length, abs_tol=self.numeric_epsilon, rel_tol=0):
+                return
+        elif op == "construction":
+            if row["construction"] == operation["enabled"]:
+                return
+        else:
+            if row["expression"]:
+                raise ValueError("The selected Sketch constraint is expression-driven")
+            if op == "set_constraint_value":
+                if row["driving"] is not True or not row["active"] or not row.get("value_unit"):
+                    raise ValueError("Only active driving dimensional constraints have an editable value")
+                value = operation["value"]
+                if row["value_unit"] == "rad":
+                    value = math.radians(value)
+                prepared["value"] = value
+                if math.isclose(row["Value"], value, rel_tol=1e-12, abs_tol=1e-9):
+                    return
+            elif op == "constraint_driving":
+                if row["driving"] is None:
+                    raise ValueError("Only dimensional constraints have a driving mode")
+                if row["driving"] == operation["enabled"]:
+                    return
+            elif row["active"] == operation["enabled"]:
+                return
+        self.actions.append(prepared)

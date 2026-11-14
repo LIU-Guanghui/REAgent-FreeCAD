@@ -8,16 +8,16 @@ import Sketcher
 
 from REAgent.host.process_state import PROCESS
 from REAgent.protocol.features import validate_feature_relations
-from REAgent.host.validation.tolerance import _ir_tolerance_contract
-from REAgent.host.workspace.model import _depends_on, _owned_objects, _session_bodies, _target_state
-from REAgent.host.workspace.properties import _metadata
-from REAgent.host.workspace.recovery import _block
-from REAgent.host.workspace.state import _target_view_revision
+from REAgent.host.validation.tolerance import ir_tolerance_contract
+from REAgent.host.workspace.model import depends_on, owned_objects, session_bodies, target_state
+from REAgent.host.workspace.properties import metadata
+from REAgent.host.workspace.recovery import block_document_writes
+from REAgent.host.workspace.state import target_view_revision
 
 _POINT_POSITIONS = {"start": 1, "end": 2, "center": 3}
 
 
-def _geometry_preflight(geometry, epsilon):
+def geometry_preflight(geometry, epsilon):
     by_id = {}
     for item in geometry:
         identifier = item["id"]
@@ -52,7 +52,7 @@ def _point_constraint_ref(ref, by_id):
     return ref["geometry_id"], _POINT_POSITIONS[position]
 
 
-def _constraints_preflight(constraints, by_id):
+def constraints_preflight(constraints, by_id):
     for item in constraints:
         kind = item["kind"]
         if kind == "Coincident":
@@ -83,7 +83,7 @@ def _constraints_preflight(constraints, by_id):
                 raise ValueError("Equal supports two lines or two circular curves")
 
 
-def _native_geometry(item):
+def native_geometry(item):
     vector = lambda point: App.Vector(point[0], point[1], 0)
     kind = item["kind"]
     if kind == "line":
@@ -104,7 +104,7 @@ def _native_geometry(item):
         ellipse, math.radians(item["start_deg"]), math.radians(item["end_deg"])))
 
 
-def _native_constraint(item, indices):
+def native_constraint(item, indices):
     kind = item["kind"]
     index = lambda identifier: indices[identifier]
     point = lambda ref: [index(ref["geometry_id"]), _POINT_POSITIONS[ref["position"]]]
@@ -126,6 +126,14 @@ class SketchOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
 
+    def contribute(self):
+        return {
+            'PartDesign_NewSketch': self._new_sketch,
+            'Sketcher_MapSketch': self._map_sketch,
+            'Sketcher_EditSketch': self._edit_sketch,
+            'Sketcher_ValidateSketch': self._validate_sketch,
+        }
+
     def _new_sketch(self, params):
         name = params["sketch_name"]
         body_name = params["body_name"]
@@ -133,7 +141,7 @@ class SketchOperations:
 
         def preflight(document, group, request):
             body = document.getObject(body_name)
-            if body not in _session_bodies(group):
+            if body not in session_bodies(group):
                 raise ValueError("Sketch Body is not owned by this session")
             if document.getObject(name) is not None:
                 raise ValueError("Sketch name already exists: " + name)
@@ -172,7 +180,7 @@ class SketchOperations:
         def preflight(document, group, request):
             body = document.getObject(body_name)
             sketch = document.getObject(name)
-            if body not in _session_bodies(group) or sketch is None or sketch not in body.Group:
+            if body not in session_bodies(group) or sketch is None or sketch not in body.Group:
                 raise ValueError("Sketch and reference must belong to the same owned Body")
             if (sketch.TypeId != "Sketcher::SketchObject" or sketch.GeometryCount != 0
                     or sketch.ConstraintCount != 0):
@@ -192,7 +200,7 @@ class SketchOperations:
                 if (datum is None or datum.Document is not document
                         or datum.TypeId != "Part::DatumPlane" or datum not in body.Group):
                     raise ValueError("Sketch Datum Plane must be a native reference in its owned Body")
-                if _depends_on(datum, sketch):
+                if depends_on(datum, sketch):
                     raise ValueError("Sketch attachment would create a dependency cycle")
                 reference_object[0] = datum
             elif reference["kind"] == "coordinate_system_plane":
@@ -205,7 +213,7 @@ class SketchOperations:
                 if (len(matches) != 1 or matches[0].TypeId != "App::Plane"
                         or matches[0].Document is not document):
                     raise ValueError("Coordinate System does not have one native plane for this role")
-                if _depends_on(matches[0], sketch) or _depends_on(datum, sketch):
+                if depends_on(matches[0], sketch) or depends_on(datum, sketch):
                     raise ValueError("Sketch attachment would create a dependency cycle")
                 # The child plane is local to the Coordinate System; attaching
                 # directly to it discards the parent's placement.
@@ -222,8 +230,8 @@ class SketchOperations:
                 reference_fact[0]["coordinate_system"] = reference["datum_name"]
             else:
                 reference_fact[0]["object"] = reference_object[0].Name
-            support = _metadata(sketch, "AttachmentSupport")
-            mode = _metadata(sketch, "MapMode")
+            support = metadata(sketch, "AttachmentSupport")
+            mode = metadata(sketch, "MapMode")
             if (not support["writable"] or support["codec"] not in ("link_sub", "link_sub_list")
                     or not mode["writable"] or mode["codec"] != "string"
                     or reference_mode[0] not in mode.get("enum", [])):
@@ -244,8 +252,8 @@ class SketchOperations:
 
         def readback(document, group, sketch, PROCESS):
             body = document.getObject(body_name)
-            mode = _metadata(sketch, "MapMode")
-            support = _metadata(sketch, "AttachmentSupport")
+            mode = metadata(sketch, "MapMode")
+            support = metadata(sketch, "AttachmentSupport")
             links = support["value"]
             if support["codec"] == "link_sub":
                 links = [links]
@@ -280,7 +288,7 @@ class SketchOperations:
             validate_feature_relations("Sketcher_EditSketch", request)
             body = document.getObject(body_name)
             sketch = document.getObject(name)
-            if (body not in _session_bodies(group) or sketch is None
+            if (body not in session_bodies(group) or sketch is None
                     or sketch.TypeId != "Sketcher::SketchObject"
                     or sketch not in body.Group):
                 raise ValueError("Sketch edit requires an owned native Sketch")
@@ -288,12 +296,12 @@ class SketchOperations:
                 raise ValueError("Sketch edit is one-shot and requires an empty Sketch")
             if getattr(sketch, "ExternalGeometry", []):
                 raise ValueError("Sketch with external geometry is not in the supported edit scope")
-            if any(consumer in _owned_objects(group) and consumer is not body
+            if any(consumer in owned_objects(group) and consumer is not body
                    for consumer in sketch.InList):
                 raise ValueError("Sketch already has a downstream dependent feature")
-            epsilon[0] = _ir_tolerance_contract(group)["numeric_linear_epsilon_mm"]
-            by_id = _geometry_preflight(request["geometry"], epsilon[0])
-            _constraints_preflight(request["constraints"], by_id)
+            epsilon[0] = ir_tolerance_contract(group)["numeric_linear_epsilon_mm"]
+            by_id = geometry_preflight(request["geometry"], epsilon[0])
+            constraints_preflight(request["constraints"], by_id)
             prior_tip[0] = body.Tip
 
         def mutate(document, group, request, changes):
@@ -301,7 +309,7 @@ class SketchOperations:
             indices = {}
             geometry_types = {}
             for item in request["geometry"]:
-                geometry = _native_geometry(item)
+                geometry = native_geometry(item)
                 index = sketch.addGeometry(geometry, item.get("construction", False))
                 if not isinstance(index, int) or isinstance(index, bool) or index < 0:
                     raise RuntimeError("Native Sketch geometry returned an invalid index")
@@ -310,7 +318,7 @@ class SketchOperations:
             if len(set(indices.values())) != len(indices):
                 raise RuntimeError("Native Sketch geometry indices are not unique")
             for item in request["constraints"]:
-                sketch.addConstraint(_native_constraint(item, indices))
+                sketch.addConstraint(native_constraint(item, indices))
             return sketch, indices, geometry_types
 
         def readback(document, group, created, state):
@@ -349,14 +357,14 @@ class SketchOperations:
 
     def _validate_sketch(self, params):
 
-        document, _source, group, config = _target_state(params["document"])
+        document, _source, group, config = target_state(params["document"])
         binding = PROCESS.SESSION_BINDINGS.get(params["session_id"])
         if (binding is None or binding.get("document") is not document
-                or binding.get("role") != "rebuild"):
+                or binding.get("role") != "target"):
             raise ValueError("Sketch diagnosis requires the exact bound Target session")
         body = document.getObject(params["body_name"])
         sketch = document.getObject(params["sketch_name"])
-        if (body not in _session_bodies(group) or sketch is None
+        if (body not in session_bodies(group) or sketch is None
                 or sketch.TypeId != "Sketcher::SketchObject" or sketch not in body.Group):
             raise ValueError("Sketch diagnosis requires an owned native Sketch")
         if document.HasPendingTransaction:
@@ -366,7 +374,7 @@ class SketchOperations:
             return (list(document.UndoNames), list(document.RedoNames),
                     bool(document.HasPendingTransaction), sketch.GeometryCount,
                     sketch.ConstraintCount, [str(state) for state in sketch.State],
-                    _target_view_revision(document, group, config))
+                    target_view_revision(document, group, config))
 
         before = snapshot()
         try:
@@ -395,13 +403,5 @@ class SketchOperations:
             except Exception:
                 unchanged = False
             if not unchanged:
-                raise _block(document, "Read-only Sketch diagnosis changed or could not confirm native state")
+                raise block_document_writes(document, "Read-only Sketch diagnosis changed or could not confirm native state")
         return return_value
-
-    def contribute(self):
-        return {
-            'PartDesign_NewSketch': self._new_sketch,
-            'Sketcher_MapSketch': self._map_sketch,
-            'Sketcher_EditSketch': self._edit_sketch,
-            'Sketcher_ValidateSketch': self._validate_sketch,
-        }

@@ -4,7 +4,7 @@
 
 In a reconstruction action, the user fixes the source and output paths. Check bindings with `agent_ping`. Obtain Source global facts and `initial_views`, and inspect both boards before choosing features or modeling: six orthogonal and eight corner views at one scale. The global facts and complete PNG set must enter an adopted action request before native modeling. Follow-up conversation uses [session control](session-and-isolation.md).
 
-If delivery exceeds limits, lower resolution and retry all fourteen directions. Stop the model task if required views remain unusable. Geometry-only work requires explicit task permission declared at session start; image failure does not grant it.
+If image delivery exceeds limits, lower resolution and retry all fourteen directions. Stop modeling if the required views remain unusable.
 
 ## Model from evidence
 

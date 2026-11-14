@@ -1,8 +1,8 @@
 """Bounded native Hole from a circle-only Sketch in an owned solid Body."""
 
 from REAgent.protocol.features import validate_feature_relations
-from REAgent.host.workspace.properties import _metadata, _number_readback, _set_bool, _set_enum, _set_number
-from REAgent.host.features.support.construction import _history_context, _profile_readback, _set_profile, _shape_readback
+from REAgent.host.workspace.properties import metadata, number_readback, set_bool, set_enum, set_number
+from REAgent.host.features.support.construction import history_context, profile_readback, set_profile, shape_readback
 
 _HOLE_ENUM = {
     "DepthType": {"dimension": "Dimension", "through_all": "ThroughAll"},
@@ -13,7 +13,7 @@ _HOLE_ENUM = {
 
 
 def _set_circle_centers(feature):
-    meta = _metadata(feature, "BaseProfileType")
+    meta = metadata(feature, "BaseProfileType")
     if not meta["writable"] or meta["codec"] != "integer":
         raise ValueError("Native Hole center selection is unavailable")
     # FreeCAD 1.1.1: OnCircles=1<<1. Never inherit the user preference,
@@ -23,7 +23,7 @@ def _set_circle_centers(feature):
         raise RuntimeError("Native Hole did not select circle centers only")
 
 
-def _circle_profile(sketch):
+def circle_profile(sketch):
     geometry = list(sketch.Geometry)
     if any(sketch.getConstruction(i) or type(item).__name__ != "Circle"
            for i, item in enumerate(geometry)):
@@ -38,6 +38,11 @@ class HoleOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
 
+    def contribute(self):
+        return {
+            'PartDesign_Hole': self._create_hole,
+        }
+
     def _create_hole(self, params):
         name = params["feature_name"]
         context = [None]
@@ -46,9 +51,9 @@ class HoleOperations:
 
         def preflight(document, group, request):
             validate_feature_relations("PartDesign_Hole", request)
-            context[0] = _history_context(
+            context[0] = history_context(
                 document, group, request, require_solid=True, sketch=True)
-            profile_circle_count[0] = _circle_profile(context[0][1])
+            profile_circle_count[0] = circle_profile(context[0][1])
 
         def mutate(document, group, request, changes):
             body, sketch, _tip = context[0]
@@ -56,63 +61,63 @@ class HoleOperations:
             if feature.Name != name or feature.TypeId != "PartDesign::Hole":
                 raise RuntimeError("Native Hole type or identity differs")
             body.addObject(feature)
-            _set_profile(feature, sketch)
+            set_profile(feature, sketch)
             _set_circle_centers(feature)
-            _set_enum(feature, "ThreadType", "None")
-            _set_number(feature, "Diameter", request["diameter_mm"])
+            set_enum(feature, "ThreadType", "None")
+            set_number(feature, "Diameter", request["diameter_mm"])
             values = {}
             for prop, choice in (("DepthType", request["depth_mode"]),
                                  ("HoleCutType", request["mouth_mode"])):
                 values[prop] = _HOLE_ENUM[prop][choice]
-                _set_enum(feature, prop, values[prop])
+                set_enum(feature, prop, values[prop])
             if request["depth_mode"] == "dimension":
-                _set_number(feature, "Depth", request["depth_mm"])
+                set_number(feature, "Depth", request["depth_mm"])
                 values["DrillPoint"] = _HOLE_ENUM["DrillPoint"][request["drill_point"]]
-                _set_enum(feature, "DrillPoint", values["DrillPoint"])
+                set_enum(feature, "DrillPoint", values["DrillPoint"])
                 if request["drill_point"] == "angled":
-                    _set_number(feature, "DrillPointAngle", request["drill_point_angle_deg"])
+                    set_number(feature, "DrillPointAngle", request["drill_point_angle_deg"])
             angled_depth = (request["depth_mode"] == "dimension"
                             and request["drill_point"] == "angled")
             if angled_depth:
-                _set_bool(feature, "DrillForDepth", True)
+                set_bool(feature, "DrillForDepth", True)
             if request["mouth_mode"] != "none":
-                _set_bool(feature, "HoleCutCustomValues", True)
-                _set_number(feature, "HoleCutDiameter", request["mouth_diameter_mm"])
+                set_bool(feature, "HoleCutCustomValues", True)
+                set_number(feature, "HoleCutDiameter", request["mouth_diameter_mm"])
                 if request["mouth_mode"] == "counterbore":
-                    _set_number(feature, "HoleCutDepth", request["mouth_depth_mm"])
+                    set_number(feature, "HoleCutDepth", request["mouth_depth_mm"])
                 else:
-                    _set_number(feature, "HoleCutCountersinkAngle", request["mouth_angle_deg"])
+                    set_number(feature, "HoleCutCountersinkAngle", request["mouth_angle_deg"])
             values["ThreadType"] = "None"
-            _set_bool(feature, "Tapered", False)
+            set_bool(feature, "Tapered", False)
             if "Refine" in feature.PropertiesList:
-                _set_bool(feature, "Refine", False)
-            _set_bool(feature, "Reversed", request["reversed"])
+                set_bool(feature, "Refine", False)
+            set_bool(feature, "Reversed", request["reversed"])
             enum_values[0] = values
             return feature
 
         def readback(document, group, feature, _state):
             body, sketch, tip = context[0]
-            body_shape = _shape_readback(document, body, feature, name,
+            body_shape = shape_readback(document, body, feature, name,
                                          "PartDesign::Hole", tip)
-            _profile_readback(feature, sketch)
+            profile_readback(feature, sketch)
             if feature.BaseProfileType != 2:
                 raise RuntimeError("Native Hole circle-center mode changed")
-            _number_readback(feature, "Diameter", params["diameter_mm"])
+            number_readback(feature, "Diameter", params["diameter_mm"])
             for prop, value in enum_values[0].items():
                 if getattr(feature, prop) != value:
                     raise RuntimeError("Native Hole enumeration changed: " + prop)
             if params["depth_mode"] == "dimension":
-                _number_readback(feature, "Depth", params["depth_mm"])
+                number_readback(feature, "Depth", params["depth_mm"])
                 if params["drill_point"] == "angled":
-                    _number_readback(feature, "DrillPointAngle", params["drill_point_angle_deg"])
+                    number_readback(feature, "DrillPointAngle", params["drill_point_angle_deg"])
             if params["mouth_mode"] != "none":
                 if not bool(feature.HoleCutCustomValues):
                     raise RuntimeError("Native Hole custom entrance dimensions were disabled")
-                _number_readback(feature, "HoleCutDiameter", params["mouth_diameter_mm"])
+                number_readback(feature, "HoleCutDiameter", params["mouth_diameter_mm"])
                 if params["mouth_mode"] == "counterbore":
-                    _number_readback(feature, "HoleCutDepth", params["mouth_depth_mm"])
+                    number_readback(feature, "HoleCutDepth", params["mouth_depth_mm"])
                 else:
-                    _number_readback(feature, "HoleCutCountersinkAngle", params["mouth_angle_deg"])
+                    number_readback(feature, "HoleCutCountersinkAngle", params["mouth_angle_deg"])
             elif bool(feature.HoleCutCustomValues):
                 raise RuntimeError("Native plain Hole enabled custom entrance dimensions")
             for prop in ("Threaded", "ModelThread", "Tapered", "Refine"):
@@ -135,8 +140,3 @@ class HoleOperations:
             params, command="PartDesign_Hole", preflight=preflight,
             mutate=mutate, readback=readback,
         )
-
-    def contribute(self):
-        return {
-            'PartDesign_Hole': self._create_hole,
-        }

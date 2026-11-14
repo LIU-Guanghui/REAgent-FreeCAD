@@ -3,7 +3,7 @@
 import math
 
 
-def _finite_number(value, field):
+def finite_number(value, field):
     if isinstance(value, bool):
         raise ValueError("%s must be a number" % field)
     try:
@@ -15,7 +15,7 @@ def _finite_number(value, field):
     return number
 
 
-def _positive_number(value, field):
+def positive_number(value, field):
     if isinstance(value, bool):
         raise ValueError("%s must be a number" % field)
     try:
@@ -26,7 +26,7 @@ def _positive_number(value, field):
         raise ValueError("%s must be greater than 0 and at most 1000000" % field)
     return number
 
-def _positive_finite_number(value, field):
+def positive_finite_number(value, field):
     if isinstance(value, bool):
         raise ValueError("%s must be a number" % field)
     try:
@@ -37,7 +37,7 @@ def _positive_finite_number(value, field):
         raise ValueError("%s must be a positive finite number" % field)
     return number
 
-def _vector_dict(vector):
+def vector_dict(vector):
     return {
         "x": float(vector.x),
         "y": float(vector.y),

@@ -35,9 +35,6 @@ class MessageInput(QtWidgets.QPlainTextEdit):
         self._composing = bool(event.preeditString())
         super().inputMethodEvent(event)
 
-    def _end_ime_commit(self):
-        self._ime_committed = False
-
     def keyPressEvent(self, event):
         if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter) and not self._composing:
             if self._ime_committed:
@@ -49,6 +46,9 @@ class MessageInput(QtWidgets.QPlainTextEdit):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def _end_ime_commit(self):
+        self._ime_committed = False
 
 
 class Panel(QtWidgets.QDockWidget):
@@ -73,7 +73,7 @@ class Panel(QtWidgets.QDockWidget):
         self.commands = {}
         self._callbacks = {}
         for name, label, callback in (
-            ("rebuild", "Rebuild model…", self.start_task),
+            ("stp2cad", "STEP to CAD…", self.stp2cad),
             ("compact", "Compact context", lambda: manager.action("compact")),
             ("status", "Status", lambda: manager.open_viewer("status")),
             ("compare", "Compare Source and Target…", manager.compare),
@@ -156,93 +156,12 @@ class Panel(QtWidgets.QDockWidget):
         self.save.setEnabled(enabled["save"])
         self._update_send()
 
-    def _command_problem(self, text):
-        hint = "Valid commands: " + ", ".join("/" + name for name in self.commands) + "."
-        parts = text.split()
-        if len(parts) != 1:
-            return "Commands do not accept inline arguments. " + hint
-        name = parts[0][1:].casefold()
-        action = self.commands.get(name)
-        if action is None:
-            return "Unknown command. " + hint
-        if not action.isEnabled():
-            return "Command unavailable in the current task state: /" + name
-        return ""
-
-    def _show_command_problem(self, problem):
-        key = (self.input.toPlainText(), problem)
-        if self._rejected_command != key:
-            self._manager._notice(problem)
-            self._rejected_command = key
-
     def set_context(self, view):
         percent, count, tooltip = view
         self.context_percent.setText(percent)
         self.context_count.setText(count)
         for label in (self.context_label, self.context_percent, self.context_count):
             label.setToolTip(tooltip)
-
-    def _update_send(self):
-        text = self.input.toPlainText().strip()
-        if self._rejected_command is not None and self._rejected_command[0] != self.input.toPlainText():
-            self._rejected_command = None
-        if text.startswith("/"):
-            problem = self._command_problem(text)
-            self.send.setEnabled(not problem)
-            self.send.setToolTip(problem)
-        else:
-            self.send.setEnabled(self._can_send and bool(text))
-            self.send.setToolTip("")
-        self._update_suggestions()
-
-    def _update_suggestions(self):
-        raw = self.input.toPlainText()
-        if raw != self._dismissed_completion:
-            self._dismissed_completion = None
-        previous = self._suggestions.currentItem()
-        selected = previous.data(QtCore.Qt.UserRole) if previous is not None else None
-        self._suggestions.clear()
-        if (not self.input.hasFocus() or self.input._composing or self.input._ime_committed
-                or not raw.startswith("/") or any(char.isspace() for char in raw)
-                or raw == self._dismissed_completion
-                or (raw[1:].casefold() in self.commands and self.commands[raw[1:].casefold()].isEnabled())):
-            self._suggestions.hide()
-            return
-        names = [name for name in self.commands if name.startswith(raw[1:].lower())]
-        available = []
-        for name in names:
-            item = QtWidgets.QListWidgetItem("/" + name + "    " + self.commands[name].text())
-            item.setData(QtCore.Qt.UserRole, name)
-            if self.commands[name].isEnabled():
-                available.append(name)
-            else:
-                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEnabled)
-            self._suggestions.addItem(item)
-        selected = selected if selected in available else available[0] if available else None
-        self._suggestions.setCurrentRow(names.index(selected) if selected is not None else -1)
-        self._suggestions.setVisible(bool(names))
-
-    def _move_suggestion(self, step):
-        rows = [index for index in range(self._suggestions.count())
-                if self._suggestions.item(index).flags() & QtCore.Qt.ItemIsEnabled]
-        if not rows:
-            return
-        current = self._suggestions.currentRow()
-        row = rows[(rows.index(current) + step) % len(rows)] if current in rows else rows[0] if step > 0 else rows[-1]
-        self._suggestions.setCurrentRow(row)
-        self._suggestions.scrollToItem(self._suggestions.currentItem())
-
-    def _complete_command(self, item):
-        if item is None:
-            return
-        name = item.data(QtCore.Qt.UserRole)
-        if name not in self.commands or not self.commands[name].isEnabled():
-            self._suggestions.hide()
-            return
-        self.input.setPlainText("/" + name)
-        self.input.moveCursor(QtGui.QTextCursor.End)
-        self._suggestions.hide()
-        self.input.setFocus()
 
     def eventFilter(self, watched, event):
         if watched is getattr(self, "input", None):
@@ -269,17 +188,6 @@ class Panel(QtWidgets.QDockWidget):
                 return True
         return super().eventFilter(watched, event)
 
-    def _send(self):
-        text = self.input.toPlainText().strip()
-        if text.startswith("/"):
-            accepted = self.run_command(text[1:])
-        elif self.send.isEnabled():
-            accepted = self._manager.send(text)
-        else:
-            return
-        if accepted:
-            self.input.clear()
-
     def run_command(self, name):
         name = name.casefold()
         problem = self._command_problem("/" + name)
@@ -288,35 +196,14 @@ class Panel(QtWidgets.QDockWidget):
             return False
         return self._callbacks[name]() is not False
 
-    def _path_row(self, form, title, directory):
-        widget = QtWidgets.QWidget()
-        row = QtWidgets.QHBoxLayout(widget)
-        row.setContentsMargins(0, 0, 0, 0)
-        edit = QtWidgets.QLineEdit()
-        button = QtWidgets.QPushButton("…")
-
-        def browse():
-            if directory:
-                selected = QtWidgets.QFileDialog.getExistingDirectory(self, title, edit.text())
-            else:
-                selected = QtWidgets.QFileDialog.getOpenFileName(self, title, edit.text(), "STEP (*.step *.stp)")[0]
-            if selected:
-                edit.setText(selected)
-
-        button.clicked.connect(browse)
-        row.addWidget(edit)
-        row.addWidget(button)
-        form.addRow(title, widget)
-        return edit
-
-    def start_task(self, objective=None):
+    def stp2cad(self, objective=None):
         if objective is None:
             objective = self.input.toPlainText().strip()
             if objective.startswith("/"):
                 objective = ""
         objective = objective or _DEFAULT_GOAL
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Rebuild model")
+        dialog.setWindowTitle("STEP to CAD")
         layout = QtWidgets.QVBoxLayout(dialog)
         form = QtWidgets.QFormLayout()
         source = self._path_row(form, "STEP file", False)
@@ -337,7 +224,7 @@ class Panel(QtWidgets.QDockWidget):
         accepted = self._manager.present(dialog) == QtWidgets.QDialog.Accepted
         source_path, output_dir = source.text(), output.text()
         dialog.deleteLater()
-        if accepted and self._manager.start(source_path, output_dir, objective):
+        if accepted and self._manager.stp2cad(source_path, output_dir, objective):
             self.message("user", objective)
             self.input.clear()
             return True
@@ -457,3 +344,116 @@ class Panel(QtWidgets.QDockWidget):
     def closeEvent(self, event):
         self.hide()
         event.ignore()
+
+    def _command_problem(self, text):
+        hint = "Valid commands: " + ", ".join("/" + name for name in self.commands) + "."
+        parts = text.split()
+        if len(parts) != 1:
+            return "Commands do not accept inline arguments. " + hint
+        name = parts[0][1:].casefold()
+        action = self.commands.get(name)
+        if action is None:
+            return "Unknown command. " + hint
+        if not action.isEnabled():
+            return "Command unavailable in the current task state: /" + name
+        return ""
+
+    def _show_command_problem(self, problem):
+        key = (self.input.toPlainText(), problem)
+        if self._rejected_command != key:
+            self._manager.notice(problem)
+            self._rejected_command = key
+
+    def _update_send(self):
+        text = self.input.toPlainText().strip()
+        if self._rejected_command is not None and self._rejected_command[0] != self.input.toPlainText():
+            self._rejected_command = None
+        if text.startswith("/"):
+            problem = self._command_problem(text)
+            self.send.setEnabled(not problem)
+            self.send.setToolTip(problem)
+        else:
+            self.send.setEnabled(self._can_send and bool(text))
+            self.send.setToolTip("")
+        self._update_suggestions()
+
+    def _update_suggestions(self):
+        raw = self.input.toPlainText()
+        if raw != self._dismissed_completion:
+            self._dismissed_completion = None
+        previous = self._suggestions.currentItem()
+        selected = previous.data(QtCore.Qt.UserRole) if previous is not None else None
+        self._suggestions.clear()
+        if (not self.input.hasFocus() or self.input._composing or self.input._ime_committed
+                or not raw.startswith("/") or any(char.isspace() for char in raw)
+                or raw == self._dismissed_completion
+                or (raw[1:].casefold() in self.commands and self.commands[raw[1:].casefold()].isEnabled())):
+            self._suggestions.hide()
+            return
+        names = [name for name in self.commands if name.startswith(raw[1:].lower())]
+        available = []
+        for name in names:
+            item = QtWidgets.QListWidgetItem("/" + name + "    " + self.commands[name].text())
+            item.setData(QtCore.Qt.UserRole, name)
+            if self.commands[name].isEnabled():
+                available.append(name)
+            else:
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEnabled)
+            self._suggestions.addItem(item)
+        selected = selected if selected in available else available[0] if available else None
+        self._suggestions.setCurrentRow(names.index(selected) if selected is not None else -1)
+        self._suggestions.setVisible(bool(names))
+
+    def _move_suggestion(self, step):
+        rows = [index for index in range(self._suggestions.count())
+                if self._suggestions.item(index).flags() & QtCore.Qt.ItemIsEnabled]
+        if not rows:
+            return
+        current = self._suggestions.currentRow()
+        row = rows[(rows.index(current) + step) % len(rows)] if current in rows else rows[0] if step > 0 else rows[-1]
+        self._suggestions.setCurrentRow(row)
+        self._suggestions.scrollToItem(self._suggestions.currentItem())
+
+    def _complete_command(self, item):
+        if item is None:
+            return
+        name = item.data(QtCore.Qt.UserRole)
+        if name not in self.commands or not self.commands[name].isEnabled():
+            self._suggestions.hide()
+            return
+        self.input.setPlainText("/" + name)
+        self.input.moveCursor(QtGui.QTextCursor.End)
+        self._suggestions.hide()
+        self.input.setFocus()
+
+    def _send(self):
+        text = self.input.toPlainText().strip()
+        if text.startswith("/"):
+            accepted = self.run_command(text[1:])
+        elif self.send.isEnabled():
+            accepted = self._manager.send(text)
+        else:
+            return
+        if accepted:
+            self.input.clear()
+
+    def _path_row(self, form, title, directory):
+        widget = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        edit = QtWidgets.QLineEdit()
+        button = QtWidgets.QPushButton("…")
+
+        def browse():
+            if directory:
+                selected = QtWidgets.QFileDialog.getExistingDirectory(self, title, edit.text())
+            else:
+                selected = QtWidgets.QFileDialog.getOpenFileName(self, title, edit.text(), "STEP (*.step *.stp)")[0]
+            if selected:
+                edit.setText(selected)
+
+        button.clicked.connect(browse)
+        row.addWidget(edit)
+        row.addWidget(button)
+        form.addRow(title, widget)
+        return edit

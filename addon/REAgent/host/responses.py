@@ -4,7 +4,7 @@ from REAgent.protocol.definitions import PRODUCT_ID, resolve_retry_action
 from REAgent.protocol.operations import request_side_effect
 
 
-def _operation_success(method, result, params):
+def operation_success(method, result, params):
     if method == "agent_validate" and result.get("parameter_audit", {}).get("status") in (
             "not_requested", "unavailable", "not_applicable"):
         side_effect = "none"
@@ -28,7 +28,7 @@ def _operation_success(method, result, params):
     }
 
 
-def _operation_failure(method, exc, code):
+def operation_failure(method, exc, code):
     stage = getattr(exc, "operation_stage", "bridge_preflight")
     started = getattr(exc, "write_started", False)
     if code in ("invalid_json", "request_too_large"):

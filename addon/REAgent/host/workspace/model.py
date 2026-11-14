@@ -5,12 +5,12 @@ import os
 
 import Part
 
-from REAgent.host.process_state import _document, PROCESS
-from REAgent.host.file_digest import _file_sha256
-from REAgent.host.numeric import _vector_dict
+from REAgent.host.process_state import require_document, PROCESS
+from REAgent.host.file_digest import file_sha256
+from REAgent.host.numeric import vector_dict
 
 
-def _workspace(document):
+def workspace(document):
     group = document.getObject("REAgentWorkspace")
     if (group is None or group.TypeId != "PartDesign::Body"
             or not all(hasattr(group, key) for key in
@@ -24,7 +24,7 @@ def _origin_objects(container):
     return [] if origin is None else [origin, *origin.OriginFeatures]
 
 
-def _session_bodies(group):
+def session_bodies(group):
     bodies = [group]
     for name in group.REAgentBodyNames:
         if not isinstance(name, str) or not name:
@@ -38,18 +38,18 @@ def _session_bodies(group):
     return bodies
 
 
-def _enforce_single_solid_body(body):
+def enforce_single_solid_body(body):
     if "AllowCompound" in body.PropertiesList:
         body.AllowCompound = False
         if bool(body.AllowCompound):
             raise RuntimeError("PartDesign Body did not disable AllowCompound")
 
 
-def _is_origin_object(group, obj):
-    return any(obj in _origin_objects(body) for body in _session_bodies(group))
+def is_origin_object(group, obj):
+    return any(obj in _origin_objects(body) for body in session_bodies(group))
 
 
-def _body_objects(body):
+def body_objects(body):
     """Native members and origins of one Body, without following dependencies."""
     result = []
     for obj in [body, *body.Group, *_origin_objects(body)]:
@@ -63,14 +63,14 @@ def _body_objects(body):
     return result
 
 
-def _feature_owner(group, obj):
-    matches = [body for body in _session_bodies(group) if obj is body or obj in body.Group]
+def feature_owner(group, obj):
+    matches = [body for body in session_bodies(group) if obj is body or obj in body.Group]
     if len(matches) != 1:
         raise ValueError("Object must have one owned Target Body")
     return matches[0]
 
 
-def _feature_predecessor(body, obj):
+def feature_predecessor(body, obj):
     prior = getattr(obj, "BaseFeature", None)
     if obj.TypeId in ("PartDesign::Fillet", "PartDesign::Chamfer", "PartDesign::Draft", "PartDesign::Thickness"):
         base = obj.Base[0] if obj.Base else None
@@ -83,16 +83,16 @@ def _feature_predecessor(body, obj):
     return prior
 
 
-def _owned_objects(group):
+def owned_objects(group):
     result = []
-    for body in _session_bodies(group):
-        for obj in _body_objects(body):
+    for body in session_bodies(group):
+        for obj in body_objects(body):
             if obj not in result:
                 result.append(obj)
     return result
 
 
-def _depends_on(start, target):
+def depends_on(start, target):
     """Follow native outbound links without assuming a Python recursive-list API."""
     pending, visited = [start], set()
     while pending:
@@ -106,8 +106,8 @@ def _depends_on(start, target):
     return False
 
 
-def _validate_boolean_tools(group, feature, tools):
-    bodies = _session_bodies(group)
+def validate_boolean_tools(group, feature, tools):
+    bodies = session_bodies(group)
     owner = next((body for body in bodies if feature in body.Group), None)
     if owner is None or not tools:
         raise ValueError("Boolean requires an owned receiving Body and non-empty tool Bodies")
@@ -142,27 +142,27 @@ def _validate_boolean_tools(group, feature, tools):
         visit(name)
 
 
-def _target_state(document_name):
-    _require_instance_role("rebuild")
-    document = _document(document_name)
-    group = _workspace(document)
-    path = _step_source_path(group.SourceFile)
-    source = _read_source_snapshot(path)
+def target_state(document_name):
+    _require_instance_role("target")
+    document = require_document(document_name)
+    group = workspace(document)
+    path = step_source_path(group.SourceFile)
+    source = read_source_snapshot(path)
     return document, source, group, group
 
 
-def _read_source_snapshot(path):
+def read_source_snapshot(path):
     """Pair a STEP import with equal observed hashes; never claim atomic I/O."""
-    path = _step_source_path(path)
-    before = _file_sha256(path)
+    path = step_source_path(path)
+    before = file_sha256(path)
     shape = Part.read(path)
-    after = _file_sha256(path)
+    after = file_sha256(path)
     if before != after:
         raise ValueError("Source STEP changed during import; choose a stable source before starting a session")
     return _SourceReference(shape, path, after)
 
 
-def _result_object(group):
+def resolve_result_object(group):
     tip = group.Tip
     if tip is None:
         return None
@@ -171,7 +171,7 @@ def _result_object(group):
     return tip
 
 
-def _world_shape(obj):
+def copy_world_shape(obj):
     """Copy a placed native Shape and apply only its missing parent transform."""
     shape = getattr(obj, "Shape", None)
     if shape is None:
@@ -184,27 +184,27 @@ def _world_shape(obj):
     return shape
 
 
-def _result_shape(group):
+def result_shape(group):
     # Body.Shape is the native cumulative result selected by the native Tip.
-    return _world_shape(group) if _result_object(group) is not None else None
+    return copy_world_shape(group) if resolve_result_object(group) is not None else None
 
 
-def _comparison_inputs_state(group):
+def comparison_inputs_state(group):
     """Read only inputs of the selected result, without auditing unrelated history."""
     import FreeCAD as App
 
     document = group.Document
-    if _document(document.Name) is not document or _workspace(document) is not group:
+    if require_document(document.Name) is not document or workspace(document) is not group:
         raise ValueError("Comparison workspace binding changed")
     if document.HasPendingTransaction or App.getActiveTransaction() is not None:
         raise ValueError("Finish the native transaction before comparing geometry")
     block = PROCESS.AUDIT_BLOCKS.get(document.Name)
     if block and block[0] is document:
         raise ValueError("Comparison geometry is unavailable while Target state is unknown")
-    tip = _result_object(group)
+    tip = resolve_result_object(group)
     if tip is None:
         raise ValueError("Target has no current Result; observe global workspace state before constructing geometry")
-    owned = _owned_objects(group)
+    owned = owned_objects(group)
     pending, visited, rows = [group], set(), []
     while pending:
         obj = pending.pop()
@@ -253,25 +253,25 @@ def _comparison_inputs_state(group):
     return document, group, tip, tuple(rows)
 
 
-def _comparison_shape(group):
-    inputs = _comparison_inputs_state(group)
-    shape = _result_shape(group)
+def comparison_shape(group):
+    inputs = comparison_inputs_state(group)
+    shape = result_shape(group)
     if shape is None or shape.isNull() or not shape.isValid() or len(shape.Solids) != 1:
         raise ValueError("Target comparison requires a nonempty valid single-solid Result")
-    if _comparison_inputs_state(group) != inputs:
+    if comparison_inputs_state(group) != inputs:
         raise ValueError("Target comparison inputs changed while copying the Shape")
     return shape, inputs
 
 
-def _predecessor_shape(body):
+def predecessor_shape(body):
     """Selection geometry belongs to the native Tip carrying its LinkSub names."""
-    tip = _result_object(body)
-    return _world_shape(tip) if tip is not None else None
+    tip = resolve_result_object(body)
+    return copy_world_shape(tip) if tip is not None else None
 
 
-def _result_display_plan(group):
+def result_display_plan(group):
     """Separate the visible chain from the Tip carrying its style."""
-    tip = _result_object(group)
+    tip = resolve_result_object(group)
     if tip is None:
         raise ValueError("Target has no Result to render; use Target global observation for workspace evidence before the first feature")
     root_view = getattr(group, "ViewObject", None)
@@ -297,13 +297,13 @@ def _result_display_plan(group):
     }
 
 
-def _compact_json(value):
+def compact_json(value):
     return json.dumps(
         value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     )
 
 
-def _step_source_path(value):
+def step_source_path(value):
     if not isinstance(value, str) or not value:
         raise ValueError("source_path must be a non-empty absolute path")
     if not os.path.isabs(value):
@@ -316,9 +316,9 @@ def _step_source_path(value):
     return path
 
 
-def _source_objects(document_name):
+def source_objects(document_name):
     _require_instance_role("source")
-    document = _document(document_name)
+    document = require_document(document_name)
     source = document.getObject("Source")
     if source is None or getattr(source, "TypeId", None) != "Part::Feature":
         raise KeyError("Reconstruction Source object not found")
@@ -345,11 +345,11 @@ def _require_instance_role(expected):
         )
 
 
-def _placement_summary(obj):
+def placement_summary(obj):
     placement = getattr(obj, "Placement", None)
     if placement is None:
         return None
     return {
-        "base_mm": _vector_dict(placement.Base),
+        "base_mm": vector_dict(placement.Base),
         "rotation_xyzw": [float(value) for value in placement.Rotation.Q],
     }

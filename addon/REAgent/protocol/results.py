@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Mapping
-from REAgent.values import NeutralContractError, require_json_value, to_json_value, _required_text
+from REAgent.json_values import require_json_value, require_text, to_json_value
 from .definitions import RETRY_ACTIONS
 
 ERROR_CLASSES = frozenset(
@@ -35,13 +35,13 @@ class OperationError:
 
     def __post_init__(self) -> None:
         if self.error_class not in ERROR_CLASSES:
-            raise NeutralContractError("unsupported operation error class")
-        _required_text(self.code, "code")
-        _required_text(self.message, "message")
+            raise ValueError("unsupported operation error class")
+        require_text(self.code, "code")
+        require_text(self.message, "message")
         if self.side_effect not in SIDE_EFFECTS:
-            raise NeutralContractError("unsupported operation side effect")
+            raise ValueError("unsupported operation side effect")
         if self.retry_action not in RETRY_ACTIONS:
-            raise NeutralContractError("unsupported operation retry action")
+            raise ValueError("unsupported operation retry action")
         _validate_evidence(self.evidence)
 
     def to_dict(self) -> dict[str, Any]:
@@ -68,18 +68,18 @@ class OperationResult:
 
     def __post_init__(self) -> None:
         if not isinstance(self.ok, bool):
-            raise NeutralContractError("operation ok must be a boolean")
-        _required_text(self.method, "method")
+            raise ValueError("operation ok must be a boolean")
+        require_text(self.method, "method")
         require_json_value(self.value, path="value")
         if self.side_effect not in SIDE_EFFECTS:
-            raise NeutralContractError("unsupported operation side effect")
+            raise ValueError("unsupported operation side effect")
         if self.retry_action not in RETRY_ACTIONS:
-            raise NeutralContractError("unsupported operation retry action")
+            raise ValueError("unsupported operation retry action")
         _validate_evidence(self.evidence)
         if self.ok == (self.error is not None):
-            raise NeutralContractError("successful results cannot contain an error")
+            raise ValueError("successful results cannot contain an error")
         if self.error is not None and not isinstance(self.error, OperationError):
-            raise NeutralContractError("operation error must use OperationError")
+            raise ValueError("operation error must use OperationError")
 
     @classmethod
     def success(
@@ -140,17 +140,17 @@ class OperationResult:
 
 def _validate_evidence(value: Any) -> None:
     if not isinstance(value, tuple):
-        raise NeutralContractError("operation evidence must be a tuple")
+        raise ValueError("operation evidence must be a tuple")
     for index, item in enumerate(value):
         if not isinstance(item, dict):
-            raise NeutralContractError("operation evidence entries must be objects")
+            raise ValueError("operation evidence entries must be objects")
         require_json_value(item, path=f"evidence[{index}]")
 
 def _evidence(value: Any) -> tuple[dict[str, Any], ...]:
     if value is None:
         return ()
     if not isinstance(value, list):
-        raise NeutralContractError("operation evidence must be a list")
+        raise ValueError("operation evidence must be a list")
     normalized = tuple(dict(item) if isinstance(item, dict) else item for item in value)
     _validate_evidence(normalized)
     return normalized

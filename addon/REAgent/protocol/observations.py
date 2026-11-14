@@ -1,7 +1,7 @@
 """Observation references, directions and image layout agreements."""
 
 from REAgent.protocol.definitions import NAME_SCHEMA
-from REAgent.schema import _array, _boolean, _integer, _nullable, _number, _object, _schema, _string
+from REAgent.json_schema import array, boolean, integer, nullable, number, object_schema, open_object_schema, string
 
 VIEW_DIRECTIONS = ("front", "back", "top", "bottom", "left", "right", *tuple(
     "iso_x%s_y%s_z%s" % ("p" if x > 0 else "m", "p" if y > 0 else "m", "p" if z > 0 else "m")
@@ -16,8 +16,7 @@ OBSERVATION_ROLES = {"initial_views": "source", "paired_view": "target", "featur
 def validate_observation_role(kind, query, role):
     key = "paired_view" if kind == "view" and query.get("paired", False) else kind
     required = OBSERVATION_ROLES.get(key)
-    public_role = "target" if role == "rebuild" else role
-    if required and public_role != required:
+    if required and role != required:
         raise ValueError("%s is available only from %s" % (key, required.title()))
 
 INITIAL_VIEW_GROUPS = {
@@ -120,9 +119,9 @@ VIEW_EVIDENCE_CONTRACT = {
                       "transparency": 0, "header_height_px": 24},
 }
 
-_FOCUS_BOX_SCHEMA = _schema(
+_FOCUS_BOX_SCHEMA = object_schema(
     {
-        name: _number("Finite model-space coordinate in millimetres")
+        name: number("Finite model-space coordinate in millimetres")
         for name in (
             "x_min",
             "x_max",
@@ -135,94 +134,94 @@ _FOCUS_BOX_SCHEMA = _schema(
     ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max"),
 )
 
-VIEW_QUERY_SCHEMA = _schema(
+VIEW_QUERY_SCHEMA = object_schema(
     {
-        "transparency": _integer("Surface transparency percent; default 0 (opaque)", 0, 100),
-        "views": _array(
+        "transparency": integer("Surface transparency percent; default 0 (opaque)", 0, 100),
+        "views": array(
             "One to eight explicit canonical directions in requested order; iso names describe eye-position signs, opposite camera forward",
-            _string("Canonical camera direction", VIEW_DIRECTIONS),
+            string("Canonical camera direction", VIEW_DIRECTIONS),
             minimum=1, maximum=8,
         ),
-        "width": _integer("Native sampling width in pixels", 128, 4096),
-        "height": _integer("Native sampling height in pixels", 128, 4096),
-        "output_long_edge_px": _integer("Final longest-edge cap, default 1536; no upsampling. Raise native width/height too when more sampling is needed", 512, 4096),
-        "display_mode": {**_string(
+        "width": integer("Native sampling width in pixels", 128, 4096),
+        "height": integer("Native sampling height in pixels", 128, 4096),
+        "output_long_edge_px": integer("Final longest-edge cap, default 1536; no upsampling. Raise native width/height too when more sampling is needed", 512, 4096),
+        "display_mode": {**string(
             "Object display mode; omitted means flat_lines (lit surfaces with edges). Readback certifies object properties, not viewport overrides or PNG pixel style.",
             VIEW_DISPLAY_MODES
         ), "default": "flat_lines"},
-        "projection": _string(
+        "projection": string(
             "Verified camera projection", VIEW_PROJECTIONS
         ),
-        "focus_box_mm": _nullable(_FOCUS_BOX_SCHEMA),
-        "paired": _boolean(
+        "focus_box_mm": nullable(_FOCUS_BOX_SCHEMA),
+        "paired": boolean(
             "Render Source and current Target together; requires role=%s. Pairs remain adjacent; up to two pairs per row"
             % OBSERVATION_ROLES["paired_view"]
         ),
-        "include_section": _boolean(
+        "include_section": boolean(
             "Add one paired half-cutaway view"
         ),
-        "section_axis": _string("Half-cutaway axis", ("x", "y", "z")),
+        "section_axis": string("Half-cutaway axis", ("x", "y", "z")),
     },
 )
 
-STABLE_SELECTOR_SCHEMA = _schema({
-    "kind": _string("Entity kind", ("face", "edge", "wire")),
-    "model_revision": _string("Copy from observation; do not construct"),
-    "signature": _string("Copy from observation; do not construct"),
+STABLE_SELECTOR_SCHEMA = object_schema({
+    "kind": string("Entity kind", ("face", "edge", "wire")),
+    "model_revision": string("Copy from observation; do not construct"),
+    "signature": string("Copy from observation; do not construct"),
 }, ("kind", "model_revision", "signature"))
 
-EDGE_QUERY_SCHEMA = _schema({
-    "curve_type": _string("Default Line", ("Line", "Circle")),
-    "center_mm": _array("Measured center", _number("Coordinate"), 3, 3),
-    "direction": _array("Nonzero line direction or circle normal", _number("Component"), 3, 3),
-    "length_mm": {**_number("Positive edge length"), "exclusiveMinimum": 0},
-    "tolerance_mm": {**_number("Positive matching tolerance; default 0.02"), "exclusiveMinimum": 0},
+EDGE_QUERY_SCHEMA = object_schema({
+    "curve_type": string("Default Line", ("Line", "Circle")),
+    "center_mm": array("Measured center", number("Coordinate"), 3, 3),
+    "direction": array("Nonzero line direction or circle normal", number("Component"), 3, 3),
+    "length_mm": {**number("Positive edge length"), "exclusiveMinimum": 0},
+    "tolerance_mm": {**number("Positive matching tolerance; default 0.02"), "exclusiveMinimum": 0},
 }, ("center_mm", "direction", "length_mm"))
 
 _EDGE_ROLES = ("dressup_edge", "pattern_axis")
 
-EDGE_REF_SCHEMA = _schema({
-    "entity_kind": _string("Referenced kind", ("edge",)),
-    "intended_role": _string("Intended use", _EDGE_ROLES),
-    "owner": _schema({"role": _string("Target role", ("rebuild",)),
-                      "revision": _string("Copy from semantic_ref"),
+EDGE_REF_SCHEMA = object_schema({
+    "entity_kind": string("Referenced kind", ("edge",)),
+    "intended_role": string("Intended use", _EDGE_ROLES),
+    "owner": object_schema({"role": string("Target role", ("target",)),
+                      "revision": string("Copy from semantic_ref"),
                       "object_name": NAME_SCHEMA}, ("role", "revision", "object_name")),
-    "signatures": _schema({key: _string("Copy from semantic_ref") for key in ("geometry", "topology")}, ("geometry", "topology")),
-    "native_hint": _nullable(_schema({"adapter": _string("Adapter", ("freecad",)),
-                                     "subelement": _string("EdgeN hint")}, ("adapter", "subelement"))),
+    "signatures": object_schema({key: string("Copy from semantic_ref") for key in ("geometry", "topology")}, ("geometry", "topology")),
+    "native_hint": nullable(object_schema({"adapter": string("Adapter", ("freecad",)),
+                                     "subelement": string("EdgeN hint")}, ("adapter", "subelement"))),
     "fallback": {"type": "null"},
-    "ambiguity": _string("Never choose an ambiguous match automatically", ("reject",)),
-    "last_resolution": _object("Optional diagnostic returned with semantic_ref; copy unchanged"),
+    "ambiguity": string("Never choose an ambiguous match automatically", ("reject",)),
+    "last_resolution": open_object_schema("Optional diagnostic returned with semantic_ref; copy unchanged"),
 }, ("entity_kind", "intended_role", "owner", "signatures"))
 
-def _edge_ref_schema(role):
+def edge_ref_schema(role):
     return {**EDGE_REF_SCHEMA,
             "properties": {**EDGE_REF_SCHEMA["properties"],
-                           "intended_role": _string("Explicit edge use", (role,))}}
+                           "intended_role": string("Explicit edge use", (role,))}}
 
 _FACE_ROLES = ("draft_target", "draft_neutral", "thickness_opening", "mirror_plane")
 
-FACE_REF_SCHEMA = _schema({
-    "entity_kind": _string("Referenced kind", ("face",)),
-    "intended_role": _string("Explicit face use", _FACE_ROLES),
-    "owner": _schema({"role": _string("Target role", ("rebuild",)),
-                      "revision": _string("Copy from face resolution"),
+FACE_REF_SCHEMA = object_schema({
+    "entity_kind": string("Referenced kind", ("face",)),
+    "intended_role": string("Explicit face use", _FACE_ROLES),
+    "owner": object_schema({"role": string("Target role", ("target",)),
+                      "revision": string("Copy from face resolution"),
                       "object_name": NAME_SCHEMA}, ("role", "revision", "object_name")),
-    "signatures": _schema({key: _string("Copy from face resolution")
+    "signatures": object_schema({key: string("Copy from face resolution")
                            for key in ("geometry", "topology")},
                           ("geometry", "topology")),
-    "native_hint": _nullable(_schema({"adapter": _string("Adapter", ("freecad",)),
-                                     "subelement": _string("FaceN hint")},
+    "native_hint": nullable(object_schema({"adapter": string("Adapter", ("freecad",)),
+                                     "subelement": string("FaceN hint")},
                                     ("adapter", "subelement"))),
     "fallback": {"type": "null"},
-    "ambiguity": _string("Reject ambiguous matches", ("reject",)),
-    "last_resolution": _object("Optional diagnostic returned with face reference"),
+    "ambiguity": string("Reject ambiguous matches", ("reject",)),
+    "last_resolution": open_object_schema("Optional diagnostic returned with face reference"),
 }, ("entity_kind", "intended_role", "owner", "signatures"))
 
-def _face_ref_schema(role):
+def face_ref_schema(role):
     return {**FACE_REF_SCHEMA,
             "properties": {**FACE_REF_SCHEMA["properties"],
-                           "intended_role": _string("Explicit face use", (role,))}}
+                           "intended_role": string("Explicit face use", (role,))}}
 
 ENTITY_FIELDS = {
     "face": ("name", "index", "surface_type", "orientation", "area_mm2", "center_mm",
@@ -241,20 +240,20 @@ def entity_record(kind, values):
 
 FEATURE_OBSERVATION_BUDGET_BYTES = 16 * 1024
 
-FEATURE_QUERY_SCHEMA = _schema({
+FEATURE_QUERY_SCHEMA = object_schema({
     "object": NAME_SCHEMA,
-    "sketch_page": _schema({
-        "section": _string("Sketch element page", ("geometry", "constraints")),
-        "offset": _integer("Zero-based first native index", 0),
-        "limit": _integer("Page size", 1, 16),
+    "sketch_page": object_schema({
+        "section": string("Sketch element page", ("geometry", "constraints")),
+        "offset": integer("Zero-based first native index", 0),
+        "limit": integer("Page size", 1, 16),
     }, ("section",)),
-    "vertex_page": _schema({
-        "offset": _integer("Zero-based page offset; returned VertexN indices are one-based", 0),
-        "limit": _integer("Page size", 1, 64),
+    "vertex_page": object_schema({
+        "offset": integer("Zero-based page offset; returned VertexN indices are one-based", 0),
+        "limit": integer("Page size", 1, 64),
     }),
 }, ("object",))
 
-ENTITY_QUERY_SCHEMA = _schema(
+ENTITY_QUERY_SCHEMA = object_schema(
     {
         "object": {
             **NAME_SCHEMA,
@@ -264,60 +263,60 @@ ENTITY_QUERY_SCHEMA = _schema(
                 "Body's current Tip selection geometry; whole-result measurements use Body Shape."
             ),
         },
-        "faces": _array(
+        "faces": array(
             "Omitted: all faces unless selectors are supplied; []: no faces; otherwise exact FaceN subset",
-            _string("Transient face handle"),
+            string("Transient face handle"),
         ),
-        "edges": _array(
+        "edges": array(
             "Omitted: all edges unless selectors are supplied; []: no edges; otherwise exact EdgeN subset",
-            _string("Transient edge handle"),
+            string("Transient edge handle"),
         ),
-        "selectors": _array(
+        "selectors": array(
             "Geometry selectors copied from observation; omitted or [] adds no selection",
             STABLE_SELECTOR_SCHEMA,
         ),
-        "fields": _array(
+        "fields": array(
             "Top-level entity keys; default compact. Face: " + ", ".join(ENTITY_FIELDS["face"]) + ". Edge: " + ", ".join(ENTITY_FIELDS["edge"]) + ". Use surface/curve for nested details. ['*'] discovers this scope's actual fields; stable_selector/semantic_ref require a writable current predecessor. Historical/Body/empty objects have no writable refs; quality flags are not exposed.",
-            _string("Top-level field name; nested radius/axis values are under surface or curve"),
+            string("Top-level field name; nested radius/axis values are under surface or curve"),
         ),
-        "include": _array("Optional global sections; default none", _string("Section", ("wires", "topology", "stable_selection", "repetition", "relations", "semantic_regions"))),
-        "offset": _integer("Zero-based offset within each selected entity kind; default 0", 0),
-        "limit": _integer("Maximum entities per kind; default 50", 1, 500),
+        "include": array("Optional global sections; default none", string("Section", ("wires", "topology", "stable_selection", "repetition", "relations", "semantic_regions"))),
+        "offset": integer("Zero-based offset within each selected entity kind; default 0", 0),
+        "limit": integer("Maximum entities per kind; default 50", 1, 500),
     }
 )
 
-SELECTION_RESOLUTION_QUERY_SCHEMA = _schema(
+SELECTION_RESOLUTION_QUERY_SCHEMA = object_schema(
     {
         "body_name": {**NAME_SCHEMA, "description": "Owned Body whose current solid Tip supplies the edges; default main Body"},
-        "edge_queries": _array(
+        "edge_queries": array(
             "LLM-supplied measured predecessor-edge queries",
             EDGE_QUERY_SCHEMA, minimum=1, maximum=64,
         ),
-        "edge_selectors": _array(
+        "edge_selectors": array(
             "LLM-supplied stable edge selectors",
-            {**STABLE_SELECTOR_SCHEMA, "properties": {**STABLE_SELECTOR_SCHEMA["properties"], "kind": _string("Edge selector", ("edge",))}}, minimum=1, maximum=64,
+            {**STABLE_SELECTOR_SCHEMA, "properties": {**STABLE_SELECTOR_SCHEMA["properties"], "kind": string("Edge selector", ("edge",))}}, minimum=1, maximum=64,
         ),
-        "edge_refs": _array(
+        "edge_refs": array(
             "LLM-supplied semantic current-edge references",
             EDGE_REF_SCHEMA, minimum=1, maximum=64,
         ),
-        "edge_scope": _string(
+        "edge_scope": string(
             "Literal request for every predecessor edge", ("all",)
         ),
-        "edge_role": _string("Intended use of resolved edges", _EDGE_ROLES),
-        "face_selectors": _array(
+        "edge_role": string("Intended use of resolved edges", _EDGE_ROLES),
+        "face_selectors": array(
             "Current predecessor face selectors copied from entity observation",
             {**STABLE_SELECTOR_SCHEMA,
              "properties": {**STABLE_SELECTOR_SCHEMA["properties"],
-                            "kind": _string("Face selector", ("face",))}},
+                            "kind": string("Face selector", ("face",))}},
             minimum=1, maximum=64,
         ),
-        "face_refs": _array(
+        "face_refs": array(
             "Previously resolved explicit predecessor face references",
             FACE_REF_SCHEMA, minimum=1, maximum=64,
         ),
-        "face_role": _string("Intended use of resolved faces", _FACE_ROLES),
-        "nearest_limit": _integer(
+        "face_role": string("Intended use of resolved faces", _FACE_ROLES),
+        "nearest_limit": integer(
             "Bounded diagnostic candidates per submitted input", 1, 5
         ),
     }

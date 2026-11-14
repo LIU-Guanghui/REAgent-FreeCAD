@@ -7,13 +7,13 @@ import math
 import FreeCAD as App
 
 from REAgent.protocol.features import PRIMITIVE_COMMANDS
-from REAgent.host.validation.structure import _single_solid_summary, result_state
-from REAgent.host.workspace.model import _placement_summary, _session_bodies, _world_shape
-from REAgent.host.workspace.properties import _metadata, _native_number, _same_placement
+from REAgent.host.validation.structure import single_solid_summary, result_state
+from REAgent.host.workspace.model import placement_summary, session_bodies, copy_world_shape
+from REAgent.host.workspace.properties import metadata, native_number, same_placement
 
 
 def _read_number(obj, name, expected, *, integer=False):
-    actual = _native_number(getattr(obj, name))
+    actual = native_number(getattr(obj, name))
     if integer:
         if actual != expected:
             raise RuntimeError("Native primitive integer property did not read back: " + name)
@@ -23,7 +23,7 @@ def _read_number(obj, name, expected, *, integer=False):
     return int(actual) if integer else actual
 
 
-def _validate_family(request, family):
+def validate_family(request, family):
     if family == "Cone" and request["radius1_mm"] == request["radius2_mm"] == 0:
         raise ValueError("Cone radii cannot both be zero")
     if family == "Torus" and request["radius1_mm"] <= request["radius2_mm"]:
@@ -44,6 +44,9 @@ class PrimitiveOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
 
+    def contribute(self):
+        return {name: partial(self._create_primitive, command=name) for name in PRIMITIVE_COMMANDS}
+
     def _create_primitive(self, params, *, command):
 
         spec = PRIMITIVE_COMMANDS[command]
@@ -53,12 +56,12 @@ class PrimitiveOperations:
 
         def preflight(document, group, request):
             body = document.getObject(body_name)
-            if body not in _session_bodies(group):
+            if body not in session_bodies(group):
                 raise ValueError("Primitive Body is not owned by this session")
             if document.getObject(name) is not None:
                 raise ValueError("Primitive feature name already exists: " + name)
             result_state(group)  # Require a known, structurally sound starting state.
-            _validate_family(request, spec["family"])
+            validate_family(request, spec["family"])
             if spec["oriented"]:
                 axis = request["axis"]
                 if math.sqrt(sum(component * component for component in axis)) < 1e-12:
@@ -74,7 +77,7 @@ class PrimitiveOperations:
             if body.Tip is not None and body.Tip.TypeId not in (
                     "Sketcher::SketchObject", "Part::DatumPlane", "Part::DatumLine",
                     "Part::DatumPoint", "Part::LocalCoordinateSystem"):
-                prior = _single_solid_summary(shape, "Receiving Body")
+                prior = single_solid_summary(shape, "Receiving Body")
             elif shape is not None and not shape.isNull() and len(shape.Solids) != 0:
                 raise ValueError("Receiving Body has a solid without a solid Tip")
             if not spec["additive"] and prior is None:
@@ -87,25 +90,25 @@ class PrimitiveOperations:
                 raise RuntimeError("Native primitive identity or TypeId differs from the contract")
             body.addObject(feature)
             for field, native, rule in spec["inputs"]:
-                meta = _metadata(feature, native)
+                meta = metadata(feature, native)
                 if not meta["writable"] or meta["codec"] not in (
                         ("integer",) if rule == "polygon" else ("quantity", "number")):
                     raise ValueError("Native primitive dimension is not writable: " + native)
                 setattr(feature, native, request[field])
             for native, value in spec["fixed"]:
-                meta = _metadata(feature, native)
+                meta = metadata(feature, native)
                 if not meta["writable"] or meta["codec"] not in ("quantity", "number"):
                     raise ValueError("Native primitive fixed mode is not writable: " + native)
                 setattr(feature, native, value)
             if "MapMode" in feature.PropertiesList:
-                mode = _metadata(feature, "MapMode")
+                mode = metadata(feature, "MapMode")
                 if mode["codec"] != "string" or "Deactivated" not in mode.get("enum", []):
                     raise ValueError("Native primitive free placement is unavailable")
                 if mode["value"] != "Deactivated":
                     if not mode["writable"]:
                         raise ValueError("Native primitive MapMode cannot be deactivated")
                     feature.MapMode = "Deactivated"
-            placement = _metadata(feature, "Placement")
+            placement = metadata(feature, "Placement")
             if not placement["writable"] or placement["codec"] != "placement":
                 raise ValueError("Native primitive Placement is not writable")
             feature.Placement = requested_placement[0]
@@ -124,12 +127,12 @@ class PrimitiveOperations:
                     feature, native, params[field], integer=(rule == "polygon"))
             for native, expected in spec["fixed"]:
                 properties[native] = _read_number(feature, native, expected)
-            if not _same_placement(feature.Placement, requested_placement[0]):
+            if not same_placement(feature.Placement, requested_placement[0]):
                 raise RuntimeError("Native primitive Placement did not read back")
-            if not _same_placement(body.Placement, App.Placement()):
+            if not same_placement(body.Placement, App.Placement()):
                 if (not hasattr(body, "getGlobalPlacement")
                         or not hasattr(feature, "getGlobalPlacement")
-                        or not _same_placement(
+                        or not same_placement(
                             feature.getGlobalPlacement(),
                             body.getGlobalPlacement().multiply(requested_placement[0]))):
                     raise RuntimeError("Nonidentity Body-local primitive placement is unconfirmed")
@@ -138,20 +141,17 @@ class PrimitiveOperations:
             for support_name in ("AttachmentSupport", "Support"):
                 if support_name in feature.PropertiesList and getattr(feature, support_name):
                     raise RuntimeError("Native primitive unexpectedly acquired support")
-            feature_shape = _single_solid_summary(feature.Shape, "Primitive feature")
-            body_shape = _single_solid_summary(_world_shape(body), "Receiving Body")
+            feature_shape = single_solid_summary(feature.Shape, "Primitive feature")
+            body_shape = single_solid_summary(copy_world_shape(body), "Receiving Body")
             if abs(feature_shape["volume_mm3"] - body_shape["volume_mm3"]) > max(
                     1e-9, body_shape["volume_mm3"] * 1e-12):
                 raise RuntimeError("Native primitive Tip and Body volume summaries disagree")
             return {"feature": feature.Name, "body": body.Name,
                     "type_id": feature.TypeId, "tip": body.Tip.Name,
-                    "properties": properties, "placement": _placement_summary(feature),
+                    "properties": properties, "placement": placement_summary(feature),
                     "body_shape": body_shape}
 
         return self.execute_native(
             params, command=command, preflight=preflight,
             mutate=mutate, readback=readback,
         )
-
-    def contribute(self):
-        return {name: partial(self._create_primitive, command=name) for name in PRIMITIVE_COMMANDS}

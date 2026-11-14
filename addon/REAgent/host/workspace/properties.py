@@ -4,7 +4,7 @@ import math
 
 import FreeCAD as App
 
-from REAgent.host.workspace.model import _is_origin_object
+from REAgent.host.workspace.model import is_origin_object
 import re
 
 _CODECS = {
@@ -27,11 +27,11 @@ _INTERNAL = {
 }
 
 
-def _native_number(value):
+def native_number(value):
     return float(value.Value) if hasattr(value, "Value") else float(value)
 
 
-def _metadata(obj, prop, *, body_edit=False):
+def metadata(obj, prop, *, body_edit=False):
     if prop not in obj.PropertiesList:
         raise ValueError("Unknown native property " + obj.Name + "." + prop)
     typ = obj.getTypeIdOfProperty(prop)
@@ -43,7 +43,7 @@ def _metadata(obj, prop, *, body_edit=False):
     driven = any(pair[0] == prop or pair[0].startswith(prop + ".")
                  for pair in getattr(obj, "ExpressionEngine", []))
     root = obj.Document.getObject("REAgentWorkspace")
-    origin_owned = root is not None and _is_origin_object(root, obj)
+    origin_owned = root is not None and is_origin_object(root, obj)
     boolean_tools = obj.TypeId == "PartDesign::Boolean" and prop == "Group"
     reason = (
         "workspace_read_only" if obj is root and not (body_edit and prop in ("Label", "Placement"))
@@ -61,7 +61,7 @@ def _metadata(obj, prop, *, body_edit=False):
         result["enum"] = list(obj.getEnumerationsOfProperty(prop))
     if codec:
         try:
-            result["value"] = _encode(getattr(obj, prop), codec)
+            result["value"] = encode(getattr(obj, prop), codec)
         except Exception as exc:
             result["value_status"] = "not_encodable"
             result["value_error"] = {"step": "metadata_encode", "exception_type": type(exc).__name__,
@@ -71,7 +71,7 @@ def _metadata(obj, prop, *, body_edit=False):
     return result
 
 
-def _encode(value, codec):
+def encode(value, codec):
     if codec in ("bool", "integer", "number", "string"):
         return value
     if codec == "quantity":
@@ -85,7 +85,7 @@ def _encode(value, codec):
     if codec == "vector":
         return [value.x, value.y, value.z]
     if codec == "placement":
-        return {"position": _encode(value.Base, "vector"), "axis": _encode(value.Rotation.Axis, "vector"),
+        return {"position": encode(value.Base, "vector"), "axis": encode(value.Rotation.Axis, "vector"),
                 "angle_deg": math.degrees(value.Rotation.Angle)}
     if codec == "link":
         return {"object": value.Name} if value is not None else None
@@ -94,14 +94,14 @@ def _encode(value, codec):
             return None
         return {"object": {"object": value[0].Name}, "subelements": list(value[1])}
     if codec == "link_list":
-        return [_encode(v, "link") for v in value]
+        return [encode(v, "link") for v in value]
     if codec == "link_sub_list":
-        return [_encode(v, "link_sub") for v in value]
+        return [encode(v, "link_sub") for v in value]
     raise ValueError("Unsupported property value")
 
 
-def _property_readback(obj, prop, codec, requested):
-    return _encode(requested, codec), _encode(getattr(obj, prop), codec)
+def property_readback(obj, prop, codec, requested):
+    return encode(requested, codec), encode(getattr(obj, prop), codec)
 
 
 def sketch_content_state(sketch):
@@ -157,46 +157,46 @@ def sketch_content_state(sketch):
     external_rows = [{"index": -index-1, **geometry_row(geometry)}
                      for index, geometry in enumerate(getattr(sketch, "ExternalGeo", ())) if index >= 2]
     return {"geometry": geometry_rows, "constraints": constraints,
-            "external_geometry": _encode(sketch.ExternalGeometry, "link_sub_list"),
+            "external_geometry": encode(sketch.ExternalGeometry, "link_sub_list"),
             "external_indices": external_rows}
 
 
-def _native_link(value):
+def native_link(value):
     if isinstance(value, (tuple, list)):
         return value[0] if value else None
     return value
 
 
-def _set_enum(feature, name, expected):
-    meta = _metadata(feature, name)
+def set_enum(feature, name, expected):
+    meta = metadata(feature, name)
     if (not meta["writable"] or meta["codec"] != "string"
             or expected not in meta.get("enum", [])):
         raise ValueError("Native enumeration is unavailable: " + name + "=" + expected)
     setattr(feature, name, expected)
 
 
-def _set_bool(feature, name, expected):
-    meta = _metadata(feature, name)
+def set_bool(feature, name, expected):
+    meta = metadata(feature, name)
     if not meta["writable"] or meta["codec"] != "bool":
         raise ValueError("Native Boolean property is unavailable: " + name)
     setattr(feature, name, bool(expected))
 
 
-def _set_number(feature, name, expected):
-    meta = _metadata(feature, name)
+def set_number(feature, name, expected):
+    meta = metadata(feature, name)
     if not meta["writable"] or meta["codec"] not in ("quantity", "number"):
         raise ValueError("Native numeric property is unavailable: " + name)
     setattr(feature, name, expected)
 
 
-def _number_readback(feature, name, expected):
-    actual = _native_number(getattr(feature, name))
+def number_readback(feature, name, expected):
+    actual = native_number(getattr(feature, name))
     if not math.isfinite(actual) or abs(actual - expected) > max(1e-9, abs(expected) * 1e-12):
         raise RuntimeError("Native numeric property did not read back: " + name)
     return actual
 
 
-def _fixed_dressup_false(feature, prop):
+def fixed_dressup_false(feature, prop):
     if prop not in feature.PropertiesList:
         return
     if feature.getTypeIdOfProperty(prop) != "App::PropertyBool":
@@ -214,7 +214,7 @@ def _fixed_dressup_false(feature, prop):
         raise RuntimeError("Native dress-up fixed option did not read back: " + prop)
 
 
-def _same_placement(actual, intended):
+def same_placement(actual, intended):
     translation_error = (actual.Base - intended.Base).Length
     q_actual, q_intended = actual.Rotation.Q, intended.Rotation.Q
     rotation_error = min(
@@ -224,7 +224,7 @@ def _same_placement(actual, intended):
     return translation_error <= 1e-8 and rotation_error <= 1e-10
 
 
-def _add_read_only_string(obj, name, value, group):
+def add_read_only_string(obj, name, value, group):
     obj.addProperty("App::PropertyString", name, group)
     setattr(obj, name, value)
     obj.setEditorMode(name, 1)
@@ -233,7 +233,7 @@ def _add_read_only_string(obj, name, value, group):
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
 
 
-def _valid_name(value, field):
+def valid_name(value, field):
     if not isinstance(value, str) or not _NAME_PATTERN.match(value):
         raise ValueError(
             "%s must start with a letter and contain only letters, numbers, "

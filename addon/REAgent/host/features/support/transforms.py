@@ -1,13 +1,13 @@
 """Ordered native tool sources and exact references for PartDesign transforms."""
 
-from REAgent.host.analysis.evidence import _geometry_evidence
-from REAgent.host.analysis.selection import SelectionResolutionError, _feature_semantic_refs, _resolve_dressup_selection
-from REAgent.host.validation.structure import _single_solid_summary
-from REAgent.host.validation.tolerance import _ir_tolerance_contract
-from REAgent.host.workspace.model import _body_objects, _predecessor_shape
-from REAgent.host.workspace.properties import _metadata
-from REAgent.host.features.support.construction import _history_context
-from REAgent.host.features.support.references import _current_faces, _role_object
+from REAgent.host.analysis.evidence import geometry_evidence
+from REAgent.host.analysis.selection import SelectionResolutionError, feature_semantic_refs, resolve_dressup_selection
+from REAgent.host.validation.structure import single_solid_summary
+from REAgent.host.validation.tolerance import ir_tolerance_contract
+from REAgent.host.workspace.model import body_objects, predecessor_shape
+from REAgent.host.workspace.properties import metadata
+from REAgent.host.features.support.construction import history_context
+from REAgent.host.features.support.references import current_faces, role_object
 
 _TRANSFORM_TYPES = ("PartDesign::Mirrored", "PartDesign::LinearPattern",
                     "PartDesign::PolarPattern", "PartDesign::MultiTransform",
@@ -30,15 +30,15 @@ def _active_feature_chain(tip, body):
     return reached
 
 
-def _transform_context(document, group, request):
-    context = _history_context(document, group, request, require_solid=True)
+def transform_context(document, group, request):
+    context = history_context(document, group, request, require_solid=True)
     body, _sketch, tip = context
     if tip is None or tip.Name != request["predecessor_name"]:
         raise ValueError("Transformation predecessor must be the current Body Tip")
-    return context, _transform_sources(document, body, tip, request["source_feature_names"])
+    return context, transform_sources(document, body, tip, request["source_feature_names"])
 
 
-def _transform_sources(document, body, tip, names):
+def transform_sources(document, body, tip, names):
     group_order = list(body.Group)
     tip_index = group_order.index(tip)
     chain = _active_feature_chain(tip, body)
@@ -73,7 +73,7 @@ def _transform_sources(document, body, tip, names):
 
 def _check_datum_supports(document, body, datum):
     """Check only the Datum attachment chain within the receiving Body."""
-    members = {obj.Name: obj for obj in _body_objects(body) if obj is not body}
+    members = {obj.Name: obj for obj in body_objects(body) if obj is not body}
     cs_parents = {}
     for obj in body.Group:
         if obj.TypeId == "Part::LocalCoordinateSystem":
@@ -116,15 +116,15 @@ def _check_datum_supports(document, body, datum):
     visit(datum)
 
 
-def _transform_plane(document, body, group, tip, request, *, shape=None):
+def transform_plane(document, body, group, tip, request, *, shape=None):
     choice = request["mirror_plane"]
     if choice["kind"] == "origin_plane":
         origin = body.Origin
         if origin is None:
             raise ValueError("Transformation Body has no native Origin")
-        return _role_object(origin, choice["role"], "App::Plane", document), [""]
+        return role_object(origin, choice["role"], "App::Plane", document), [""]
     if choice["kind"] == "predecessor_face":
-        names, evidence = _current_faces(
+        names, evidence = current_faces(
             body, group, request, tip, [choice["face_ref"]],
             "mirror_plane", "mirror_plane.face_ref", shape=shape)
         detail = next(face for face in evidence["faces"] if face["name"] == names[0])
@@ -144,20 +144,20 @@ def _transform_plane(document, body, group, tip, request, *, shape=None):
 def _current_axis_edge(body, group, request, tip, reference, *, shape=None):
     if tip is None or tip.Name != request["predecessor_name"]:
         raise ValueError("Pattern axis edge requires the current Body Tip")
-    refs = _feature_semantic_refs(
+    refs = feature_semantic_refs(
         [reference], "edge", "pattern_axis", "axis.edge_ref", 1)
     if (refs[0]["owner"].get("object_name") != tip.Name
             or refs[0].get("fallback") is not None):
         raise ValueError("Pattern axis edge must name the current predecessor without fallback")
-    shape = _predecessor_shape(body) if shape is None else shape
-    _single_solid_summary(shape, "Pattern predecessor")
-    evidence = _geometry_evidence(
-        shape, _ir_tolerance_contract(group), include_relations=False,
+    shape = predecessor_shape(body) if shape is None else shape
+    single_solid_summary(shape, "Pattern predecessor")
+    evidence = geometry_evidence(
+        shape, ir_tolerance_contract(group), include_relations=False,
         include_repetition=False)
     if refs[0]["owner"]["revision"] != evidence["stable_selection"]["model_revision"]:
         raise ValueError("Pattern axis edge revision changed; re-observe")
-    report = _resolve_dressup_selection(
-        evidence, {"edge_refs": refs}, _ir_tolerance_contract(group))
+    report = resolve_dressup_selection(
+        evidence, {"edge_refs": refs}, ir_tolerance_contract(group))
     if not report["all_resolved"]:
         raise SelectionResolutionError(report)
     if (report["results"][0].get("matched_by")
@@ -171,7 +171,7 @@ def _current_axis_edge(body, group, request, tip, reference, *, shape=None):
     return tip, [name]
 
 
-def _transform_axis(document, body, group, tip, request, *, shape=None):
+def transform_axis(document, body, group, tip, request, *, shape=None):
     """Return the native axis LinkSub and its parent only when it is a CS child."""
     choice = request["axis"]
     kind = choice["kind"]
@@ -179,7 +179,7 @@ def _transform_axis(document, body, group, tip, request, *, shape=None):
         origin = body.Origin
         if origin is None:
             raise ValueError("Pattern Body has no native Origin")
-        return (_role_object(origin, choice["role"], "App::Line", document), [""]), None
+        return (role_object(origin, choice["role"], "App::Line", document), [""]), None
     if kind == "predecessor_edge":
         return _current_axis_edge(body, group, request, tip, choice["edge_ref"], shape=shape), None
     if kind == "datum_line":
@@ -193,18 +193,18 @@ def _transform_axis(document, body, group, tip, request, *, shape=None):
         if (cs is None or cs.TypeId != "Part::LocalCoordinateSystem"
                 or cs.Document is not document or cs not in body.Group):
             raise ValueError("Pattern axis requires a same-Body Coordinate System")
-        return (_role_object(cs, choice["role"], "App::Line", document), [""]), cs
+        return (role_object(cs, choice["role"], "App::Line", document), [""]), cs
     raise ValueError("Unsupported pattern axis kind")
 
 
-def _set_transform_sources(feature, sources):
-    meta = _metadata(feature, "Originals")
+def set_transform_sources(feature, sources):
+    meta = metadata(feature, "Originals")
     if not meta["writable"] or meta["codec"] != "link_list":
         raise ValueError("Native transformed Originals are not a writable link list")
     feature.Originals = sources
 
 
-def _transform_sources_readback(feature, sources, predecessor):
+def transform_sources_readback(feature, sources, predecessor):
     actual = list(feature.Originals)
     if (len(actual) != len(sources)
             or any(got is not wanted for got, wanted in zip(actual, sources))
@@ -214,14 +214,14 @@ def _transform_sources_readback(feature, sources, predecessor):
         raise RuntimeError("Native transformed predecessor link did not read back")
 
 
-def _set_transform_reference(feature, property_name, reference):
-    meta = _metadata(feature, property_name)
+def set_transform_reference(feature, property_name, reference):
+    meta = metadata(feature, property_name)
     if not meta["writable"] or meta["codec"] != "link_sub":
         raise ValueError("Native transformation reference is not a writable LinkSub")
     setattr(feature, property_name, (reference[0], reference[1]))
 
 
-def _transform_reference_readback(feature, property_name, reference):
+def transform_reference_readback(feature, property_name, reference):
     actual = getattr(feature, property_name)
     if (not isinstance(actual, (tuple, list)) or len(actual) != 2
             or actual[0] is not reference[0]

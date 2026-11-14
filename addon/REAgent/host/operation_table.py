@@ -9,7 +9,7 @@ from .workspace.sessions import SessionOperations
 from .workspace.persistence import PersistenceOperations
 from .workspace.queries import ObservationOperations
 from .workspace.scope import ObservationScopeOperations
-from .view.queries import ViewObservationOperations
+from .workspace.views import ViewObservationOperations
 from .validation.handlers import ValidationOperations
 from .logs import DiagnosticOperations
 from .features.body import BodyOperations
@@ -56,23 +56,23 @@ def assemble_operations(role, port):
     adapter = AdapterOperations(role, port, queries=queries, views=ViewObservationOperations(),
         scope=ObservationScopeOperations(), validation=ValidationOperations(), handlers=lambda: table)
     families = (adapter, SessionOperations(), PersistenceOperations(), DiagnosticOperations(), executor,
-        BodyOperations(execute_native=executor._execute_native_command),
-        BooleanOperations(execute_native=executor._execute_native_command),
-        ChamferOperations(execute_native=executor._execute_native_command),
-        DatumOperations(execute_native=executor._execute_native_command),
-        DraftOperations(execute_native=executor._execute_native_command),
-        ExtrudeOperations(execute_native=executor._execute_native_command),
-        EditOperations(execute_native=executor._execute_native_command),
-        FilletOperations(execute_native=executor._execute_native_command),
-        HoleOperations(execute_native=executor._execute_native_command),
-        LoftOperations(execute_native=executor._execute_native_command),
-        MirrorOperations(execute_native=executor._execute_native_command),
-        PatternOperations(execute_native=executor._execute_native_command),
-        PipeOperations(execute_native=executor._execute_native_command),
-        PrimitiveOperations(execute_native=executor._execute_native_command),
-        RevolveOperations(execute_native=executor._execute_native_command),
-        SketchOperations(execute_native=executor._execute_native_command),
-        ThicknessOperations(execute_native=executor._execute_native_command),
+        BodyOperations(execute_native=executor.execute_native_command),
+        BooleanOperations(execute_native=executor.execute_native_command),
+        ChamferOperations(execute_native=executor.execute_native_command),
+        DatumOperations(execute_native=executor.execute_native_command),
+        DraftOperations(execute_native=executor.execute_native_command),
+        ExtrudeOperations(execute_native=executor.execute_native_command),
+        EditOperations(execute_native=executor.execute_native_command),
+        FilletOperations(execute_native=executor.execute_native_command),
+        HoleOperations(execute_native=executor.execute_native_command),
+        LoftOperations(execute_native=executor.execute_native_command),
+        MirrorOperations(execute_native=executor.execute_native_command),
+        PatternOperations(execute_native=executor.execute_native_command),
+        PipeOperations(execute_native=executor.execute_native_command),
+        PrimitiveOperations(execute_native=executor.execute_native_command),
+        RevolveOperations(execute_native=executor.execute_native_command),
+        SketchOperations(execute_native=executor.execute_native_command),
+        ThicknessOperations(execute_native=executor.execute_native_command),
     )
     table = freeze_handlers((family.contribute() for family in families), OPERATION_SPECS)
-    return HostOperations(table, queries._diagnostic_document_state)
+    return HostOperations(table, queries.diagnostic_document_state)

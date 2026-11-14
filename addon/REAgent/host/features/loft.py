@@ -2,8 +2,8 @@
 
 from functools import partial
 
-from REAgent.host.workspace.properties import _metadata
-from REAgent.host.features.support.construction import _distinct_section_planes, _history_context, _profile_readback, _section_or_path, _set_profile, _shape_readback, _whole_sketch_link
+from REAgent.host.workspace.properties import metadata
+from REAgent.host.features.support.construction import distinct_section_planes, history_context, profile_readback, section_or_path, set_profile, shape_readback, whole_sketch_link
 
 _LOFT_TYPES = {
     "PartDesign_AdditiveLoft": "PartDesign::AdditiveLoft",
@@ -12,7 +12,7 @@ _LOFT_TYPES = {
 
 
 def _fixed_false(feature, prop):
-    meta = _metadata(feature, prop)
+    meta = metadata(feature, prop)
     if meta["codec"] != "bool":
         raise ValueError("Native Loft option is not Boolean: " + prop)
     if meta["writable"]:
@@ -25,6 +25,12 @@ class LoftOperations:
     def __init__(self, *, execute_native):
         self.execute_native = execute_native
 
+    def contribute(self):
+        return {
+            'PartDesign_AdditiveLoft': partial(self._create_loft, command='PartDesign_AdditiveLoft'),
+            'PartDesign_SubtractiveLoft': partial(self._create_loft, command='PartDesign_SubtractiveLoft'),
+        }
+
     def _create_loft(self, params, *, command):
         if command not in _LOFT_TYPES:
             raise ValueError("Unknown native Loft command")
@@ -35,16 +41,16 @@ class LoftOperations:
         sections = [None]
 
         def preflight(document, group, request):
-            context[0] = _history_context(
+            context[0] = history_context(
                 document, group, request, require_solid=not additive)
             body = context[0][0]
             if request["profile_sketch_name"] == request["section_sketch_name"]:
                 raise ValueError("Loft requires two distinct Sketch sections")
-            first, _ = _section_or_path(
+            first, _ = section_or_path(
                 document, body, request["profile_sketch_name"], closed=True)
-            second, _ = _section_or_path(
+            second, _ = section_or_path(
                 document, body, request["section_sketch_name"], closed=True)
-            _distinct_section_planes(first, second)
+            distinct_section_planes(first, second)
             sections[0] = (first, second)
 
         def mutate(document, group, request, changes):
@@ -54,8 +60,8 @@ class LoftOperations:
             if feature.Name != name or feature.TypeId != type_id:
                 raise RuntimeError("Native Loft type or identity differs")
             body.addObject(feature)
-            _set_profile(feature, first)
-            meta = _metadata(feature, "Sections")
+            set_profile(feature, first)
+            meta = metadata(feature, "Sections")
             if not meta["writable"] or meta["codec"] not in ("link_list", "link_sub_list"):
                 raise ValueError("Native Loft Sections is not a writable ordered Sketch list")
             feature.Sections = [second]
@@ -67,10 +73,10 @@ class LoftOperations:
         def readback(document, group, feature, _state):
             body, _profile, tip = context[0]
             first, second = sections[0]
-            body_shape = _shape_readback(document, body, feature, name, type_id, tip)
-            _profile_readback(feature, first)
+            body_shape = shape_readback(document, body, feature, name, type_id, tip)
+            profile_readback(feature, first)
             linked = list(feature.Sections)
-            if (len(linked) != 1 or not _whole_sketch_link(linked[0], second)
+            if (len(linked) != 1 or not whole_sketch_link(linked[0], second)
                     or second not in feature.OutList):
                 raise RuntimeError("Native Loft section order or dependency changed")
             for prop in ("Closed", "Ruled", "Refine"):
@@ -84,9 +90,3 @@ class LoftOperations:
             params, command=command, preflight=preflight,
             mutate=mutate, readback=readback,
         )
-
-    def contribute(self):
-        return {
-            'PartDesign_AdditiveLoft': partial(self._create_loft, command='PartDesign_AdditiveLoft'),
-            'PartDesign_SubtractiveLoft': partial(self._create_loft, command='PartDesign_SubtractiveLoft'),
-        }

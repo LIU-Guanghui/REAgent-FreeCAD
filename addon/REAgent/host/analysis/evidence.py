@@ -6,14 +6,14 @@ import math
 import FreeCAD as App
 import Part
 
-from REAgent.host.numeric import _vector_dict
-from REAgent.host.analysis.math3d import _cross_vector, _dot, _normalized_vector, _point_distance, _vector_difference, _vector_length, _vector_midpoint
-from REAgent.host.analysis.measurements import _shape_tolerance
-from REAgent.host.analysis.sampling import _material_side_at_sample
-from REAgent.host.analysis.topology import _dihedral_relations, _edge_detail, _edge_fingerprint, _edge_geometry_fingerprint, _edge_topology_fingerprint, _face_detail, _face_fingerprint, _face_geometry_fingerprint, _face_topology_fingerprint, _quantize, _same_shape_index, _stable_digest, _transient_name_index, _wire_details
+from REAgent.host.numeric import vector_dict
+from REAgent.host.analysis.math3d import cross_vector, dot, normalized_vector, point_distance, vector_difference, vector_length, vector_midpoint
+from REAgent.host.analysis.measurements import shape_tolerance
+from REAgent.host.analysis.sampling import material_side_at_sample
+from REAgent.host.analysis.topology import dihedral_relations, edge_detail, edge_fingerprint, edge_geometry_fingerprint, edge_topology_fingerprint, face_detail, face_fingerprint, face_geometry_fingerprint, face_topology_fingerprint, quantize, same_shape_index, stable_digest, transient_name_index, describe_wires
 
 
-def _geometry_evidence(shape, contract, *, include_relations=True, include_repetition=True):
+def geometry_evidence(shape, contract, *, include_relations=True, include_repetition=True):
     """Build revision-bound topology evidence without persisting OCCT indices."""
 
     faces = list(shape.Faces)
@@ -23,7 +23,7 @@ def _geometry_evidence(shape, contract, *, include_relations=True, include_repet
     for face_index, face in enumerate(faces):
         face_name = "Face%d" % (face_index + 1)
         for face_edge in list(face.Edges):
-            edge_index = _same_shape_index(face_edge, edges)
+            edge_index = same_shape_index(face_edge, edges)
             if edge_index is None:
                 continue
             edge_name = "Edge%d" % (edge_index + 1)
@@ -41,10 +41,10 @@ def _geometry_evidence(shape, contract, *, include_relations=True, include_repet
                 if left_name not in face_adjacency[right_name]:
                     face_adjacency[right_name].append(left_name)
     for names in face_adjacency.values():
-        names.sort(key=_transient_name_index)
+        names.sort(key=transient_name_index)
 
     edge_details = [
-        _edge_detail(
+        edge_detail(
             edge,
             index + 1,
             edge_face_names["Edge%d" % (index + 1)],
@@ -54,23 +54,23 @@ def _geometry_evidence(shape, contract, *, include_relations=True, include_repet
     ]
     edge_by_name = {edge["name"]: edge for edge in edge_details}
     for edge in edge_details:
-        fingerprint = _edge_fingerprint(edge, contract, include_position=True)
-        rigid_fingerprint = _edge_fingerprint(
+        fingerprint = edge_fingerprint(edge, contract, include_position=True)
+        rigid_fingerprint = edge_fingerprint(
             edge, contract, include_position=False
         )
-        edge["signature"] = _stable_digest(fingerprint)
-        edge["rigid_signature"] = _stable_digest(rigid_fingerprint)
+        edge["signature"] = stable_digest(fingerprint)
+        edge["rigid_signature"] = stable_digest(rigid_fingerprint)
 
     face_details = []
     wire_details = []
     for index, face in enumerate(faces):
         face_name = "Face%d" % (index + 1)
-        detail = _face_detail(face, index + 1, face_adjacency, contract)
+        detail = face_detail(face, index + 1, face_adjacency, contract)
         detail["bounding_box_method"] = "brep_optimal_without_triangulation_or_tolerance_expansion"
         detail["bounding_box_tightness"] = "not_guaranteed_for_trimmed_geometry"
         detail["boundary_edges"] = list(face_edge_names[face_name])
-        detail["local_tolerance_mm"] = _shape_tolerance(face)
-        detail["wires"] = _wire_details(
+        detail["local_tolerance_mm"] = shape_tolerance(face)
+        detail["wires"] = describe_wires(
             face,
             face_name,
             edges,
@@ -84,26 +84,26 @@ def _geometry_evidence(shape, contract, *, include_relations=True, include_repet
         face["name"]: face["surface_type"] for face in face_details
     }
     for edge in edge_details:
-        edge["geometry_signature"] = _stable_digest(
-            _edge_geometry_fingerprint(edge, contract)
+        edge["geometry_signature"] = stable_digest(
+            edge_geometry_fingerprint(edge, contract)
         )
-        edge["topology_signature"] = _stable_digest(
-            _edge_topology_fingerprint(edge, surface_by_name)
+        edge["topology_signature"] = stable_digest(
+            edge_topology_fingerprint(edge, surface_by_name)
         )
     for face in face_details:
-        fingerprint = _face_fingerprint(
+        fingerprint = face_fingerprint(
             face, edge_by_name, surface_by_name, contract, include_position=True
         )
-        rigid_fingerprint = _face_fingerprint(
+        rigid_fingerprint = face_fingerprint(
             face, edge_by_name, surface_by_name, contract, include_position=False
         )
-        face["signature"] = _stable_digest(fingerprint)
-        face["rigid_signature"] = _stable_digest(rigid_fingerprint)
-        face["geometry_signature"] = _stable_digest(
-            _face_geometry_fingerprint(face, contract)
+        face["signature"] = stable_digest(fingerprint)
+        face["rigid_signature"] = stable_digest(rigid_fingerprint)
+        face["geometry_signature"] = stable_digest(
+            face_geometry_fingerprint(face, contract)
         )
-        face["topology_signature"] = _stable_digest(
-            _face_topology_fingerprint(face, edge_by_name, surface_by_name)
+        face["topology_signature"] = stable_digest(
+            face_topology_fingerprint(face, edge_by_name, surface_by_name)
         )
 
     revision_payload = {
@@ -111,7 +111,7 @@ def _geometry_evidence(shape, contract, *, include_relations=True, include_repet
         "faces": sorted(face["signature"] for face in face_details),
         "edges": sorted(edge["signature"] for edge in edge_details),
     }
-    model_revision = "geom-" + _stable_digest(revision_payload, length=24)
+    model_revision = "geom-" + stable_digest(revision_payload, length=24)
     face_signature_index = {}
     edge_signature_index = {}
     wire_signature_index = {}
@@ -139,12 +139,12 @@ def _geometry_evidence(shape, contract, *, include_relations=True, include_repet
             "signature": wire["signature"],
         }
 
-    dihedral = _dihedral_relations(
+    dihedral = dihedral_relations(
         shape, faces, edges, face_details, edge_details, contract
     ) if include_relations else []
     repetition = _repetition_evidence(face_details, contract) if include_repetition else {}
     topology = {
-        "global_tolerance_mm": _shape_tolerance(shape),
+        "global_tolerance_mm": shape_tolerance(shape),
         "face_to_edges": face_edge_names,
         "edge_to_faces": edge_face_names,
     }
@@ -180,7 +180,7 @@ def _geometry_evidence(shape, contract, *, include_relations=True, include_repet
     }
 
 
-def _semantic_regions(shape, evidence, contract):
+def semantic_regions(shape, evidence, contract):
     """Build compact, revision-bound evidence regions without mutating Shape."""
 
     faces = list(evidence.get("faces", []))
@@ -201,7 +201,7 @@ def _semantic_regions(shape, evidence, contract):
     ):
         member_names = sorted(face["name"] for face in members)
         signatures = sorted(face.get("signature", "") for face in members)
-        region_id = "region-" + _stable_digest(
+        region_id = "region-" + stable_digest(
             {"revision": revision, "group_type": group_type, "faces": signatures},
             length=24,
         )
@@ -276,7 +276,7 @@ def _semantic_carrier(face, contract):
         position = surface.get("position")
         projection = None
         if position is not None:
-            projection = _quantize(_dot(position, axis), contract["linear_tolerance_mm"])
+            projection = quantize(dot(position, axis), contract["linear_tolerance_mm"])
         return "coplanar", {
             "surface_type": surface_type,
             "axis": axis,
@@ -287,9 +287,9 @@ def _semantic_carrier(face, contract):
         center = surface.get("center")
         radial = None
         if center is not None:
-            projection = _dot(center, axis)
+            projection = dot(center, axis)
             radial = {
-                name: _quantize(
+                name: quantize(
                     center[name] - projection * axis[name],
                     contract["linear_tolerance_mm"],
                 )
@@ -319,7 +319,7 @@ def _carrier_group_key(carrier):
 def _canonical_vector(value, contract):
     if not isinstance(value, dict):
         return None
-    length = _vector_length(value)
+    length = vector_length(value)
     if length <= 1e-12:
         return None
     result = {name: float(value[name]) / length for name in ("x", "y", "z")}
@@ -337,7 +337,7 @@ def _canonical_vector_key(value, contract):
         return None
     angular = math.sin(math.radians(contract["angular_tolerance_deg"]))
     return {
-        name: _quantize(normalized[name], max(angular, 1e-9))
+        name: quantize(normalized[name], max(angular, 1e-9))
         for name in ("x", "y", "z")
     }
 
@@ -348,7 +348,7 @@ def _face_material_side(face, shape, contract):
     index = face.get("index")
     if not isinstance(index, int) or not 1 <= index <= len(shape.Faces):
         return {"classification": "unknown", "unavailable_reason": "current_face_unavailable"}
-    return _material_side_at_sample(shape.Faces[index - 1], shape, face.get("surface_sample", {}))
+    return material_side_at_sample(shape.Faces[index - 1], shape, face.get("surface_sample", {}))
 
 
 def _aggregate_material_side(records):
@@ -365,7 +365,7 @@ def _unique_vectors(vectors, contract):
         if not isinstance(vector, dict):
             continue
         key = tuple(
-            _quantize(vector[name], max(contract["angular_tolerance_deg"], 1e-9))
+            quantize(vector[name], max(contract["angular_tolerance_deg"], 1e-9))
             for name in ("x", "y", "z")
         )
         if key not in seen:
@@ -417,7 +417,7 @@ def _tangent_region_groups(evidence, face_to_group, revision):
         faces = sorted(component)
         groups.append(
             {
-                "region_id": "tangent-" + _stable_digest(
+                "region_id": "tangent-" + stable_digest(
                     {"revision": revision, "faces": faces}, length=24
                 ),
                 "model_revision": revision,
@@ -431,7 +431,7 @@ def _tangent_region_groups(evidence, face_to_group, revision):
     return groups
 
 
-def _classify_points(shape, points, tolerance):
+def classify_points(shape, points, tolerance):
     """Classify points against a solid without mutating the host document."""
 
     if not isinstance(points, list) or not points:
@@ -463,7 +463,7 @@ def _classify_points(shape, points, tolerance):
         results.append(
             {
                 "index": index,
-                "point_mm": _vector_dict(point),
+                "point_mm": vector_dict(point),
                 "classification": classification,
                 "boundary_distance_mm": boundary_distance,
                 "tolerance_mm": tolerance,
@@ -513,17 +513,17 @@ def _repetition_evidence(faces, contract):
             continue
         for left_index, left in enumerate(members):
             for right in members[left_index + 1 :]:
-                difference = _vector_difference(
+                difference = vector_difference(
                     right["center_mm"], left["center_mm"]
                 )
-                midpoint = _vector_midpoint(
+                midpoint = vector_midpoint(
                     left["center_mm"], right["center_mm"]
                 )
                 mirror.append(
                     {
                         "faces": [left["name"], right["name"]],
                         "candidate_plane_origin_mm": midpoint,
-                        "candidate_plane_normal": _normalized_vector(difference),
+                        "candidate_plane_normal": normalized_vector(difference),
                     }
                 )
         linear_candidate = _linear_repeat_candidate(centers, contract)
@@ -548,19 +548,19 @@ def _linear_repeat_candidate(centers, contract):
     farthest = None
     for left_index, left in enumerate(centers):
         for right in centers[left_index + 1 :]:
-            distance = _point_distance(left, right)
+            distance = point_distance(left, right)
             if farthest is None or distance > farthest[0]:
                 farthest = (distance, left, right)
     if farthest is None or farthest[0] <= contract["linear_tolerance_mm"]:
         return None
-    direction = _normalized_vector(
-        _vector_difference(farthest[2], farthest[1])
+    direction = normalized_vector(
+        vector_difference(farthest[2], farthest[1])
     )
     projections = []
     for center in centers:
-        offset = _vector_difference(center, farthest[1])
-        projection = _dot(offset, direction)
-        residual = _vector_difference(
+        offset = vector_difference(center, farthest[1])
+        projection = dot(offset, direction)
+        residual = vector_difference(
             offset,
             {
                 "x": projection * direction["x"],
@@ -568,7 +568,7 @@ def _linear_repeat_candidate(centers, contract):
                 "z": projection * direction["z"],
             },
         )
-        if _vector_length(residual) > contract["linear_tolerance_mm"]:
+        if vector_length(residual) > contract["linear_tolerance_mm"]:
             return None
         projections.append(projection)
     projections.sort()
@@ -596,8 +596,8 @@ def _circular_repeat_candidate(centers, contract):
         axis: sum(center[axis] for center in centers) / len(centers)
         for axis in ("x", "y", "z")
     }
-    offsets = [_vector_difference(center, centroid) for center in centers]
-    radii = [_vector_length(offset) for offset in offsets]
+    offsets = [vector_difference(center, centroid) for center in centers]
+    radii = [vector_length(offset) for offset in offsets]
     radius = sum(radii) / len(radii)
     if radius <= contract["linear_tolerance_mm"]:
         return None
@@ -608,21 +608,21 @@ def _circular_repeat_candidate(centers, contract):
         return None
     normal = None
     for index in range(1, len(offsets) - 1):
-        candidate = _cross_vector(offsets[0], offsets[index])
-        if _vector_length(candidate) > contract["linear_tolerance_mm"]:
-            normal = _normalized_vector(candidate)
+        candidate = cross_vector(offsets[0], offsets[index])
+        if vector_length(candidate) > contract["linear_tolerance_mm"]:
+            normal = normalized_vector(candidate)
             break
     if normal is None:
         return None
     if any(
-        abs(_dot(offset, normal)) > contract["linear_tolerance_mm"]
+        abs(dot(offset, normal)) > contract["linear_tolerance_mm"]
         for offset in offsets
     ):
         return None
-    basis_x = _normalized_vector(offsets[0])
-    basis_y = _cross_vector(normal, basis_x)
+    basis_x = normalized_vector(offsets[0])
+    basis_y = cross_vector(normal, basis_x)
     angles = sorted(
-        math.atan2(_dot(offset, basis_y), _dot(offset, basis_x))
+        math.atan2(dot(offset, basis_y), dot(offset, basis_x))
         % (2.0 * math.pi)
         for offset in offsets
     )

@@ -1,6 +1,8 @@
 """Fixed complete-batch progression through a frozen domain tool boundary."""
 
 from REAgent.model.errors import ModelError
+from .errors import AgentError
+from .tools import project_calls
 
 
 def _unexecuted_tail(session, tools, rows, start, reason, cause=None):
@@ -20,9 +22,10 @@ def _notify(session, tools, call, arguments, result, *, remaining=0, reason=None
 
 def _execute_batch(session, tools, reply, published, generation):
     active = session.active
-    parsed, invalid, rejection = tools.preflight(reply, published, active.policy)
+    calls = project_calls(reply.calls)
+    parsed, invalid, rejection = tools.preflight(calls, published, active.policy)
     rejection_index = next((i for i, error in enumerate(invalid) if error is not None), 0)
-    rejection_id = reply.calls[rejection_index].id if rejection else None
+    rejection_id = calls[rejection_index].id if rejection else None
     rows = [(arguments, tools.unexecuted(
         "invalid_tool_request" if invalid[index] is not None else "batch_rejected" if rejection else "not_executed",
         invalid[index] or rejection or "Call has not executed",
@@ -30,13 +33,13 @@ def _execute_batch(session, tools, reply, published, generation):
         for index, arguments in enumerate(parsed)]
     session.begin_batch(reply, rows, rejection=rejection)
     if rejection:
-        _notify(session, tools, reply.calls[rejection_index], *rows[rejection_index],
+        _notify(session, tools, calls[rejection_index], *rows[rejection_index],
                 remaining=len(rows) - 1, reason="The batch was rejected before dispatch.")
         return
     identity = session.batches.pending.identity
-    if reply.content and not tools.suppress_reply(reply):
+    if reply.content and not tools.suppress_reply(calls):
         session.public_reply(reply, generation, progress=True)
-    for index, (call, arguments) in enumerate(zip(reply.calls, parsed)):
+    for index, (call, arguments) in enumerate(zip(calls, parsed)):
         remaining = len(rows) - index - 1
         if session.cancelled(generation):
             _unexecuted_tail(session, tools, rows, index, "Requirements changed or pause was requested")
@@ -44,7 +47,7 @@ def _execute_batch(session, tools, reply, published, generation):
         try:
             session.check()
             session.publish(status="preflighting_tool")
-        except ModelError as exc:
+        except (AgentError, ModelError) as exc:
             result = tools.unexecuted(exc.code, str(exc)[:300])
             session.record_result(index, result)
             _unexecuted_tail(session, tools, rows, index + 1, "The current task no longer permits modeling", call.id)
@@ -123,7 +126,7 @@ def run(session, tools, *, resume):
             if session.cancelled(generation):
                 return session.publish(status="paused", reason="requirements_changed_or_paused")
             session.check()
-    except ModelError as exc:
+    except (AgentError, ModelError) as exc:
         if exc.code != "request_cancelled":
             session.publish("error", {**session.request_identity, **exc.detail()})
         return session.publish(status="paused", reason=exc.code)

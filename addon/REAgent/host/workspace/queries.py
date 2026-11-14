@@ -3,24 +3,24 @@
 import math
 import os
 
-from REAgent.host.analysis.evidence import _classify_points, _geometry_evidence, _semantic_regions
-from REAgent.host.analysis.measurements import _shape_summary
+from REAgent.host.analysis.evidence import classify_points, geometry_evidence, semantic_regions
+from REAgent.host.analysis.measurements import summarize_shape
 from REAgent.host.analysis.predecessor import infer_virtual_predecessor_bounds
-from REAgent.host.analysis.references import _edge_names, _face_names, _semantic_entity_ref_from_detail
-from REAgent.host.analysis.selection import _dressup_edge_queries, _dressup_edge_selectors, _dressup_face_selectors, _feature_semantic_refs, _resolve_dressup_selection, _resolve_face_selection
-from REAgent.host.analysis.topology import _geometric_relations, _resolve_geometry_selectors
-from REAgent.host.numeric import _vector_dict
-from REAgent.host.process_state import _document, PROCESS
+from REAgent.host.analysis.references import edge_names, face_names, semantic_entity_ref_from_detail
+from REAgent.host.analysis.selection import dressup_edge_queries, dressup_edge_selectors, dressup_face_selectors, feature_semantic_refs, resolve_dressup_selection, resolve_face_selection
+from REAgent.host.analysis.topology import geometric_relations, resolve_geometry_selectors
+from REAgent.host.numeric import vector_dict
+from REAgent.host.process_state import require_document, PROCESS
 from REAgent.protocol.features import DRESSUP_SCOPE, EDIT_FEATURE_TYPES
 from REAgent.protocol.observations import FEATURE_OBSERVATION_BUDGET_BYTES
-from REAgent.values import encode_json
-from REAgent.host.validation.comparison import _residual_regions
+from REAgent.json_values import encode_json
+from REAgent.host.validation.comparison import residual_regions
 from REAgent.host.validation.structure import result_state
-from REAgent.host.validation.tolerance import _ir_tolerance_contract, _source_tolerance_contract
-from REAgent.host.file_digest import _file_sha256
-from REAgent.host.workspace.model import _feature_owner, _feature_predecessor, _owned_objects, _placement_summary, _predecessor_shape, _result_object, _result_shape, _session_bodies, _source_objects, _target_state, _workspace, _world_shape
-from REAgent.host.workspace.properties import _metadata, sketch_content_state
-from REAgent.host.workspace.state import _source_view_revision, _target_view_revision
+from REAgent.host.validation.tolerance import ir_tolerance_contract, source_tolerance_contract
+from REAgent.host.file_digest import file_sha256
+from REAgent.host.workspace.model import feature_owner, feature_predecessor, owned_objects, placement_summary, predecessor_shape, resolve_result_object, result_shape, session_bodies, source_objects, target_state, workspace, copy_world_shape
+from REAgent.host.workspace.properties import metadata, sketch_content_state
+from REAgent.host.workspace.state import source_view_revision, target_view_revision
 
 
 def _bounded_feature_page(result, container, key, section, offset, total, rows):
@@ -52,36 +52,36 @@ def _sketch_page_row(index, row):
 
 
 class ObservationOperations:
-    def _with_observation_revision(self, document_name, result):
+    def with_observation_revision(self, document_name, result):
         """Give every successful role-local observation one top-level revision."""
         if not isinstance(result, dict):
             raise RuntimeError("Native observation did not return a result object")
         revision = result.get("revision")
         if revision is None:
             if PROCESS.INSTANCE_ROLE == "source":
-                _document_object, source = _source_objects(document_name)
-                revision = _source_view_revision(source)
+                _document_object, source = source_objects(document_name)
+                revision = source_view_revision(source)
             else:
-                document = _document(document_name)
-                group = _workspace(document)
-                revision = _target_view_revision(document, group, group)
+                document = require_document(document_name)
+                group = workspace(document)
+                revision = target_view_revision(document, group, group)
             result["revision"] = revision
         if not isinstance(revision, str) or not revision:
             raise RuntimeError("Native observation has no string model revision")
         return result
 
 
-    def _analyze_source(self, params):
-        document, source = _source_objects(params.get("document"))
+    def analyze_source(self, params):
+        document, source = source_objects(params.get("document"))
         shape = source.Shape
-        summary = _shape_summary(shape)
-        tolerance_contract = _source_tolerance_contract(source)
+        summary = summarize_shape(shape)
+        tolerance_contract = source_tolerance_contract(source)
         tolerance = tolerance_contract["linear_tolerance_mm"]
 
         source_path = getattr(source, "SourceFile", None)
         expected_sha256 = getattr(source, "SourceSHA256", None)
         source_exists = isinstance(source_path, str) and os.path.isfile(source_path)
-        current_sha256 = _file_sha256(source_path) if source_exists else None
+        current_sha256 = file_sha256(source_path) if source_exists else None
 
         return {
             "document": document.Name,
@@ -115,23 +115,23 @@ class ObservationOperations:
                     + summary["bounding_box_mm"]["y_length"] ** 2
                     + summary["bounding_box_mm"]["z_length"] ** 2
                 ),
-                "placement": _placement_summary(source),
+                "placement": placement_summary(source),
             },
             "shape": summary,
         }
 
 
-    def _observe_feature(self, params):
-        document, _source, group, _config = _target_state(params["document"])
+    def observe_feature(self, params):
+        document, _source, group, _config = target_state(params["document"])
         obj = document.getObject(params["object"])
         if obj is None or obj.TypeId not in EDIT_FEATURE_TYPES:
             raise ValueError("Feature observation requires an editable native Target object")
-        body = _feature_owner(group, obj)
-        prior = _feature_predecessor(body, obj)
+        body = feature_owner(group, obj)
+        prior = feature_predecessor(body, obj)
         from REAgent.host.features.edit_parameters import observable_properties
         properties = {}
         for prop in observable_properties(obj):
-            row = _metadata(obj, prop, body_edit=obj is body)
+            row = metadata(obj, prop, body_edit=obj is body)
             properties[prop] = {key: row[key] for key in
                                 ("value", "enum", "writable", "unavailable_reason") if key in row}
         value = {"object": obj.Name, "type_id": obj.TypeId, "body": body.Name,
@@ -157,7 +157,7 @@ class ObservationOperations:
         if "vertex_page" in params:
             if obj is body or not obj.TypeId.startswith("PartDesign::"):
                 raise ValueError("Vertex pages require a solid history feature in its owned Body")
-            shape = _world_shape(obj)
+            shape = copy_world_shape(obj)
             if shape is None or shape.isNull() or not shape.isValid() or len(shape.Solids) != 1:
                 raise ValueError("Observed feature has no valid single solid for vertex references")
             if any(str(state).lower() in ("touched", "invalid", "error") for state in obj.State):
@@ -166,45 +166,45 @@ class ObservationOperations:
             offset, limit = query.get("offset", 0), query.get("limit", 32)
             vertices = shape.Vertexes
             _bounded_feature_page(value, value, "vertex_page", "vertices", offset, len(vertices),
-                ({"index": i + 1, "name": "Vertex" + str(i + 1), "point_mm": _vector_dict(vertices[i].Point)}
+                ({"index": i + 1, "name": "Vertex" + str(i + 1), "point_mm": vector_dict(vertices[i].Point)}
                  for i in range(offset, min(offset + limit, len(vertices)))))
         if len(encode_json(value).encode("utf-8")) > FEATURE_OBSERVATION_BUDGET_BYTES - 512:
             raise ValueError("Feature metadata exceeds the observation budget")
         return value
 
-    def _inspect_geometry(self, params):
+    def inspect_geometry(self, params):
         if PROCESS.INSTANCE_ROLE == "source":
             if params.get("object") is not None or params.get("edit_object") is not None:
                 raise ValueError(
                     "Source FaceN/EdgeN are subelements: use entity.query.faces/edges; "
                     "object names are available only for Target owned objects"
                 )
-            document, source = _source_objects(params.get("document"))
-            tolerance_contract = _source_tolerance_contract(source)
+            document, source = source_objects(params.get("document"))
+            tolerance_contract = source_tolerance_contract(source)
             shape = source.Shape
             role = "source"
             owner = None
             target_scope = None
-        elif PROCESS.INSTANCE_ROLE == "rebuild":
+        elif PROCESS.INSTANCE_ROLE == "target":
             (
                 document,
                 _source,
-                rebuild,
+                target_body,
                 reconstruction_ir,
-            ) = _target_state(params.get("document"))
-            tolerance_contract = _ir_tolerance_contract(reconstruction_ir)
-            tip = _result_object(rebuild)
+            ) = target_state(params.get("document"))
+            tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+            tip = resolve_result_object(target_body)
             requested_name = params.get("object")
             edit_object = params.get("edit_object")
             if edit_object is not None:
                 feature = document.getObject(edit_object)
                 if feature is None or feature.TypeId not in EDIT_FEATURE_TYPES:
                     raise ValueError("Edit geometry requires an owned editable feature")
-                body = _feature_owner(rebuild, feature)
-                inspected = _feature_predecessor(body, feature)
+                body = feature_owner(target_body, feature)
+                inspected = feature_predecessor(body, feature)
                 if inspected is None or (requested_name is not None and requested_name != inspected.Name):
                     raise ValueError("Edit geometry must reference this feature's actual predecessor")
-                shape = _world_shape(inspected)
+                shape = copy_world_shape(inspected)
                 target_scope = {"kind": "edit_predecessor", "edit_object": feature.Name,
                                 "requested_object": requested_name, "shape_object": inspected.Name,
                                 "selection_body": body.Name, "current_result_tip": tip.Name if tip else None,
@@ -214,24 +214,24 @@ class ObservationOperations:
                 if tip is None:
                     raise ValueError("Target has no current Tip for entity geometry; use Target global observation for workspace evidence before the first feature")
                 inspected = tip
-                shape = _predecessor_shape(rebuild)
+                shape = predecessor_shape(target_body)
                 target_scope = {
                     "kind": "current_predecessor",
                     "requested_object": None,
                     "shape_object": tip.Name,
-                    "selection_body": rebuild.Name,
+                    "selection_body": target_body.Name,
                     "current_result_tip": tip.Name,
                     "is_current_result": True,
                     "is_current_predecessor": True,
                 }
             else:
                 inspected = document.getObject(requested_name)
-                if inspected is None or inspected not in _owned_objects(rebuild):
+                if inspected is None or inspected not in owned_objects(target_body):
                     raise ValueError(
                         "entity.query.object must name an owned Target object"
                     )
-                shape = _world_shape(inspected)
-                owning_body = next((body for body in _session_bodies(rebuild)
+                shape = copy_world_shape(inspected)
+                owning_body = next((body for body in session_bodies(target_body)
                                     if inspected in body.Group), None)
                 current_predecessor = bool(owning_body is not None and owning_body.Tip is inspected)
                 target_scope = {
@@ -241,7 +241,7 @@ class ObservationOperations:
                     "current_result_tip": tip.Name if tip else None,
                     "selection_body": owning_body.Name if owning_body else None,
                     "is_current_result": bool(
-                        inspected is rebuild or inspected is tip
+                        inspected is target_body or inspected is tip
                     ),
                     "is_current_predecessor": current_predecessor,
                 }
@@ -261,7 +261,7 @@ class ObservationOperations:
                              and shape.isValid() and len(shape.Solids) == 1
                              and not any({str(value).lower() for value in obj.State}
                                          & {"touched", "invalid", "error"}
-                                         for obj in _owned_objects(rebuild)))
+                                         for obj in owned_objects(target_body)))
         if "flags" in params.get("fields", []):
             raise ValueError("Quality flags are not exposed by entity observations")
         observation_only = role == "target" and not writable_refs
@@ -274,7 +274,7 @@ class ObservationOperations:
                     "geometry_unavailable_reason": "object_has_no_non_null_shape",
                     "writable_references_available": False, "available_fields": [],
                     "faces": [], "edges": [],
-                    "model_revision": _target_view_revision(document, rebuild, reconstruction_ir)}
+                    "model_revision": target_view_revision(document, target_body, reconstruction_ir)}
         allowed_sections = {"wires", "topology", "stable_selection", "repetition", "relations", "semantic_regions"}
         if not isinstance(include, list) or any(not isinstance(key, str) or key not in allowed_sections for key in include):
             raise ValueError("include must list supported global sections")
@@ -286,7 +286,7 @@ class ObservationOperations:
         offset, limit = params.get("offset", 0), params.get("limit", 50)
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("offset must be non-negative and limit must be 1 to 500")
-        evidence = _geometry_evidence(shape, tolerance_contract,
+        evidence = geometry_evidence(shape, tolerance_contract,
             include_relations=bool({"relations", "semantic_regions"} & set(include)),
             include_repetition="repetition" in include)
         if observation_only:
@@ -299,9 +299,9 @@ class ObservationOperations:
             raise ValueError("faces must be an array when supplied")
         if edges_supplied and params.get("edges") is None:
             raise ValueError("edges must be an array when supplied")
-        requested = [] if params.get("faces") == [] else _face_names(params.get("faces"), len(all_faces))
-        requested_edges = [] if params.get("edges") == [] else _edge_names(params.get("edges"), len(all_edges))
-        resolved_selectors = _resolve_geometry_selectors(
+        requested = [] if params.get("faces") == [] else face_names(params.get("faces"), len(all_faces))
+        requested_edges = [] if params.get("edges") == [] else edge_names(params.get("edges"), len(all_edges))
+        resolved_selectors = resolve_geometry_selectors(
             None if params.get("selectors") == [] else params.get("selectors"), evidence["stable_selection"]
         )
         selector_faces = set(resolved_selectors["face_names"])
@@ -354,7 +354,7 @@ class ObservationOperations:
             )
             for edge in edge_subset[offset:offset + limit]
         ]
-        relations = _geometric_relations(all_faces, tolerance) if "relations" in include else {}
+        relations = geometric_relations(all_faces, tolerance) if "relations" in include else {}
         if "relations" in include:
             relations.update(evidence["topological_relations"])
         if selected_names is not None:
@@ -449,41 +449,13 @@ class ObservationOperations:
         if "relations" in include:
             result["relations"] = relations
         if "semantic_regions" in include:
-            result["semantic_regions"] = _semantic_regions(shape, evidence, tolerance_contract)
+            result["semantic_regions"] = semantic_regions(shape, evidence, tolerance_contract)
         if observation_only:
             result = self._without_writable_references(result)
             result["owning_feature"] = owner
         return result
 
-
-    @staticmethod
-    def _without_writable_references(value):
-        if isinstance(value, dict):
-            return {key: ObservationOperations._without_writable_references(item)
-                    for key, item in value.items() if key not in ("semantic_ref", "stable_selector")}
-        if isinstance(value, list):
-            return [ObservationOperations._without_writable_references(item) for item in value]
-        return value
-
-
-    @staticmethod
-    def _entity_observation_detail(detail, entity_kind, model_revision, owner, writable_refs):
-        result = dict(detail)
-        result["owning_feature"] = owner
-        if owner is not None and writable_refs and entity_kind == "edge":
-            result["semantic_ref"] = _semantic_entity_ref_from_detail(
-                detail,
-                model_revision,
-                entity_kind,
-                "dressup_edge",
-                owner_name=owner["name"],
-            )
-        else:
-            result["semantic_ref"] = None
-        return result
-
-
-    def _resolve_target_selection(self, params):
+    def resolve_target_selection(self, params):
         """Diagnose explicit current predecessor edge or face inputs read-only."""
 
         allowed = {
@@ -507,20 +479,20 @@ class ObservationOperations:
         (
             document,
             _source,
-            rebuild,
+            target_body,
             reconstruction_ir,
-        ) = _target_state(params.get("document"))
-        body_name = params.get("body_name", rebuild.Name)
+        ) = target_state(params.get("document"))
+        body_name = params.get("body_name", target_body.Name)
         body = document.getObject(body_name)
-        if body not in _session_bodies(rebuild):
+        if body not in session_bodies(target_body):
             raise ValueError("Selection Body must belong to the Target session")
         tip = body.Tip
-        shape = _predecessor_shape(body)
+        shape = predecessor_shape(body)
         if shape is None or shape.isNull() or tip is None or tip not in body.Group:
             raise ValueError("Selection Body has no owned current Tip to inspect")
         if (not shape.isValid() or len(shape.Solids) != 1
                 or any({str(value).lower() for value in obj.State} & {"touched", "invalid", "error"}
-                       for obj in _owned_objects(rebuild))):
+                       for obj in owned_objects(target_body))):
             raise ValueError("Selection requires a ready valid current predecessor solid")
         face_mode = any(key in params for key in (
             "face_selectors", "face_refs", "face_role"))
@@ -532,27 +504,27 @@ class ObservationOperations:
             if not shape.isValid() or len(shape.Solids) != 1:
                 raise ValueError("Face selection requires one valid predecessor solid")
             role = params.get("face_role")
-            selectors = _dressup_face_selectors(params.get("face_selectors"))
-            face_refs = _feature_semantic_refs(
+            selectors = dressup_face_selectors(params.get("face_selectors"))
+            face_refs = feature_semantic_refs(
                 params.get("face_refs"), "face", role, "face_refs", 64)
             if any(ref["owner"].get("object_name") != tip.Name
                    or ref.get("fallback") is not None for ref in face_refs):
                 raise ValueError("Face references require the current Tip and no fallback")
             nearest_limit = params.get("nearest_limit", 3)
-            tolerance_contract = _ir_tolerance_contract(reconstruction_ir)
-            evidence = _geometry_evidence(shape, tolerance_contract)
-            report = _resolve_face_selection(
+            tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+            evidence = geometry_evidence(shape, tolerance_contract)
+            report = resolve_face_selection(
                 evidence, {"face_selectors": selectors, "face_refs": face_refs},
                 role, nearest_limit=nearest_limit)
             report["resolved_references"] = [
-                _semantic_entity_ref_from_detail(
+                semantic_entity_ref_from_detail(
                     next(face for face in evidence["faces"] if face["name"] == face_name),
                     report["model_revision"], "face", role, owner_name=tip.Name)
                 for face_name in report["matched_names"]
             ] if report["all_resolved"] else []
             return {
                 "document": document.Name, "role": "target",
-                "target_workspace": rebuild.Name,
+                "target_workspace": target_body.Name,
                 "selection_body": body.Name,
                 "owning_feature": {"name": tip.Name, "label": tip.Label,
                                    "type_id": tip.TypeId},
@@ -562,9 +534,9 @@ class ObservationOperations:
         edge_role = params.get("edge_role", "dressup_edge")
         if edge_role not in ("dressup_edge", "pattern_axis"):
             raise ValueError("Unknown edge selection role")
-        queries = _dressup_edge_queries(params.get("edge_queries"))
-        selectors = _dressup_edge_selectors(params.get("edge_selectors"))
-        edge_refs = _feature_semantic_refs(
+        queries = dressup_edge_queries(params.get("edge_queries"))
+        selectors = dressup_edge_selectors(params.get("edge_selectors"))
+        edge_refs = feature_semantic_refs(
             params.get("edge_refs"),
             "edge",
             edge_role,
@@ -588,11 +560,11 @@ class ObservationOperations:
                 "edge_refs, or edge_scope=all"
             )
         nearest_limit = params.get("nearest_limit", 3)
-        tolerance_contract = _ir_tolerance_contract(reconstruction_ir)
-        evidence = _geometry_evidence(shape, tolerance_contract)
+        tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+        evidence = geometry_evidence(shape, tolerance_contract)
         if any(ref["owner"].get("object_name") != tip.Name for ref in edge_refs):
             raise ValueError("Selection references must name the current Body Tip")
-        report = _resolve_dressup_selection(
+        report = resolve_dressup_selection(
             evidence,
             {
                 "edge_queries": queries,
@@ -605,7 +577,7 @@ class ObservationOperations:
         )
         report["edge_role"] = edge_role
         report["resolved_references"] = [
-            _semantic_entity_ref_from_detail(
+            semantic_entity_ref_from_detail(
                 next(edge for edge in evidence["edges"] if edge["name"] == edge_name),
                 evidence["stable_selection"]["model_revision"], "edge", edge_role,
                 owner_name=tip.Name,
@@ -615,7 +587,7 @@ class ObservationOperations:
         return {
             "document": document.Name,
             "role": "target",
-            "target_workspace": rebuild.Name,
+            "target_workspace": target_body.Name,
             "selection_body": body.Name,
             "owning_feature": {
                 "name": tip.Name,
@@ -627,7 +599,7 @@ class ObservationOperations:
         }
 
 
-    def _infer_virtual_predecessor_bounds(self, params):
+    def infer_virtual_predecessor_bounds(self, params):
         """Return Source-only predecessor-envelope constraints.
 
         This is intentionally an observation operation. It never creates or
@@ -638,11 +610,11 @@ class ObservationOperations:
             raise ValueError(
                 "Virtual predecessor bounds require the Source instance"
             )
-        document, source = _source_objects(params.get("document"))
-        tolerance_contract = _source_tolerance_contract(source)
-        evidence = _geometry_evidence(source.Shape, tolerance_contract)
+        document, source = source_objects(params.get("document"))
+        tolerance_contract = source_tolerance_contract(source)
+        evidence = geometry_evidence(source.Shape, tolerance_contract)
         tolerance = tolerance_contract["linear_tolerance_mm"]
-        relations = _geometric_relations(evidence["faces"], tolerance)
+        relations = geometric_relations(evidence["faces"], tolerance)
         relations.update(evidence["topological_relations"])
         analysis = {
             "faces": evidence["faces"],
@@ -653,9 +625,9 @@ class ObservationOperations:
         }
         result = infer_virtual_predecessor_bounds(
             analysis,
-            face_names=_face_names(params.get("faces"), len(evidence["faces"])),
+            face_names=face_names(params.get("faces"), len(evidence["faces"])),
             selectors=params.get("selectors"),
-            support_face_names=_face_names(
+            support_face_names=face_names(
                 params.get("support_faces"), len(evidence["faces"])
             ),
             radius_mm=params.get("radius_mm"),
@@ -671,35 +643,35 @@ class ObservationOperations:
         }
 
 
-    def _get_semantic_regions(self, params):
-        """Return stable faceset regions for Source or the current Rebuild tip."""
+    def get_semantic_regions(self, params):
+        """Return stable faceset regions for Source or the current Target Tip."""
 
         if PROCESS.INSTANCE_ROLE == "source":
-            document, source = _source_objects(params.get("document"))
-            tolerance_contract = _source_tolerance_contract(source)
+            document, source = source_objects(params.get("document"))
+            tolerance_contract = source_tolerance_contract(source)
             shape = source.Shape
             role = "SourceOriginal"
-        elif PROCESS.INSTANCE_ROLE == "rebuild":
-            document = _document(params.get("document"))
+        elif PROCESS.INSTANCE_ROLE == "target":
+            document = require_document(params.get("document"))
             if document.getObject("Source") is not None:
-                raise ValueError("Rebuild document must not contain a Source object")
-            rebuild = _workspace(document)
-            shape = _predecessor_shape(rebuild)
+                raise ValueError("Target document must not contain a Source object")
+            target_body = workspace(document)
+            shape = predecessor_shape(target_body)
             if shape is None or shape.isNull():
-                raise ValueError("Rebuild has no Tip to inspect")
+                raise ValueError("Target Body has no Tip to inspect")
             (
                 _document_state,
                 _source,
-                _rebuild,
+                _target_body,
                 reconstruction_ir,
-            ) = _target_state(document.Name)
-            tolerance_contract = _ir_tolerance_contract(reconstruction_ir)
-            role = "Rebuild"
+            ) = target_state(document.Name)
+            tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+            role = "target"
         else:
-            raise ValueError("Semantic regions require Source or Rebuild role")
+            raise ValueError("Semantic regions require Source or Target role")
 
-        evidence = _geometry_evidence(shape, tolerance_contract)
-        regions = _semantic_regions(shape, evidence, tolerance_contract)
+        evidence = geometry_evidence(shape, tolerance_contract)
+        regions = semantic_regions(shape, evidence, tolerance_contract)
         requested = params.get("region_ids")
         if requested is not None:
             if not isinstance(requested, list) or any(not isinstance(item, str) for item in requested):
@@ -724,30 +696,30 @@ class ObservationOperations:
         }
 
 
-    def _classify_points(self, params):
+    def classify_points(self, params):
         """Classify points as inside, outside, or boundary in one role-local shape."""
 
         if PROCESS.INSTANCE_ROLE == "source":
-            document, source = _source_objects(params.get("document"))
-            tolerance_contract = _source_tolerance_contract(source)
+            document, source = source_objects(params.get("document"))
+            tolerance_contract = source_tolerance_contract(source)
             shape = source.Shape
             role = "SourceOriginal"
-            evidence = _geometry_evidence(shape, tolerance_contract)
-        elif PROCESS.INSTANCE_ROLE == "rebuild":
+            evidence = geometry_evidence(shape, tolerance_contract)
+        elif PROCESS.INSTANCE_ROLE == "target":
             (
                 document,
                 _source,
-                rebuild,
+                target_body,
                 reconstruction_ir,
-            ) = _target_state(params.get("document"))
-            tolerance_contract = _ir_tolerance_contract(reconstruction_ir)
-            shape = _result_shape(rebuild)
+            ) = target_state(params.get("document"))
+            tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+            shape = result_shape(target_body)
             if shape is None or shape.isNull():
-                raise ValueError("Rebuild has no Tip to classify")
-            role = "Rebuild"
-            evidence = _geometry_evidence(shape, tolerance_contract)
+                raise ValueError("Target Body has no Tip to classify")
+            role = "target"
+            evidence = geometry_evidence(shape, tolerance_contract)
         else:
-            raise ValueError("Point classification requires Source or Rebuild role")
+            raise ValueError("Point classification requires Source or Target role")
         tolerance = tolerance_contract["linear_tolerance_mm"]
         return {
             "document": document.Name,
@@ -755,25 +727,25 @@ class ObservationOperations:
             "model_revision": evidence["stable_selection"]["model_revision"],
             "geometry_scope": "source" if role == "SourceOriginal" else "body_result",
             "tolerance_mm": tolerance,
-            "points": _classify_points(shape, params.get("points"), tolerance),
+            "points": classify_points(shape, params.get("points"), tolerance),
         }
 
 
-    def _get_reconstruction_residuals(self, params):
+    def get_reconstruction_residuals(self, params):
         """Run two explicit directional cuts with per-direction availability."""
 
-        document, source, rebuild, reconstruction_ir = _target_state(
+        document, source, target_body, reconstruction_ir = target_state(
             params.get("document")
         )
-        rebuild_shape = _result_shape(rebuild)
-        if rebuild_shape is None or rebuild_shape.isNull():
-            raise ValueError("Rebuild has no Tip to compare")
-        tolerance_contract = _ir_tolerance_contract(reconstruction_ir)
-        result = _residual_regions(source.Shape, rebuild_shape, tolerance_contract)
+        target_shape = result_shape(target_body)
+        if target_shape is None or target_shape.isNull():
+            raise ValueError("Target Body has no Tip to compare")
+        tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+        result = residual_regions(source.Shape, target_shape, tolerance_contract)
         result.update(
             {
                 "document": document.Name,
-                "rebuild_model_revision": _target_view_revision(document, rebuild, reconstruction_ir),
+                "revision": target_view_revision(document, target_body, reconstruction_ir),
                 "source_model_revision": result.get("source_model_revision"),
                 "tolerance_mm": tolerance_contract["linear_tolerance_mm"],
             }
@@ -781,22 +753,22 @@ class ObservationOperations:
         return result
 
 
-    def _get_target_state(self, params):
-        document = _document(params.get("document"))
-        group = config = _workspace(document)
+    def get_target_state(self, params):
+        document = require_document(params.get("document"))
+        group = config = workspace(document)
         binding = next((item for item in PROCESS.SESSION_BINDINGS.values()
-                        if item["document"] is document and item["role"] == "rebuild"), None)
+                        if item["document"] is document and item["role"] == "target"), None)
         bound_revision = binding["source_revision"] if binding else None
         source_basis = {"bound_revision": bound_revision, "current_file_revision": None,
                         "current_file_revision_basis": "file_sha256", "available": False,
                         "matches_bound": None, "unavailable_reason": None}
         try:
-            current = _file_sha256(config.SourceFile)
+            current = file_sha256(config.SourceFile)
             source_basis.update(current_file_revision=current, available=True,
                                 matches_bound=current == bound_revision if bound_revision else None)
         except (OSError, ValueError, TypeError) as exc:
             source_basis["unavailable_reason"] = str(exc)[:300]
-        result = _result_object(group)
+        result = resolve_result_object(group)
         block = PROCESS.AUDIT_BLOCKS.get(document.Name)
         try:
             model_state = result_state(group)
@@ -807,29 +779,29 @@ class ObservationOperations:
             "result": result.Name if result is not None else None,
             "result_body": group.Name,
             "model_state": model_state,
-            "revision": _target_view_revision(document, group, config),
+            "revision": target_view_revision(document, group, config),
             "tip": group.Tip.Name if group.Tip else None,
             "checkpoint_path": document.FileName or None,
             "artifacts": dict(binding["artifacts"]) if binding else None,
             "modified_status": "unavailable",
             "source_path": config.SourceFile or None,
             "source_basis": source_basis,
-            "tolerance_contract": _ir_tolerance_contract(config),
+            "tolerance_contract": ir_tolerance_contract(config),
             "active_operation": PROCESS.ACTIVE_OPERATION,
             "audit_restoration_block": block[1] if block and block[0] is document else None,
             "undo": list(document.UndoNames), "redo": list(document.RedoNames),
             "native_undo_enabled": bool(document.UndoMode),
             "pending_transaction": bool(document.HasPendingTransaction),
             "objects": [{"name": obj.Name, "label": obj.Label, "type_id": obj.TypeId,
-                         "state": list(obj.State)} for obj in _owned_objects(group)],
+                         "state": list(obj.State)} for obj in owned_objects(group)],
         }
 
 
-    def _diagnostic_document_state(self, name):
-        document = _document(name)
-        group = _workspace(document)
+    def diagnostic_document_state(self, name):
+        document = require_document(name)
+        group = workspace(document)
         block = PROCESS.AUDIT_BLOCKS.get(name)
-        states = [{"object": obj.Name, "state": list(obj.State)} for obj in _owned_objects(group)
+        states = [{"object": obj.Name, "state": list(obj.State)} for obj in owned_objects(group)
                   if any(str(s).lower() in ("touched", "invalid", "error") for s in obj.State)]
         return {"geometry_source": "cached_shape", "recomputed": False,
                 "pending_or_error_objects": states[:16], "object_count": len(states),
@@ -837,22 +809,22 @@ class ObservationOperations:
                 "write_block": block[1] if block and block[0] is document else None}
 
 
-    def _observe_target_global(self, params):
-        document, _source, rebuild, reconstruction_ir = _target_state(
+    def observe_target_global(self, params):
+        document, _source, target_body, reconstruction_ir = target_state(
             params.get("document")
         )
-        shape = _result_shape(rebuild)
+        shape = result_shape(target_body)
         shape_summary = (
-            _shape_summary(shape)
+            summarize_shape(shape)
             if shape is not None and not shape.isNull()
             else None
         )
         return {
             "document": document.Name,
             "role": "target",
-            "revision": _target_view_revision(document, rebuild, reconstruction_ir),
+            "revision": target_view_revision(document, target_body, reconstruction_ir),
             "shape": shape_summary,
-            "object_count": len(_owned_objects(rebuild)),
+            "object_count": len(owned_objects(target_body)),
             "objects": [
                 {
                     "name": obj.Name,
@@ -863,3 +835,29 @@ class ObservationOperations:
                 if obj is not reconstruction_ir
             ],
         }
+
+    @staticmethod
+    def _without_writable_references(value):
+        if isinstance(value, dict):
+            return {key: ObservationOperations._without_writable_references(item)
+                    for key, item in value.items() if key not in ("semantic_ref", "stable_selector")}
+        if isinstance(value, list):
+            return [ObservationOperations._without_writable_references(item) for item in value]
+        return value
+
+
+    @staticmethod
+    def _entity_observation_detail(detail, entity_kind, model_revision, owner, writable_refs):
+        result = dict(detail)
+        result["owning_feature"] = owner
+        if owner is not None and writable_refs and entity_kind == "edge":
+            result["semantic_ref"] = semantic_entity_ref_from_detail(
+                detail,
+                model_revision,
+                entity_kind,
+                "dressup_edge",
+                owner_name=owner["name"],
+            )
+        else:
+            result["semantic_ref"] = None
+        return result

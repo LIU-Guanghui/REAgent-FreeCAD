@@ -20,6 +20,6 @@ Use the confirmed delivery receipt as the authority for check states and the com
 
 ## Save a checkpoint
 
-The user requests `agent_save` to confirm an FCStd write; it does not rerun comparison or refresh historical validation. A structurally known unfinished workspace can be saved and reported as unfinished.
+The user clicks **Save** to request writing Target to its FCStd file. Report the confirmed save result separately from comparison and historical validation. A structurally known unfinished workspace can be saved and reported as unfinished.
 
 Keep the absolute FCStd checkpoint path distinct from its derived journal path. File existence or journal text does not prove the latest save succeeded. Execution, restoration, acceptance and saving remain separate facts.

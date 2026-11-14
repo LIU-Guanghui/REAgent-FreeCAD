@@ -13,7 +13,7 @@ from REAgent.model.messages import AssistantTurn
 from REAgent.model.limits import (
     IMAGE_LIMIT_BYTES, IMAGE_LIMIT_COUNT, REQUEST_LIMIT_BYTES)
 from REAgent.model.errors import CapacityError, ModelError
-from REAgent.values import decode_json, encode_json
+from REAgent.json_values import decode_json, encode_json
 from REAgent.model.transport import ControlledHTTPHandler, ControlledHTTPSHandler, ReadBudget, sse_events
 
 from .registry import PROVIDERS
@@ -35,6 +35,10 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 class ModelClient:
+    @property
+    def config(self):
+        return self._config
+
     def __init__(self, config, *, api_key):
         if not isinstance(config, ModelConfig):
             raise ValueError("ModelConfig is required")
@@ -48,10 +52,6 @@ class ModelClient:
         self._cache_key = uuid.uuid4().hex
         self.set_credentials(api_key=api_key)
 
-    @property
-    def config(self):
-        return self._config
-
     def set_credentials(self, *, api_key):
         if self._active:
             raise RuntimeError("A model request is still active")
@@ -64,9 +64,6 @@ class ModelClient:
         proxies = getproxies()
         return {"enabled": any(proxies.get(name) for name in ("http", "https")),
                 "source": "urllib_environment_or_system", "bypass": "urllib_no_proxy"}
-
-    def _request_body(self, messages, tools):
-        return self._adapter.request(self.config, messages, tools, self.identity, cache_key=self._cache_key)
 
     def estimate(self, messages, tools):
         body = self._request_body(messages, tools)
@@ -185,3 +182,6 @@ class ModelClient:
             raise error from None
         finally:
             self._active = False
+
+    def _request_body(self, messages, tools):
+        return self._adapter.request(self.config, messages, tools, self.identity, cache_key=self._cache_key)

@@ -3,13 +3,13 @@
 import os
 import xml.etree.ElementTree as ET
 
-from REAgent import ADDON_PATH
+from REAgent.resources import ADDON_PATH
 from REAgent.protocol.operations import OPERATION_SPECS
 from REAgent.protocol.definitions import PRODUCT_ID
 from REAgent.host.logs import native_log_source
 
 
-def _addon_metadata():
+def addon_metadata():
     path = os.path.join(ADDON_PATH, "package.xml")
     try:
         root = ET.parse(path).getroot()
@@ -29,7 +29,7 @@ def capability_response(*, view, operation, role, port, registered_handlers):
     if view == "status":
         return {"available": True,
                 "product_id": PRODUCT_ID, "role": role, "port": port,
-                **_addon_metadata(),
+                **addon_metadata(),
                 "native_log_source": native_log_source(),
                 "operation_contract": {"operations": OPERATION_SPECS}}
     if view == "operation":

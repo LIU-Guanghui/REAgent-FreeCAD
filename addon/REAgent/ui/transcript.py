@@ -47,13 +47,6 @@ class Transcript(QtWidgets.QScrollArea):
         for message in self._rows[:]:
             self._remove(message)
 
-    def _remove(self, message):
-        self._rows.remove(message)
-        self._chars -= len(message.text)
-        self._layout.removeWidget(message.row)
-        message.row.hide()
-        message.row.deleteLater()
-
     def discard_previews(self, *, request=None):
         for message in self._rows[:]:
             if message.request is not None and (request is None or message.request == request):
@@ -107,6 +100,21 @@ class Transcript(QtWidgets.QScrollArea):
             self._remove(oldest)
         self._widths()
 
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if watched is self.viewport() and kind == QtCore.QEvent.Resize:
+            self._widths()
+        elif kind == QtCore.QEvent.FontChange:
+            QtCore.QTimer.singleShot(0, self._widths)
+        return super().eventFilter(watched, event)
+
+    def _remove(self, message):
+        self._rows.remove(message)
+        self._chars -= len(message.text)
+        self._layout.removeWidget(message.row)
+        message.row.hide()
+        message.row.deleteLater()
+
     def _widths(self):
         outer = self._layout.contentsMargins()
         available = max(1, self.viewport().width() - outer.left() - outer.right())
@@ -127,11 +135,3 @@ class Transcript(QtWidgets.QScrollArea):
             editor.document().setTextWidth(width)
             height = editor.document().size().height()
             editor.setFixedHeight(max(1, int(height + 0.999)))
-
-    def eventFilter(self, watched, event):
-        kind = event.type()
-        if watched is self.viewport() and kind == QtCore.QEvent.Resize:
-            self._widths()
-        elif kind == QtCore.QEvent.FontChange:
-            QtCore.QTimer.singleShot(0, self._widths)
-        return super().eventFilter(watched, event)

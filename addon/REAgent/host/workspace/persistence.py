@@ -2,14 +2,14 @@
 
 import os
 
-from REAgent.host.process_state import _document, _operation_stage, PROCESS
+from REAgent.host.process_state import require_document, operation_stage, PROCESS
 from REAgent.host.validation.structure import result_state
-from REAgent.host.file_digest import _file_sha256
-from REAgent.host.workspace.model import _workspace
-from REAgent.host.workspace.state import _target_view_revision
+from REAgent.host.file_digest import file_sha256
+from REAgent.host.workspace.model import workspace
+from REAgent.host.workspace.state import target_view_revision
 
 
-def _same_file_path(left, right):
+def same_file_path(left, right):
     if not left or not right:
         return False
     return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
@@ -33,14 +33,14 @@ def _new_fcstd_path(value, owned_checkpoint_path=None):
         exists = True
     except FileNotFoundError:
         exists = False
-    if exists and not _same_file_path(
+    if exists and not same_file_path(
         path, owned_checkpoint_path
     ):
         raise ValueError("Output file already exists: %s" % path)
     return path
 
 
-def _existing_fcstd_path(value):
+def existing_fcstd_path(value):
     if not isinstance(value, str) or not value:
         raise ValueError("resume_path must be a non-empty absolute path")
     if not os.path.isabs(value):
@@ -54,32 +54,35 @@ def _existing_fcstd_path(value):
 
 
 class PersistenceOperations:
+    def contribute(self):
+        return {'agent_save': self._save}
+
     def _save(self, params):
-        document = _document(params["document"])
-        group = _workspace(document)
+        document = require_document(params["document"])
+        group = workspace(document)
         config = group
         binding = PROCESS.SESSION_BINDINGS.get(params["session_id"])
         if (binding is None or binding.get("document") is not document
-                or binding.get("role") != "rebuild"):
+                or binding.get("role") != "target"):
             raise ValueError("Save requires the exact bound Target session")
         if document.HasPendingTransaction: raise ValueError("Cannot save during an active transaction")
         model_state = result_state(group)
         provenance = {"document": document.Name,
-                      "target_revision": _target_view_revision(document, group, config)}
+                      "target_revision": target_view_revision(document, group, config)}
         try:
-            provenance["source_revision"] = _file_sha256(group.SourceFile)
+            provenance["source_revision"] = file_sha256(group.SourceFile)
         except (OSError, ValueError, TypeError):
             provenance["source_revision"] = None
         path = binding["artifacts"]["model_path"]
-        owned_path = binding["saved_path"] if _same_file_path(binding["saved_path"], document.FileName) else None
+        owned_path = binding["saved_path"] if same_file_path(binding["saved_path"], document.FileName) else None
         path = _new_fcstd_path(path, owned_checkpoint_path=owned_path)
-        _operation_stage("persistence", mutating=True)
-        if document.FileName and _same_file_path(path, document.FileName): document.save()
+        operation_stage("persistence", mutating=True)
+        if document.FileName and same_file_path(path, document.FileName): document.save()
         else: document.saveAs(path)
         binding["saved_path"] = path
         # The write has happened. A failed readback only leaves applicability unknown.
         try:
-            current_revision = _target_view_revision(document, group, config)
+            current_revision = target_view_revision(document, group, config)
         except Exception:
             current_revision = None
         return {
@@ -95,6 +98,3 @@ class PersistenceOperations:
             "saved_revision": provenance["target_revision"] if current_revision == provenance["target_revision"] else None,
             "revision_after": current_revision,
         }
-
-    def contribute(self):
-        return {'agent_save': self._save}

@@ -6,7 +6,7 @@ import base64
 
 from REAgent.model.errors import ModelError
 from REAgent.model.providers.common import StreamState, standard_usage
-from REAgent.values import decode_json
+from REAgent.json_values import decode_json
 
 PROTOCOL = "chat_completions"
 PATH = "/chat/completions"
