@@ -2,11 +2,19 @@
 
 [English](../README.md) | 简体中文
 
-**让 Agent 把 STEP 零件重建为可编辑的 FreeCAD 模型。**
+**让 Agent 从 STP、STL、工程图、图片或文字需求中重建可编辑的 FreeCAD 零件。**
 
-**REAgent** 是运行在 FreeCAD 内的 AI 助手：观察源零件、选择建模操作、读取执行结果，并在独立的 Target 窗口中逐步建立原生特征历史。
+**REAgent** 是运行在 FreeCAD 内的 AI 助手：读取选定的输入，并在独立的 Target 窗口中逐步建立原生特征历史。
 
-下图展示源模型、重建特征树与多视角对照。
+## 功能特性
+
+- **/stp2cad：** 将含单个实体的 STP 文件重建为参数化模型。
+- **/stl2cad：** 将含单个实体的 STL 网格重建为参数化模型。
+- **/drawing2cad：** 根据标注完整的 DXF 工程图建模。
+- **/image2cad：** 从照片、截图或手绘等参考图片重建零件。
+- **/text2cad：** 按文字描述中的形状、尺寸和特征要求建模。
+
+下图展示 STP 重建的源模型、特征树与多视角对照。
 
 <p align="center">
   <a href="source.png"><img src="source.png" alt="Source 窗口中的源零件与 REAgent 对话、任务控制面板" width="1024"></a><br>
@@ -38,7 +46,7 @@ Copy-Item -LiteralPath '.\addon\REAgent' -Destination 'C:\Program Files\FreeCAD 
 
 1. **绑定窗口：** 启动两个独立、可见的 FreeCAD 进程，均切换到 REAgent 工作台，再分别点击 **Source** 和 **Target**。Source 打开助手面板并观察源模型，Target 负责重建模型。
 2. **配置模型：** 在 Source 面板打开 **Settings**，选择 **Anthropic、OpenAI 或 DeepSeek**等，填写 **Model** 与 **API key** 并保存。根据模型的实际能力设置推理强度、上下文容量和输出预算。重建所用服务须支持对应协议的流式响应、工具调用与图像输入。
-3. **开始重建：** 在 Source 面板点击 **New task**，输入 `/stp2cad` 后点击 **Send**，在弹出的对话框选择单实体 STEP/STP 文件与输出目录，点击 **Start** 开始重建。
+3. **开始重建：** 在 Source 面板点击 **New task**，输入 `/` 选中命令后点击 **Send**，在弹出的对话框选择输入文件、输出目录和补充信息，点击 **Start** 开始重建。
 4. **观察与调整：** 在对话区查看进展，通过 **Image** 浏览观察图片，通过 **Journal** 查看操作日志。可以在对话框发送普通消息来调整模型。
 5. **保存结果：** 在 Target 进程中检查特征树与参数编辑，在 Source 面板点击 **Save**，确认保存成功后点击 **End task**。
 
@@ -53,26 +61,14 @@ Source 面板（GUI 主线程）
 Source worker: application/ -> agent/ <-> model/ <-> 模型服务
                                |
                                v
-                               stp2cad/
+                               cad/
                                |
                                +-- 本机 Bridge --> Source host/（GUI 主线程）
                                |                 只读观察
                                |
                                +-- 本机 Bridge --> Target host/（GUI 主线程）
-                                                 原生建模与显式保存 FCStd
+                                                 原生建模
 ```
-
-| 模块 | 职责 |
-| --- | --- |
-| `ui/` | 提供任务面板、设置、图片和日志窗口，管理 Source worker 生命周期。 |
-| `application/` | 通过 `Session` 协调普通对话、重建和用户操作。 |
-| `agent/` | 管理对话上下文、模型请求、工具执行、暂停和上下文压缩。 |
-| `model/` | 通过 Messages、Responses 和 Chat Completions 协议处理流式请求与响应。 |
-| `stp2cad/` | 提供重建工具，协调两端宿主、证据和任务日志。 |
-| `host/` | 在 FreeCAD GUI 主线程执行观察、原生建模事务、恢复和保存。 |
-| `protocol/` | 定义重建控制端与宿主共用的操作和数据契约。 |
-
-`json_values.py` 和 `json_schema.py` 处理 JSON 值与校验。`knowledge/` 提供 Addon 内置的重建指导。
 
 ## 许可证
 

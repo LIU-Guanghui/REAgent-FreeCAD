@@ -60,7 +60,6 @@ class PersistenceOperations:
     def _save(self, params):
         document = require_document(params["document"])
         group = workspace(document)
-        config = group
         binding = PROCESS.SESSION_BINDINGS.get(params["session_id"])
         if (binding is None or binding.get("document") is not document
                 or binding.get("role") != "target"):
@@ -68,11 +67,13 @@ class PersistenceOperations:
         if document.HasPendingTransaction: raise ValueError("Cannot save during an active transaction")
         model_state = result_state(group)
         provenance = {"document": document.Name,
-                      "target_revision": target_view_revision(document, group, config)}
-        try:
-            provenance["source_revision"] = file_sha256(group.SourceFile)
-        except (OSError, ValueError, TypeError):
-            provenance["source_revision"] = None
+                      "target_revision": target_view_revision(document, group)}
+        provenance["source_revision"] = None
+        if binding["source_revision"]:
+            try:
+                provenance["source_revision"] = file_sha256(group.SourceFile)
+            except (OSError, ValueError, TypeError):
+                pass
         path = binding["artifacts"]["model_path"]
         owned_path = binding["saved_path"] if same_file_path(binding["saved_path"], document.FileName) else None
         path = _new_fcstd_path(path, owned_checkpoint_path=owned_path)
@@ -82,7 +83,7 @@ class PersistenceOperations:
         binding["saved_path"] = path
         # The write has happened. A failed readback only leaves applicability unknown.
         try:
-            current_revision = target_view_revision(document, group, config)
+            current_revision = target_view_revision(document, group)
         except Exception:
             current_revision = None
         return {

@@ -12,7 +12,6 @@ from REAgent.model.limits import (
     RECENT_WINDOW_MAX_TOKENS)
 from REAgent.agent.messages import ImageMaterial, ToolOutcome, UserText
 from REAgent.model.errors import CapacityError, ModelError
-from .tools import project_calls
 
 
 @dataclass(frozen=True)
@@ -74,16 +73,6 @@ class Conversation:
 
     def record_human(self, material):
         self._append((material,))
-
-    def retained_tool_results(self):
-        for unit in self.units:
-            reply = next((item for item in unit.messages if isinstance(item, AssistantTurn)), None)
-            if reply is None:
-                continue
-            outcomes = {item.call_id: item for item in unit.messages if isinstance(item, ToolOutcome)}
-            for call in project_calls(reply.calls):
-                if call.id in outcomes:
-                    yield call, outcomes[call.id]
 
     def receipt(self, unit_ids, delivery_ids):
         """Only a successful adopted MAIN request calls this, never a summary."""
@@ -208,7 +197,7 @@ class Conversation:
                 "units_compacted": 0, "checkpoint": candidate.checkpoint}
         if cancelled():
             raise ModelError("request_cancelled", "Context preparation cancelled; original context retained")
-        commit(candidate, self)
+        commit(candidate)
         return prepared
 
 

@@ -14,58 +14,19 @@ DRESSUP_SCOPE = {
     },
 }
 
-DOMAIN_MODE_GAPS = {
-    "primitive": [
-        "native_attachment", "partial_angles", "skewed_cylinder_or_prism", "point_back_wedge",
-    ],
-    "extrude": ["face_profile", "through_all", "symmetric", "taper", "custom_direction"],
-    "revolve": [
-        "free_vector_axis", "construction_axis", "body_origin_axis", "symmetric", "two_angles",
-    ],
-    "hole": ["threads", "counterdrill", "tapered_wall", "non_circle_profile"],
-    "boolean": [
-        "empty_receiver", "clone_tool", "shapebinder_tool", "cross_session_tool", "multi_tool_common",
-    ],
-    "loft": [
-        "inner_or_multiple_contours", "more_than_two_sections", "vertex_section",
-        "closed_loft", "auto_section_order",
-    ],
-    "pipe": [
-        "multiple_sections", "auxiliary_spine", "branched_or_multi_sketch_path", "picked_subedges",
-        "variable_section", "automatic_path_order", "non_standard_orientation",
-        "non_transformed_corner", "tangent_path_extension",
-    ],
-    **DRESSUP_SCOPE["mode_gaps"],
-    "draft": [
-        "inferred_neutral_plane", "custom_pull_direction", "edge_defined_neutral_plane",
-        "automatic_face_grouping",
-    ],
-    "thickness": [
-        "pipe_or_rectoverso_mode", "self_intersection_handling", "implicit_opening_faces",
-    ],
-    "mirror": [
-        "whole_shape_mode", "inferred_mirror_plane", "sketch_axis", "nested_transform",
-    ],
-    "pattern": [
-        "whole_shape_mode", "second_direction", "uneven_spacing", "sketch_axis",
-        "nested_transform",
-    ],
-}
-
 DOMAIN_EVIDENCE_SCHEMA = array(
-    "Successful observation evidence IDs from this session, including Target evidence for expected_revision; "
-    "reconstruction also requires evidence for the bound Source. "
-    "If no applicable Target observation exists, obtain one before writing; an empty Target supports global observation.",
-    {"type": "string", "pattern": r"^evidence-[a-f0-9]{20}$"}, 1, 16,
+    "Include current Target evidence in every native write. All Target IDs must match the current revision. "
+    "After each confirmed write, replace the previous Target state ID with the returned evidence_id. "
+    "Use agent_get_state for missing state evidence. For geometry, cite the observation_id from agent_observe. "
+    "Include bound Source evidence when the workflow requires it.",
+    {"type": "string", "pattern": r"^(?:evidence|target-state)-[a-f0-9]{20}$"}, 1, 16,
 )
 
-TARGET_REVISION_SCHEMA = string(
-    "Current Target revision matching at least one Target observation referenced in evidence. "
-    "State and write receipts report revisions but do not issue observation evidence."
-)
+TARGET_REVISION_SCHEMA = string("Target revision derived from the cited evidence.")
 
 FEATURE_SPECS["PartDesign_Body"] = operation(
-    "body", "Create and register one empty native tool Body in the bound Target.",
+    "body", "Create and register an additional native tool Body for a separate feature history. "
+    "The Target session starts with the main Body for the result.",
     ("target",), "committed",
     {"document": _DOCUMENT, "session_id": TEXT_SCHEMA,
      "body_name": {**NAME_SCHEMA, "description": "Unique native name for the tool Body"},
@@ -77,7 +38,7 @@ FEATURE_SPECS["PartDesign_Body"] = operation(
 )
 
 FEATURE_SPECS["PartDesign_NewSketch"] = operation(
-    "sketch", "Create one empty native Sketch in an explicitly owned Body.",
+    "sketch", "Create an empty native Sketch in an owned Body. Use Sketcher_EditSketch to add its geometry and constraints.",
     ("target",), "committed",
     {"document": _DOCUMENT, "session_id": TEXT_SCHEMA,
      "body_name": {**NAME_SCHEMA, "description": "Owned receiving Body"},
@@ -195,7 +156,7 @@ for _kind, _fields in _SKETCH_CONSTRAINT_FIELDS.items():
     _SKETCH_CONSTRAINT["oneOf"].append(branch("kind", _kind, _constraint_properties))
 
 FEATURE_SPECS["Sketcher_EditSketch"] = operation(
-    "sketch", "Fill one previously empty owned Sketch once with five geometry types and explicit constraints. Shared feature preflight validates cross-field arc/ellipse_arc spans.",
+    "sketch", "Populate an empty owned Sketch with geometry and constraints in one operation.",
     ("target",), "committed",
     {"document": _DOCUMENT, "session_id": TEXT_SCHEMA,
      "body_name": {**NAME_SCHEMA, "description": "Owned Sketch Body"},
@@ -392,8 +353,21 @@ for _family, _family_spec in PRIMITIVE_FAMILIES.items():
         )
 
 HISTORY_COMMANDS = {
-    "PartDesign_Pad": {"domain": "extrude", "type_id": "PartDesign::Pad", "additive": True},
-    "PartDesign_Pocket": {"domain": "extrude", "type_id": "PartDesign::Pocket", "additive": False},
+    "PartDesign_Pad": {
+        "domain": "extrude", "type_id": "PartDesign::Pad", "additive": True,
+        "field_descriptions": {
+            "reversed": "Pad grows along the positive Sketch normal for false, negative for true.",
+        },
+    },
+    "PartDesign_Pocket": {
+        "domain": "extrude", "type_id": "PartDesign::Pocket", "additive": False,
+        "field_descriptions": {
+            "reversed": (
+                "Pocket cuts along the negative Sketch normal for false, positive for true. "
+                "Choose the material side from the actual Sketch and predecessor."
+            ),
+        },
+    },
     "PartDesign_Revolution": {"domain": "revolve", "type_id": "PartDesign::Revolution", "additive": True},
     "PartDesign_Groove": {"domain": "revolve", "type_id": "PartDesign::Groove", "additive": False},
     "PartDesign_Hole": {"domain": "hole", "type_id": "PartDesign::Hole", "additive": False},
@@ -422,7 +396,7 @@ _HISTORY_COMMON = {
 _HISTORY_REQUIRED = ("document", "session_id", "body_name", "feature_name",
                      "intent", "evidence", "expected_revision")
 
-_SKETCH_PROFILE = {**NAME_SCHEMA, "description": "Existing Sketch in the receiving Body"}
+_SKETCH_PROFILE = {**NAME_SCHEMA, "description": "Existing Sketch in the receiving Body with valid closed non-construction geometry"}
 
 _POSITIVE_LENGTH = {**number("Positive native length in millimetres"), "exclusiveMinimum": 0}
 
@@ -464,8 +438,16 @@ for _command, _spec in HISTORY_COMMANDS.items():
         _properties["sketch_name"] = _SKETCH_PROFILE
         _required += ("sketch_name",)
     if _spec["domain"] == "extrude":
-        _properties.update(length_mm={**_POSITIVE_LENGTH, "description": "Full generating length from the Sketch plane in millimetres, including portions later trimmed by dress-ups or cuts."},
-                           reversed=boolean("Explicit native direction reversal"))
+        _properties.update(
+            length_mm={
+                **_POSITIVE_LENGTH,
+                "description": (
+                    "Full generating length from the Sketch plane in millimetres, "
+                    "including portions later trimmed by dress-ups or cuts."
+                ),
+            },
+            reversed=boolean("Explicit native direction reversal"),
+        )
         _required += ("length_mm", "reversed")
     elif _spec["domain"] == "revolve":
         _properties.update(axis=_REVOLUTION_AXIS,
@@ -592,6 +574,8 @@ for _command, _spec in HISTORY_COMMANDS.items():
             mode=string("Native Boolean operation", ("Fuse", "Cut", "Common")),
         )
         _required += ("tool_body_names", "mode")
+    for _field, _description in _spec.get("field_descriptions", {}).items():
+        _properties[_field] = {**_properties[_field], "description": _description}
     _limits = ()
     if _spec["domain"] == "loft":
         _limits = ("Exactly two distinct same-Body Sketches, caller-ordered, each with one closed outer contour on a different plane; Closed, Ruled and Refine are false.",)

@@ -8,7 +8,7 @@ from REAgent.application.presentation import comparison_contract, tool_message
 
 
 class ComparisonDialog(QtWidgets.QDialog):
-    def __init__(self, parent, facts):
+    def __init__(self, parent, facts, *, geometry):
         super().__init__(parent)
         self.contract = comparison_contract()
         self.setWindowTitle("Compare Source and Target")
@@ -17,7 +17,7 @@ class ComparisonDialog(QtWidgets.QDialog):
                                      + "\nTarget: " + str(facts["target_document"])))
         self.geometry = QtWidgets.QGroupBox("Geometry")
         self.geometry.setCheckable(True)
-        self.geometry.setChecked(True)
+        self.geometry.setChecked(geometry)
         grid = QtWidgets.QGridLayout(self.geometry)
         self.measurements, self.booleans = {}, {}
         definitions = self.contract["validation"]["properties"]
@@ -34,9 +34,11 @@ class ComparisonDialog(QtWidgets.QDialog):
             self.booleans[name] = box
             grid.addWidget(box, 3 + index // 2, index % 2)
         layout.addWidget(self.geometry)
+        self.geometry.setVisible(geometry)
         self.views = QtWidgets.QGroupBox("Paired views")
-        self.views.setCheckable(True)
-        self.views.setChecked(True)
+        self.views.setCheckable(geometry)
+        if geometry:
+            self.views.setChecked(True)
         grid = QtWidgets.QGridLayout(self.views)
         self.directions = {}
         for index, (name, label) in enumerate(self.contract["view_labels"].items()):
@@ -49,6 +51,8 @@ class ComparisonDialog(QtWidgets.QDialog):
         self.section_axis.addItems(self.contract["view"]["properties"]["section_axis"]["enum"])
         grid.addWidget(self.section, 5, 0, 1, 2)
         grid.addWidget(self.section_axis, 5, 2)
+        self.section.setVisible(geometry)
+        self.section_axis.setVisible(geometry)
         layout.addWidget(self.views)
         row = QtWidgets.QHBoxLayout()
         row.addStretch(1)
@@ -68,14 +72,13 @@ class ComparisonDialog(QtWidgets.QDialog):
             options = {"measurements": [name for name, box in self.measurements.items() if box.isChecked()],
                        "boolean_operations": [name for name, box in self.booleans.items() if box.isChecked()],
                        "surface_sampling": self.sampling.isChecked()}
-        if self.views.isChecked():
+        if not self.views.isCheckable() or self.views.isChecked():
             selected = [name for name in self.contract["default_views"] if self.directions[name].isChecked()]
             selected.extend(name for name, box in self.directions.items()
                             if box.isChecked() and name not in selected)
-            query = {"paired": True, "views": selected}
+            request = {"paired": True, "views": selected}
             if self.section.isChecked():
-                query.update(include_section=True, section_axis=self.section_axis.currentText())
-            request = {"kind": "view", "query": query}
+                request.update(include_section=True, section_axis=self.section_axis.currentText())
         self.options, self.view_request = options, request
         self.accept()
 

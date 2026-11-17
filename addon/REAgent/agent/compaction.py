@@ -78,7 +78,8 @@ def validate_summary_content(reply, ids, known, previous, references):
     return narrative, references
 
 
-def prepare_summary_candidate(base, candidates, before, client, tools, reason, *, narrative, references, previous, reply):
+def prepare_summary_candidate(base, candidates, before, client, tools, reason, *,
+                              narrative, references, previous, reply):
     ids = [unit.id for unit in candidates]
     prior = previous.get("deterministic", {})
     candidate = base.fork()
@@ -94,19 +95,20 @@ def prepare_summary_candidate(base, candidates, before, client, tools, reason, *
         "current_facts": ({"fact_sequence": fact.sequence, "facts": fact.value} if fact is not None else
                           prior.get("current_facts")),
         "first_unit": prior.get("first_unit", ids[0]), "last_unit": ids[-1]}
-    candidate.summary = HistorySummary(_summary_material(ids, deterministic, narrative), _HISTORY_PREFIX)
     candidate.units = [unit for unit in candidate.units if unit.id not in covered]
     candidate.retained_groups = frozenset()
     candidate.checkpoint += 1
     candidate.revision += 1
     candidate.prune_images(client, force=True)
+    image_count = sum(len(item.images) for item in candidate.messages() if isinstance(item, ImageMaterial))
+    images_released = before["image_count"] - image_count
     # Framework data explains a UI-triggered change without self-referential
     # request sizes or another copy of the usage/Journal payload.
     deterministic["context_change"] = {
         "source": "framework", "kind": "model_context_summary", "reason": reason,
         "prefix_rewritten": True, "previous_estimate_method": before["method"],
         "capacity_estimate": "recomputed for the new prefix; any prior same-prefix service calibration is invalid",
-        "images_released": before["image_count"] - client.estimate(candidate.messages(), tools)["image_count"],
+        "images_released": images_released,
         "disk_files": "unchanged; image release concerns request payload only"}
     candidate.summary = HistorySummary(_summary_material(ids, deterministic, narrative), _HISTORY_PREFIX)
     try:
@@ -120,7 +122,7 @@ def prepare_summary_candidate(base, candidates, before, client, tools, reason, *
             or byte_pressure and after["request_bytes"] >= before["request_bytes"]):
         raise ModelError("summary_not_smaller", "Summary did not reduce the comparable local input bound without increasing request bytes; original context retained")
     candidate.last_compaction = {"reason": reason, **replacement_metrics(before, after),
-        "images_released": before["image_count"] - fitting.estimate["image_count"],
+        "images_released": images_released,
         "units_compacted": len(ids), "checkpoint": candidate.checkpoint,
         "covered_first": ids[0], "covered_last": ids[-1], "summary_visible_bytes": len(reply.content.encode("utf-8")),
         "summary_usage": reply.usage, "target_reached": fitting.estimate["input_tokens_estimate"] <=
@@ -176,17 +178,17 @@ def compact(conversation, client, tools, facts, *, cancelled, request_summary, c
     if prepared is None:
         raise CapacityError("summary_capacity", "No complete prefix and summary instruction fit; original context retained")
     ids = [unit.id for unit in candidates]
-    replacement = {}
+    staged = None
 
     def validate(reply):
+        nonlocal staged
         if cancelled():
             raise ModelError("request_cancelled", "Requirements changed during summary; original context retained")
         narrative, references = validate_summary_content(reply, ids, known, previous,
             (ref for unit in candidates for item in unit.messages
              if isinstance(item, ToolOutcome) for ref in item.references))
-        candidate, fitting = prepare_summary_candidate(base, candidates, before, client, tools, reason,
+        staged = prepare_summary_candidate(base, candidates, before, client, tools, reason,
             narrative=narrative, references=references, previous=previous, reply=reply)
-        replacement.update(candidate=candidate, prepared=fitting)
 
     if cancelled():
         raise ModelError("request_cancelled", "Summary cancelled before its single request")
@@ -195,8 +197,10 @@ def compact(conversation, client, tools, facts, *, cancelled, request_summary, c
     request_summary(prepared, validate=validate)
     if cancelled():
         raise ModelError("request_cancelled", "Requirements changed before summary commit; original context retained")
-    commit(replacement["candidate"], conversation)
-    return replacement["prepared"]
+    candidate, fitting = staged
+    commit(candidate)
+    return fitting
+
 
 def locator(item):
     """Coverage hints are appended data, never labels inserted into old messages."""

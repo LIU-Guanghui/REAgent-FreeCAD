@@ -2,11 +2,19 @@
 
 English | [简体中文](docs/README.zh-CN.md)
 
-**Reconstruct STEP parts as editable FreeCAD models with an agent.**
+**Reconstruct editable FreeCAD parts with an agent from STP, STL, engineering drawings, images, or text.**
 
-**REAgent** is an AI assistant running inside FreeCAD. It inspects the source part, chooses modeling operations, reads execution results and progressively builds a native feature history in a separate Target window.
+**REAgent** is an AI assistant running inside FreeCAD. It reads the selected input and progressively builds a native feature history in a separate Target window.
 
-The images below show the source model, the reconstructed feature tree and comparisons from multiple views.
+## Features
+
+- **/stp2cad** Reconstruct an STP file containing a single solid as a parametric model.
+- **/stl2cad** Reconstruct an STL mesh representing a single solid as a parametric model.
+- **/drawing2cad** Build a model from a fully dimensioned DXF engineering drawing.
+- **/image2cad** Reconstruct a part from reference images such as photos, screenshots, or hand-drawn sketches.
+- **/text2cad** Build a model from a text description of the required shape, dimensions, and features.
+
+The images below show the source model, the reconstructed feature tree and comparisons from multiple views for an STP reconstruction.
 
 <p align="center">
   <a href="docs/source.png"><img src="docs/source.png" alt="The source part and REAgent chat and task control panel in the Source window" width="1024"></a><br>
@@ -38,7 +46,7 @@ After installation, `<FreeCAD installation directory>/Mod/REAgent/InitGui.py` sh
 
 1. **Bind the windows:** Start two separate, visible FreeCAD processes and switch both to the REAgent workbench. Click **Source** in one and **Target** in the other. Source opens the assistant panel and inspects the source model; Target reconstructs the model.
 2. **Configure the model:** In the Source panel, open **Settings** and choose a provider such as **Anthropic**, **OpenAI**, or **DeepSeek**. Fill in **Model** and **API key**, then save. Set reasoning effort, context capacity, and output budget to match the model's capabilities. For reconstruction, the service must support streaming responses, tool calls, and image input through the corresponding protocol.
-3. **Start reconstruction:** In the Source panel, click **New task**, enter `/stp2cad`, and click **Send**. Choose a single-solid STEP/STP file and an output folder in the dialog, then click **Start**.
+3. **Start reconstruction.** In the Source panel, click **New task**, type `/`, select a command, then click **Send**. In the dialog, provide the task input, choose an output folder, and add any instructions. Click **Start**.
 4. **Observe and adjust:** Follow progress in the conversation. Open **Image** to browse the captured views and **Journal** to review the operation log. Use regular chat messages to request changes to the model.
 5. **Save the result:** In the Target window, inspect the feature tree and check that feature parameters are editable. In the Source panel, click **Save**. Confirm that the save succeeded, then click **End task**.
 
@@ -53,26 +61,14 @@ Source panel (GUI thread)
 Source worker: application/ -> agent/ <-> model/ <-> Model service
                                |
                                v
-                               stp2cad/
+                               cad/
                                |
                                +-- Local Bridge --> Source host/ (GUI thread)
                                |                    Read-only observation
                                |
                                +-- Local Bridge --> Target host/ (GUI thread)
-                                                    Native modeling and explicit saving to FCStd
+                                                    Native modeling
 ```
-
-| Module | Responsibility |
-| --- | --- |
-| `ui/` | Task panel, settings, image and log viewers, and the Source worker lifecycle. |
-| `application/` | Coordinates chat, reconstruction and user actions through `Session`. |
-| `agent/` | Manages conversation context, model requests, tool execution, pausing and context compaction. |
-| `model/` | Handles streaming requests and responses through the Messages, Responses and Chat Completions protocols. |
-| `stp2cad/` | Provides reconstruction tools and coordinates both hosts, evidence and the task journal. |
-| `host/` | Executes FreeCAD observation, native modeling transactions, recovery and saving on the GUI thread. |
-| `protocol/` | Defines the operation and data contracts shared by the reconstruction controller and hosts. |
-
-`json_values.py` and `json_schema.py` handle JSON values and validation. `knowledge/` contains the reconstruction guidance shipped with the Addon.
 
 ## License
 

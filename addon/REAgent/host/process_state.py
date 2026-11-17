@@ -14,7 +14,7 @@ class ProcessState:
         self.AUDIT_BLOCKS = {}
         # Session/document binding is process-local authorization evidence. It
         # is deliberately not persisted in FCStd or used as a model revision.
-        # Its separate source_revision field pins the observed STEP basis,
+        # Its separate source_revision field pins the observed native reference revision,
         # not document ownership or geometric equivalence.
         self.SESSION_BINDINGS = {}
         # One process-local receipt confirms an idempotent end after a lost reply.
@@ -28,8 +28,14 @@ def active_task_state():
     task = PROCESS.ACTIVE_TASK
     if task is None:
         return None
-    return {key: task.get(key) for key in ("session_id", "role", "instance_id",
-                                         "status", "document_name")}
+    value = {key: task.get(key) for key in ("session_id", "role", "instance_id",
+                                           "status", "document_name")}
+    if task["role"] == "source" and task["status"] == "active":
+        binding = PROCESS.SESSION_BINDINGS[task["session_id"]]
+        value["reference_current"] = (
+            App.listDocuments().get(task["document_name"]) is binding["document"]
+            and not binding["source_reference"].changed)
+    return value
 
 
 def assert_role_release():

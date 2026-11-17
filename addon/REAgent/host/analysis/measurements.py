@@ -7,7 +7,7 @@ from REAgent.host.numeric import vector_dict
 
 def summarize_shape(shape):
     if shape is None or shape.isNull():
-        raise ValueError("STEP source contains a null shape")
+        raise ValueError("Cannot summarize a null shape")
     bound_box = geometry_bound_box(shape)
     center = shape_center_of_mass(shape)
     return {

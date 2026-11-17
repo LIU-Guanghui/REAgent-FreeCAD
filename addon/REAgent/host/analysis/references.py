@@ -1,7 +1,5 @@
 """Core kernel-neutral geometry-reference schema and resolver."""
 
-import re
-
 _SEMANTIC_ENTITY_KINDS = {"face", "edge"}
 _SEMANTIC_AMBIGUITY_POLICIES = {"reject"}
 
@@ -162,39 +160,13 @@ def semantic_entity_ref_from_detail(
     )
 
 
-def face_names(value, face_count):
-    if value is None:
+def existing_entity_names(requested, entities):
+    """Resolve explicit, schema-validated handles against the observed shape."""
+    if requested is None:
         return None
-    if not isinstance(value, list) or not value:
-        raise ValueError("faces must be a non-empty list of FaceN names")
-    result = []
-    seen = set()
-    for name in value:
-        if not isinstance(name, str) or not re.match(r"^Face[1-9][0-9]*$", name):
-            raise ValueError("Each face must use the FaceN format")
-        index = int(name[4:])
-        if index > face_count:
-            raise KeyError("Source face not found: %s" % name)
-        if name not in seen:
-            result.append(name)
-            seen.add(name)
-    return result
-
-
-def edge_names(value, edge_count):
-    if value is None:
-        return None
-    if not isinstance(value, list) or not value:
-        raise ValueError("edges must be a non-empty list of EdgeN names")
-    result = []
-    seen = set()
-    for name in value:
-        if not isinstance(name, str) or not re.match(r"^Edge[1-9][0-9]*$", name):
-            raise ValueError("Each edge must use the EdgeN format")
-        index = int(name[4:])
-        if index > edge_count:
-            raise KeyError("Source edge not found: %s" % name)
-        if name not in seen:
-            result.append(name)
-            seen.add(name)
-    return result
+    available = {entity["name"] for entity in entities}
+    names = list(dict.fromkeys(requested))
+    for name in names:
+        if name not in available:
+            raise KeyError(f"{name} is missing from the observed geometry")
+    return names

@@ -1,4 +1,4 @@
-"""FreeCAD GUI entry point for the embedded STEP reconstruction agent."""
+"""FreeCAD GUI entry point for the embedded CAD agent."""
 
 import FreeCADGui as Gui
 from PySide import QtWidgets
@@ -145,7 +145,7 @@ class StopBridgeCommand:
 
 class REAgentWorkbench(Gui.Workbench):
     MenuText = "REAgent"
-    ToolTip = "Embedded model and native CAD loop for editable STEP reconstruction"
+    ToolTip = "Build editable FreeCAD parts from STP, STL, DXF drawings, images or text"
 
     def Initialize(self):
         commands = [

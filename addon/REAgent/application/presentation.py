@@ -1,7 +1,7 @@
-"""Detached application snapshots and read-only STEP-to-CAD presentation services."""
+"""Detached application snapshots and read-only CAD presentation services."""
 
-from REAgent.stp2cad import images, log_summary
-from REAgent.stp2cad.tools import manual_comparison_contract
+from REAgent.cad import images, log_summary
+from REAgent.cad.tools import manual_comparison_contract
 
 
 def preview_entries(prepared, value, artifacts):
@@ -30,7 +30,7 @@ def _context_info(session, facts, active, request_state, *, prepared=None):
             estimate = dict(prepared) if prepared is not None else conversation.estimate(
                 run.context_model, run.directory(), run.facts())
             used = estimate["input_tokens_estimate"]
-            bound = session.mode == "chat" or session.stp2cad_tools.bound(facts)
+            bound = session.mode == "chat" or session.cad_tools.bound(facts)
             info.update(status="available", estimate=estimate,
                 basis="prepared_request" if prepared is not None else "completed_units",
                 unit_count=len(conversation.units), summary_present=conversation.summary is not None,
@@ -46,14 +46,14 @@ def _context_info(session, facts, active, request_state, *, prepared=None):
 
 def snapshot_state(session, status, reason):
     run = session.run
-    facts = session.stp2cad_tools.controller.task_state() if session.stp2cad_tools is not None else None
+    facts = session.cad_tools.controller.task_state() if session.cad_tools is not None else None
     active = run.active
     request_state = run.requests.snapshot()
     if status in ("ready", "paused", "closed", "requesting_model"):
         run.context_info = _context_info(session, facts, active, request_state,
                                         prepared=run.estimate if status == "requesting_model" else None)
-    policy_state = session.stp2cad_tools.snapshot_state(active.policy) if active is not None and active.policy is not None else {
-        "current_command": None, "request_completed_observations": {}}
+    policy_state = session.cad_tools.snapshot_state(active.policy) if active is not None and active.policy is not None else {
+        "request_completed_observations": {}}
     return {"status": status, "reason": reason, "controller": facts,
             "action": run.action.snapshot() if run.action else None,
             "report": run.report.snapshot() if run.report is not None else None,

@@ -3,10 +3,12 @@
 import math
 import os
 
+import FreeCAD as App
+
 from REAgent.host.analysis.evidence import classify_points, geometry_evidence, semantic_regions
 from REAgent.host.analysis.measurements import summarize_shape
 from REAgent.host.analysis.predecessor import infer_virtual_predecessor_bounds
-from REAgent.host.analysis.references import edge_names, face_names, semantic_entity_ref_from_detail
+from REAgent.host.analysis.references import existing_entity_names, semantic_entity_ref_from_detail
 from REAgent.host.analysis.selection import dressup_edge_queries, dressup_edge_selectors, dressup_face_selectors, feature_semantic_refs, resolve_dressup_selection, resolve_face_selection
 from REAgent.host.analysis.topology import geometric_relations, resolve_geometry_selectors
 from REAgent.host.numeric import vector_dict
@@ -18,9 +20,9 @@ from REAgent.host.validation.comparison import residual_regions
 from REAgent.host.validation.structure import result_state
 from REAgent.host.validation.tolerance import ir_tolerance_contract, source_tolerance_contract
 from REAgent.host.file_digest import file_sha256
-from REAgent.host.workspace.model import feature_owner, feature_predecessor, owned_objects, placement_summary, predecessor_shape, resolve_result_object, result_shape, session_bodies, source_objects, target_state, workspace, copy_world_shape
+from REAgent.host.workspace.model import feature_owner, feature_predecessor, owned_objects, placement_summary, predecessor_shape, read_stp_reference, resolve_result_object, result_shape, session_bodies, source_objects, target_state, workspace, copy_world_shape
 from REAgent.host.workspace.properties import metadata, sketch_content_state
-from REAgent.host.workspace.state import source_view_revision, target_view_revision
+from REAgent.host.workspace.state import source_geometry_state, source_view_revision, target_view_revision
 
 
 def _bounded_feature_page(result, container, key, section, offset, total, rows):
@@ -51,6 +53,28 @@ def _sketch_page_row(index, row):
     return item
 
 
+def _mesh_section(source, query):
+    axis = query["axis"]
+    coordinate = query["coordinate_mm"]
+    normal = App.Vector(*(int(component == axis) for component in "xyz"))
+    tolerance = source_tolerance_contract(source)["linear_tolerance_mm"]
+    contours, = source.Mesh.crossSections([(normal * coordinate, normal)], tolerance)
+    offset = query.get("offset", 0)
+    page = []
+    for points in contours[offset:offset + 32]:
+        bounds = {}
+        for direction in "xyz":
+            coordinates = [getattr(point, direction) for point in points]
+            lower, upper = min(coordinates), max(coordinates)
+            bounds.update({direction + "_min": lower, direction + "_length": upper - lower})
+        page.append({"bounding_box_mm": bounds, "point_count": len(points),
+                     "closed": (points[0] - points[-1]).Length <= tolerance})
+    following = offset + len(page)
+    return {"axis": axis, "coordinate_mm": coordinate, "join_tolerance_mm": tolerance,
+            "contour_count": len(contours), "offset": offset,
+            "contours": page, "next_offset": following if following < len(contours) else None}
+
+
 class ObservationOperations:
     def with_observation_revision(self, document_name, result):
         """Give every successful role-local observation one top-level revision."""
@@ -64,7 +88,7 @@ class ObservationOperations:
             else:
                 document = require_document(document_name)
                 group = workspace(document)
-                revision = target_view_revision(document, group, group)
+                revision = target_view_revision(document, group)
             result["revision"] = revision
         if not isinstance(revision, str) or not revision:
             raise RuntimeError("Native observation has no string model revision")
@@ -73,8 +97,13 @@ class ObservationOperations:
 
     def analyze_source(self, params):
         document, source = source_objects(params.get("document"))
-        shape = source.Shape
-        summary = summarize_shape(shape)
+        if source.TypeId == "Mesh::Feature":
+            result = {"document": document.Name, "source": source.Name, "units": "mm",
+                      "mesh": source_geometry_state(source)}
+            if "mesh_section" in params:
+                result["mesh_section"] = _mesh_section(source, params["mesh_section"])
+            return result
+        summary = summarize_shape(source.Shape)
         tolerance_contract = source_tolerance_contract(source)
         tolerance = tolerance_contract["linear_tolerance_mm"]
 
@@ -122,7 +151,7 @@ class ObservationOperations:
 
 
     def observe_feature(self, params):
-        document, _source, group, _config = target_state(params["document"])
+        document, group = target_state(params["document"])
         obj = document.getObject(params["object"])
         if obj is None or obj.TypeId not in EDIT_FEATURE_TYPES:
             raise ValueError("Feature observation requires an editable native Target object")
@@ -186,13 +215,8 @@ class ObservationOperations:
             owner = None
             target_scope = None
         elif PROCESS.INSTANCE_ROLE == "target":
-            (
-                document,
-                _source,
-                target_body,
-                reconstruction_ir,
-            ) = target_state(params.get("document"))
-            tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+            document, target_body = target_state(params.get("document"))
+            tolerance_contract = ir_tolerance_contract(target_body)
             tip = resolve_result_object(target_body)
             requested_name = params.get("object")
             edit_object = params.get("edit_object")
@@ -274,7 +298,7 @@ class ObservationOperations:
                     "geometry_unavailable_reason": "object_has_no_non_null_shape",
                     "writable_references_available": False, "available_fields": [],
                     "faces": [], "edges": [],
-                    "model_revision": target_view_revision(document, target_body, reconstruction_ir)}
+                    "model_revision": target_view_revision(document, target_body)}
         allowed_sections = {"wires", "topology", "stable_selection", "repetition", "relations", "semantic_regions"}
         if not isinstance(include, list) or any(not isinstance(key, str) or key not in allowed_sections for key in include):
             raise ValueError("include must list supported global sections")
@@ -293,39 +317,20 @@ class ObservationOperations:
             evidence = self._without_writable_references(evidence)
         all_faces = evidence["faces"]
         all_edges = evidence["edges"]
-        faces_supplied = "faces" in params
-        edges_supplied = "edges" in params
-        if faces_supplied and params.get("faces") is None:
-            raise ValueError("faces must be an array when supplied")
-        if edges_supplied and params.get("edges") is None:
-            raise ValueError("edges must be an array when supplied")
-        requested = [] if params.get("faces") == [] else face_names(params.get("faces"), len(all_faces))
-        requested_edges = [] if params.get("edges") == [] else edge_names(params.get("edges"), len(all_edges))
         resolved_selectors = resolve_geometry_selectors(
-            None if params.get("selectors") == [] else params.get("selectors"), evidence["stable_selection"]
+            params.get("selectors"), evidence["stable_selection"]
         )
-        selector_faces = set(resolved_selectors["face_names"])
-        selector_edges = set(resolved_selectors["edge_names"])
         selector_wires = set(resolved_selectors["wire_names"])
-        selectors_supplied = bool(params.get("selectors"))
-        # Keep omission, an explicit empty list, and an explicit subset
-        # distinguishable.  In particular, ``faces=[]`` means that this
-        # request did not ask for face records, even when edge selectors are
-        # present in the same query.
-        selected_names = None
-        if faces_supplied:
-            selected_names = set(requested or [])
-            if params.get("faces") != [] and selectors_supplied:
-                selected_names.update(selector_faces)
-        elif selectors_supplied:
-            selected_names = set(selector_faces)
-        selected_edge_names = None
-        if edges_supplied:
-            selected_edge_names = set(requested_edges or [])
-            if params.get("edges") != [] and selectors_supplied:
-                selected_edge_names.update(selector_edges)
-        elif selectors_supplied:
-            selected_edge_names = set(selector_edges)
+        default_all = not {"faces", "edges", "selectors"}.intersection(params)
+
+        def selected(key, entities, matches):
+            requested = params.get(key)
+            if default_all or requested == "all":
+                return None
+            return set(existing_entity_names(requested, entities) or ()).union(matches)
+
+        selected_names = selected("faces", all_faces, resolved_selectors["face_names"])
+        selected_edge_names = selected("edges", all_edges, resolved_selectors["edge_names"])
         face_subset = [item for item in all_faces if selected_names is None or item["name"] in selected_names]
         edge_subset = [item for item in all_edges if selected_edge_names is None or item["name"] in selected_edge_names]
         available_fields = {"owning_feature"} | ({"semantic_ref"} if not observation_only else set())
@@ -376,7 +381,7 @@ class ObservationOperations:
             "geometry_available": True,
             "writable_references_available": writable_refs,
             "source": source.Name if role == "source" else None,
-            "target_workspace": "REAgentWorkspace" if role == "target" else None,
+            "target_workspace": target_body.Name if role == "target" else None,
             "owning_feature": owner,
             "tolerance_mm": tolerance,
             "tolerance_contract": tolerance_contract,
@@ -395,10 +400,7 @@ class ObservationOperations:
                         if offset + limit < len(face_subset)
                         else None
                     ),
-                    "requested": bool(
-                        (faces_supplied and params.get("faces") != [])
-                        or (not faces_supplied and (not selectors_supplied or selector_faces))
-                    ),
+                    "requested": selected_names is None or bool(selected_names),
                     "selection_mode": (
                         "none"
                         if selected_names is not None and not selected_names
@@ -417,10 +419,7 @@ class ObservationOperations:
                         if offset + limit < len(edge_subset)
                         else None
                     ),
-                    "requested": bool(
-                        (edges_supplied and params.get("edges") != [])
-                        or (not edges_supplied and (not selectors_supplied or selector_edges))
-                    ),
+                    "requested": selected_edge_names is None or bool(selected_edge_names),
                     "selection_mode": (
                         "none"
                         if selected_edge_names is not None and not selected_edge_names
@@ -476,12 +475,7 @@ class ObservationOperations:
                 "Unknown selection resolution parameters: %s"
                 % ", ".join(unknown)
             )
-        (
-            document,
-            _source,
-            target_body,
-            reconstruction_ir,
-        ) = target_state(params.get("document"))
+        document, target_body = target_state(params.get("document"))
         body_name = params.get("body_name", target_body.Name)
         body = document.getObject(body_name)
         if body not in session_bodies(target_body):
@@ -511,7 +505,7 @@ class ObservationOperations:
                    or ref.get("fallback") is not None for ref in face_refs):
                 raise ValueError("Face references require the current Tip and no fallback")
             nearest_limit = params.get("nearest_limit", 3)
-            tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+            tolerance_contract = ir_tolerance_contract(target_body)
             evidence = geometry_evidence(shape, tolerance_contract)
             report = resolve_face_selection(
                 evidence, {"face_selectors": selectors, "face_refs": face_refs},
@@ -560,7 +554,7 @@ class ObservationOperations:
                 "edge_refs, or edge_scope=all"
             )
         nearest_limit = params.get("nearest_limit", 3)
-        tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+        tolerance_contract = ir_tolerance_contract(target_body)
         evidence = geometry_evidence(shape, tolerance_contract)
         if any(ref["owner"].get("object_name") != tip.Name for ref in edge_refs):
             raise ValueError("Selection references must name the current Body Tip")
@@ -625,10 +619,10 @@ class ObservationOperations:
         }
         result = infer_virtual_predecessor_bounds(
             analysis,
-            face_names=face_names(params.get("faces"), len(evidence["faces"])),
+            face_names=existing_entity_names(params.get("faces"), evidence["faces"]),
             selectors=params.get("selectors"),
-            support_face_names=face_names(
-                params.get("support_faces"), len(evidence["faces"])
+            support_face_names=existing_entity_names(
+                params.get("support_faces"), evidence["faces"]
             ),
             radius_mm=params.get("radius_mm"),
             tolerance_mm=tolerance,
@@ -659,13 +653,7 @@ class ObservationOperations:
             shape = predecessor_shape(target_body)
             if shape is None or shape.isNull():
                 raise ValueError("Target Body has no Tip to inspect")
-            (
-                _document_state,
-                _source,
-                _target_body,
-                reconstruction_ir,
-            ) = target_state(document.Name)
-            tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+            tolerance_contract = ir_tolerance_contract(target_body)
             role = "target"
         else:
             raise ValueError("Semantic regions require Source or Target role")
@@ -706,13 +694,8 @@ class ObservationOperations:
             role = "SourceOriginal"
             evidence = geometry_evidence(shape, tolerance_contract)
         elif PROCESS.INSTANCE_ROLE == "target":
-            (
-                document,
-                _source,
-                target_body,
-                reconstruction_ir,
-            ) = target_state(params.get("document"))
-            tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+            document, target_body = target_state(params.get("document"))
+            tolerance_contract = ir_tolerance_contract(target_body)
             shape = result_shape(target_body)
             if shape is None or shape.isNull():
                 raise ValueError("Target Body has no Tip to classify")
@@ -734,18 +717,17 @@ class ObservationOperations:
     def get_reconstruction_residuals(self, params):
         """Run two explicit directional cuts with per-direction availability."""
 
-        document, source, target_body, reconstruction_ir = target_state(
-            params.get("document")
-        )
+        document, target_body = target_state(params.get("document"))
+        source = read_stp_reference(document, target_body, params["session_id"])
         target_shape = result_shape(target_body)
         if target_shape is None or target_shape.isNull():
             raise ValueError("Target Body has no Tip to compare")
-        tolerance_contract = ir_tolerance_contract(reconstruction_ir)
+        tolerance_contract = ir_tolerance_contract(target_body)
         result = residual_regions(source.Shape, target_shape, tolerance_contract)
         result.update(
             {
                 "document": document.Name,
-                "revision": target_view_revision(document, target_body, reconstruction_ir),
+                "revision": target_view_revision(document, target_body),
                 "source_model_revision": result.get("source_model_revision"),
                 "tolerance_mm": tolerance_contract["linear_tolerance_mm"],
             }
@@ -755,19 +737,21 @@ class ObservationOperations:
 
     def get_target_state(self, params):
         document = require_document(params.get("document"))
-        group = config = workspace(document)
+        group = workspace(document)
         binding = next((item for item in PROCESS.SESSION_BINDINGS.values()
                         if item["document"] is document and item["role"] == "target"), None)
         bound_revision = binding["source_revision"] if binding else None
         source_basis = {"bound_revision": bound_revision, "current_file_revision": None,
                         "current_file_revision_basis": "file_sha256", "available": False,
                         "matches_bound": None, "unavailable_reason": None}
-        try:
-            current = file_sha256(config.SourceFile)
-            source_basis.update(current_file_revision=current, available=True,
-                                matches_bound=current == bound_revision if bound_revision else None)
-        except (OSError, ValueError, TypeError) as exc:
-            source_basis["unavailable_reason"] = str(exc)[:300]
+        source_path = getattr(group, "SourceFile", None) or None
+        if source_path:
+            try:
+                current = file_sha256(source_path)
+                source_basis.update(current_file_revision=current, available=True,
+                                    matches_bound=current == bound_revision if bound_revision else None)
+            except (OSError, ValueError, TypeError) as exc:
+                source_basis["unavailable_reason"] = str(exc)[:300]
         result = resolve_result_object(group)
         block = PROCESS.AUDIT_BLOCKS.get(document.Name)
         try:
@@ -779,14 +763,14 @@ class ObservationOperations:
             "result": result.Name if result is not None else None,
             "result_body": group.Name,
             "model_state": model_state,
-            "revision": target_view_revision(document, group, config),
+            "revision": target_view_revision(document, group),
             "tip": group.Tip.Name if group.Tip else None,
             "checkpoint_path": document.FileName or None,
             "artifacts": dict(binding["artifacts"]) if binding else None,
             "modified_status": "unavailable",
-            "source_path": config.SourceFile or None,
+            "source_path": source_path,
             "source_basis": source_basis,
-            "tolerance_contract": ir_tolerance_contract(config),
+            "tolerance_contract": ir_tolerance_contract(group),
             "active_operation": PROCESS.ACTIVE_OPERATION,
             "audit_restoration_block": block[1] if block and block[0] is document else None,
             "undo": list(document.UndoNames), "redo": list(document.RedoNames),
@@ -810,10 +794,9 @@ class ObservationOperations:
 
 
     def observe_target_global(self, params):
-        document, _source, target_body, reconstruction_ir = target_state(
-            params.get("document")
-        )
+        document, target_body = target_state(params.get("document"))
         shape = result_shape(target_body)
+        objects = owned_objects(target_body)
         shape_summary = (
             summarize_shape(shape)
             if shape is not None and not shape.isNull()
@@ -822,17 +805,17 @@ class ObservationOperations:
         return {
             "document": document.Name,
             "role": "target",
-            "revision": target_view_revision(document, target_body, reconstruction_ir),
+            "target_workspace": target_body.Name,
+            "revision": target_view_revision(document, target_body),
             "shape": shape_summary,
-            "object_count": len(owned_objects(target_body)),
+            "object_count": len(objects),
             "objects": [
                 {
                     "name": obj.Name,
                     "label": obj.Label,
                     "type_id": obj.TypeId,
                 }
-                for obj in document.Objects
-                if obj is not reconstruction_ir
+                for obj in objects
             ],
         }
 

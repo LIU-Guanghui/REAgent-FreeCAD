@@ -9,28 +9,28 @@ Relate direction to the profile plane and material side. Distinguish the cylindr
 
 An owned circle-only profile and prior solid support this finite angled-tip countersunk Hole; establish entry and material direction.
 
-Use this Python dictionary as a parameter template for the named native command. Bind every variable below to actual returned values and measurements, then submit the discovered command and this dictionary through agent_execute_command. Discover its exact schema on an earlier completed request. Choose other modes from current capabilities.
-
-Native command: `PartDesign_Hole`
+Bind the variables to actual readbacks and measurements. Read the command schema with `agent_get_capabilities` and pass this dictionary to `agent_execute_command`.
 
 ```python
 # Bind all variables to actual returned values and measurements before use.
 arguments = {
-    "body_name": body_name,
-    "intent": intent,
-    "evidence": [source_evidence_id, target_evidence_id],
-    "expected_revision": target_revision,
-    "feature_name": feature_name,
-    "sketch_name": profile_sketch_name,
-    "diameter_mm": hole_diameter_mm,
-    "depth_mode": "dimension",
-    "depth_mm": hole_depth_mm,
-    "drill_point": "angled",
-    "drill_point_angle_deg": drill_angle_deg,
-    "mouth_mode": "countersink",
-    "mouth_diameter_mm": mouth_diameter_mm,
-    "mouth_angle_deg": mouth_angle_deg,
-    "reversed": reverse_direction,
+    "command": "PartDesign_Hole",
+    "arguments": {
+        "body_name": body_name,
+        "intent": intent,
+        "evidence": [source_evidence_id, target_evidence_id],
+        "feature_name": feature_name,
+        "sketch_name": profile_sketch_name,
+        "diameter_mm": hole_diameter_mm,
+        "depth_mode": "dimension",
+        "depth_mm": hole_depth_mm,
+        "drill_point": "angled",
+        "drill_point_angle_deg": drill_angle_deg,
+        "mouth_mode": "countersink",
+        "mouth_diameter_mm": mouth_diameter_mm,
+        "mouth_angle_deg": mouth_angle_deg,
+        "reversed": reverse_direction,
+    },
 }
 ```
 
@@ -38,7 +38,6 @@ arguments = {
 - `intent`: Explain this operation's measured geometric purpose.
 - `source_evidence_id`: Source evidence actually issued in this session.
 - `target_evidence_id`: Current applicable Target evidence actually issued in this session.
-- `target_revision`: Current Target revision matching the referenced Target observation.
 - `feature_name`: Choose an unused native name for this new feature.
 - `profile_sketch_name`: Actual same-Body closed profile Sketch name.
 - `hole_diameter_mm`: Measured shaft diameter, mm.

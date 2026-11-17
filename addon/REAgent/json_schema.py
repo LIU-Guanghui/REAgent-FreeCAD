@@ -146,7 +146,7 @@ def validate_input_schema(value, schema, *, path="request"):
             props = spec.get("properties", {})
             if spec.get("additionalProperties") is False:
                 for key in sorted(set(item) - set(props)):
-                    fail(loc + "." + key, "unknown field")
+                    fail(loc + "." + key, f"unknown field. Allowed fields are {list(props)}")
             for key in spec.get("required", []):
                 if key not in item:
                     fail(loc + "." + key, "required")
@@ -160,8 +160,12 @@ def validate_input_schema(value, schema, *, path="request"):
                 for i, child in enumerate(item):
                     visit(child, spec["items"], loc + "[%d]" % i)
         elif isinstance(item, str):
-            if len(item) < spec.get("minLength", 0) or len(item) > spec.get("maxLength", len(item)):
-                fail(loc, "string length outside supported range")
+            length = len(item)
+            minimum = spec.get("minLength", 0)
+            maximum = spec.get("maxLength", math.inf)
+            if not minimum <= length <= maximum:
+                expected = f"at least {minimum}" if maximum == math.inf else f"{minimum} to {maximum}"
+                fail(loc, f"has {length} characters, expected {expected}")
             if "pattern" in spec and not re.search(spec["pattern"], item): fail(loc, "invalid format")
         elif isinstance(item, (int, float)) and not isinstance(item, bool):
             if isinstance(item, float) and not math.isfinite(item): fail(loc, "must be finite")

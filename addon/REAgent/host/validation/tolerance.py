@@ -25,14 +25,12 @@ def resolve_tolerance_contract(params, source_summary):
     if angular_tolerance > 180:
         raise ValueError("angular_tolerance_deg must not exceed 180")
 
-    box = source_summary["bounding_box_mm"]
-    characteristic_length = math.sqrt(
-        box["x_length"] ** 2
-        + box["y_length"] ** 2
-        + box["z_length"] ** 2
-    )
-    source_volume = float(source_summary["volume_mm3"])
-    source_area = float(source_summary["area_mm2"])
+    characteristic_length, source_volume, source_area = 0.0, 0.0, 0.0
+    if source_summary is not None:
+        box = source_summary["bounding_box_mm"]
+        characteristic_length = math.sqrt(sum(box[axis + "_length"] ** 2 for axis in "xyz"))
+        source_volume = float(source_summary["volume_mm3"])
+        source_area = float(source_summary["area_mm2"])
     numeric_linear = max(1e-7, characteristic_length * 1e-12)
     numeric_volume = max(1e-7, source_volume * 1e-12)
     numeric_area = max(1e-7, source_area * 1e-12)

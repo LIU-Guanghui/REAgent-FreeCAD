@@ -6,6 +6,7 @@ commands supply their own bounded preflight and native operation."""
 import uuid
 
 from REAgent.host.analysis.measurements import summarize_shape, shape_summary_consistent
+from REAgent.host.file_digest import file_sha256
 from REAgent.host.process_state import operation_stage, stamp_failure, PROCESS
 from REAgent.host.validation.structure import result_state
 from REAgent.host.view.presentation import present_result, presentation_snapshot, restore_presentation
@@ -158,16 +159,16 @@ class ExecutorOperations:
             raise ValueError("A dedicated native command and callbacks are required")
         if not isinstance(params.get("evidence"), list) or not params["evidence"]:
             raise ValueError("Native command requires observation evidence")
-        document, source, group, config = target_state(params["document"])
+        document, group = target_state(params["document"])
         binding = PROCESS.SESSION_BINDINGS.get(params["session_id"])
         if (binding is None or binding.get("document") is not document
                 or binding.get("role") != "target"):
             raise ValueError("Native command requires the exact bound Target session")
-        if source.SourceSHA256 != binding["source_revision"]:
-            raise ValueError("Source STEP revision differs from this session; start a new session for the chosen source")
+        if binding["source_revision"] and file_sha256(group.SourceFile) != binding["source_revision"]:
+            raise ValueError("Source file revision differs from this session; start a new task for the chosen source")
         self._native_store()
         transaction_ready(document)
-        revision_before = target_view_revision(document, group, config)
+        revision_before = target_view_revision(document, group)
         if params.get("expected_revision") != revision_before:
             raise ValueError("Target revision changed; re-observe before writing")
         before = facts(document, group)
@@ -183,7 +184,7 @@ class ExecutorOperations:
                              and list(document.UndoNames) == undo_before
                              and list(document.RedoNames) == redo_before
                              and not document.HasPendingTransaction
-                             and target_view_revision(document, group, config) == revision_before)
+                             and target_view_revision(document, group) == revision_before)
             except Exception:
                 unchanged = False
             if not unchanged:
@@ -191,7 +192,7 @@ class ExecutorOperations:
             raise
         if (facts(document, group) != before or list(document.UndoNames) != undo_before
                 or list(document.RedoNames) != redo_before or document.HasPendingTransaction
-                or target_view_revision(document, group, config) != revision_before):
+                or target_view_revision(document, group) != revision_before):
             raise block_document_writes(document, "Native command preflight changed document state")
         if edit is not None and not edit.has_changes:
             state = result_state(group)
@@ -218,11 +219,11 @@ class ExecutorOperations:
                 _check_body_isolation(group, before, params["body_name"])
             else:
                 edit.check_scope(document, group, before)
-            revision_after_mutation = target_view_revision(document, group, config)
+            revision_after_mutation = target_view_revision(document, group)
             observed = readback(document, group, created, state)
             if not isinstance(observed, dict):
                 raise ValueError("Native readback must return bounded command facts")
-            if target_view_revision(document, group, config) != revision_after_mutation:
+            if target_view_revision(document, group) != revision_after_mutation:
                 raise RuntimeError("Native readback changed persistent model state")
             after_readback = result_state(group)
             bodies_after_readback = _body_shape_measurements(group)
@@ -241,12 +242,12 @@ class ExecutorOperations:
             presentation_after = presentation_snapshot(owned_objects(group))
             state = _finish_presentation(document, group, state, bodies_after_readback,
                                          tips_after_readback, preserve_history=False)
-            revision_final = target_view_revision(document, group, config)
+            revision_final = target_view_revision(document, group)
             if revision_final != revision_after_mutation:
                 raise RuntimeError("Final presentation changed persistent modeling properties")
             observed = readback(document, group, created, state)
             if (not isinstance(observed, dict)
-                    or target_view_revision(document, group, config) != revision_final):
+                    or target_view_revision(document, group) != revision_final):
                 raise RuntimeError("Final native readback changed persistent model state")
             if "body_shape" in observed and (observed.get("body") not in bodies_after_readback
                     or not shape_summary_consistent(
@@ -262,7 +263,7 @@ class ExecutorOperations:
             else:
                 edit.check_references(document)
                 edit.check_scope(document, group, before)
-            if target_view_revision(document, group, config) != revision_final:
+            if target_view_revision(document, group) != revision_final:
                 raise RuntimeError("Final precommit checks changed persistent model state")
             operation_stage("native_commit", mutating=True)
             document.commitTransaction()
@@ -286,7 +287,7 @@ class ExecutorOperations:
                 self._native_history.pop((document.Name, name), None)
             operation_stage("result_check")
             committed_state = result_state(group)
-            committed_revision = target_view_revision(document, group, config)
+            committed_revision = target_view_revision(document, group)
             if (committed_revision != revision_final
                     or committed_state["state"] != state["state"]
                     or not shape_summary_consistent(state["result_geometry"], committed_state["result_geometry"])
@@ -295,7 +296,7 @@ class ExecutorOperations:
                 raise RuntimeError("Committed command differs from final native readback")
             observed_committed = readback(document, group, created, committed_state)
             if (not isinstance(observed_committed, dict)
-                    or target_view_revision(document, group, config) != committed_revision
+                    or target_view_revision(document, group) != committed_revision
                     or presentation_snapshot(owned_objects(group)) != presentation_after):
                 raise RuntimeError("Committed command readback changed model or presentation")
             result_state(group)
@@ -339,7 +340,7 @@ class ExecutorOperations:
                        for obj in owned_objects(group)):
                     recompute_preserving_history(document)
                 verify_restoration(document, group, before, changes, undo_before)
-                if edit is not None and (target_view_revision(document, group, config) != revision_before
+                if edit is not None and (target_view_revision(document, group) != revision_before
                         or geometry_digest(owned_geometry_state(group)) != edit.geometry_before):
                     raise RuntimeError("Edited properties, Sketch contents or downstream geometry did not restore")
                 redo_after = list(document.RedoNames)
@@ -368,9 +369,9 @@ class ExecutorOperations:
         return self._native_history
 
     def _native_context(self, params):
-        document, source, group, _config = target_state(params["document"])
+        document, group = target_state(params["document"])
         self._native_store()
-        return document, source, group
+        return document, group
 
     def _new_transaction(self, document, session_id):
         transaction_ready(document)
@@ -391,7 +392,7 @@ class ExecutorOperations:
         return row.get("document") is document and row.get("session_id") == session_id
 
     def _history(self, params, redo):
-        document, source, group = self._native_context(params)
+        document, group = self._native_context(params)
         transaction_ready(document)
         stack = list(document.RedoNames if redo else document.UndoNames)
         expected = params["transaction"]
@@ -400,8 +401,11 @@ class ExecutorOperations:
         owned = top is not None and self._owns(document, session_id, top)
         if top != expected or not owned:
             known_top = top is not None and self._native_history.get((document.Name, top), {}).get("document") is document
+            stack_name = "redo" if redo else "undo"
+            message = (f"Use the full native {stack_name} transaction name: {top}" if owned else
+                       f"No transaction owned by this session is at the native {stack_name} stack top")
             raise preflight_error(
-                "Requested transaction is unavailable at the native " + ("redo" if redo else "undo") + " stack top",
+                message,
                 "empty_stack" if top is None else "stack_top_mismatch" if top != expected else "transaction_not_owned",
                 expected=expected[:160], top=top[:160] if top else None,
                 top_ownership="session" if owned else "other" if known_top else "unknown",
@@ -409,7 +413,7 @@ class ExecutorOperations:
         history = self._native_history[(document.Name, expected)]
         if "edit_revisions" in history:
             current = 0 if redo else 1
-            if (target_view_revision(document, group, group) != history["edit_revisions"][current]
+            if (target_view_revision(document, group) != history["edit_revisions"][current]
                     or geometry_digest(owned_geometry_state(group)) != history["edit_shapes"][current]):
                 raise preflight_error("Current model differs from the recorded edit history boundary",
                                        "history_state_changed", expected=expected[:160], top=top[:160],
@@ -440,7 +444,7 @@ class ExecutorOperations:
             detail["history_moved"] = True
             detail["step"] = "recompute"
             detail["recomputed_objects"] = recompute_preserving_history(document)
-            revision_before_display = target_view_revision(document, group, group)
+            revision_before_display = target_view_revision(document, group)
             state_before_display = result_state(group)
             bodies_before_display = _body_shape_measurements(group)
             tips_before_display = {body.Name: body.Tip.Name if body.Tip else None
@@ -465,7 +469,7 @@ class ExecutorOperations:
             detail["step"] = "history_postcheck"
             if document.HasPendingTransaction or list(document.UndoNames) != expected_undo or list(document.RedoNames) != expected_redo:
                 raise RuntimeError("History postconditions changed during result checking")
-            if target_view_revision(document, group, group) != revision_before_display:
+            if target_view_revision(document, group) != revision_before_display:
                 raise RuntimeError("History presentation changed persistent modeling properties")
             if "edit_revisions" in presentation:
                 index = int(redo)

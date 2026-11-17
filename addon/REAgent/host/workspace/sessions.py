@@ -6,22 +6,27 @@ import FreeCAD as App
 
 from REAgent.host.analysis.measurements import summarize_shape
 from REAgent.host.features.support.construction import create_body
+from REAgent.host.file_digest import file_sha256
 from REAgent.host.workspace.properties import add_read_only_string
 from REAgent.host.process_state import operation_stage, PROCESS
 from REAgent.host.workspace.properties import valid_name
 from REAgent.protocol.artifacts import ARTIFACT_NUMBER_LIMIT, artifact_basename, artifact_filename
+from REAgent.protocol.definitions import NATIVE_SOURCE_EXTENSIONS
 from REAgent.host.validation.tolerance import ir_tolerance_contract, resolve_tolerance_contract
 from REAgent.host.view.presentation import style_source_document
-from REAgent.host.workspace.model import compact_json, step_source_path, workspace, read_source_snapshot
+from REAgent.host.workspace.model import compact_json, native_source_path, read_mesh, read_source_snapshot, workspace
 from REAgent.host.workspace.persistence import existing_fcstd_path, same_file_path
+from REAgent.host.workspace.state import NativeSourceReference
 
 
 def _session_artifact_identity(params, source_path):
     artifacts = dict(params["artifacts"])
-    stem = os.path.splitext(os.path.basename(source_path))[0]
-    if artifacts["source_stem"] != stem or artifacts["basename"] not in {
+    stem = artifacts["stem"]
+    if source_path and stem != os.path.splitext(os.path.basename(source_path))[0]:
+        raise ValueError("Artifact stem differs from the native reference filename")
+    if artifacts["basename"] not in {
             artifact_basename(stem, number) for number in range(ARTIFACT_NUMBER_LIMIT + 1)}:
-        raise ValueError("Artifact identity does not match the explicit STEP source")
+        raise ValueError("Artifact basename differs from the shared naming contract")
     directory = artifacts["output_dir"]
     if not os.path.isabs(directory) or not os.path.isdir(directory):
         raise ValueError("Bound output directory must already exist")
@@ -34,6 +39,44 @@ def _session_artifact_identity(params, source_path):
     return artifacts
 
 
+def _read_drawing(document, path, revision):
+    import ImportGui
+    from importDXF import DxfDraftPostProcessor
+
+    source = document.addObject("App::DocumentObjectGroup", "Source")
+    option_path = "User parameter:BaseApp/Preferences/Mod/REAgent"
+    parent = App.ParamGet(option_path)
+    options = parent.GetGroup("DxfImport")
+    individual_shapes = 2
+    try:
+        options.SetInt("DxfImportMode", individual_shapes)
+        options.SetBool("dxftext", True)
+        options.SetBool("dxflayout", True)
+        stats = ImportGui.readDXF(path, document.Name, False, option_path + "/DxfImport")
+    finally:
+        parent.RemGroup("DxfImport")
+    if file_sha256(path) != revision:
+        raise ValueError("DXF changed during import")
+    if not stats["totalEntitiesCreated"]:
+        raise ValueError("DXF must contain a visible engineering drawing")
+    # FreeCAD reconstructs DIMENSION entities from points and drops the original callout.
+    if stats["entityCounts"].get("DIMENSION"):
+        raise ValueError("DXF contains DIMENSION entities. Export the full sheet with dimensions and tolerances as geometry.")
+    imported = set(document.Objects) - {source}
+    DxfDraftPostProcessor(document, imported, individual_shapes).run()
+    source.Group = [obj for obj in document.Objects if obj is not source and not obj.InList]
+    for obj in document.Objects:
+        view = obj.ViewObject
+        if hasattr(view, "Selectable"):
+            view.Selectable = False
+        for container in (obj, view):
+            if container is not None:
+                for name in container.PropertiesList:
+                    if not container.getEditorMode(name):
+                        container.setEditorMode(name, 1)
+    return source
+
+
 def _bind_session(session_id, document, source_revision, artifacts):
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("start_session requires a session_id binding")
@@ -42,7 +85,7 @@ def _bind_session(session_id, document, source_revision, artifacts):
     task = PROCESS.ACTIVE_TASK
     if task is None or task["session_id"] != session_id or task["document"] is not document:
         raise _binding_error("The starting task does not own this actual Document")
-    PROCESS.SESSION_BINDINGS[session_id] = {
+    binding = {
         "session_id": session_id,
         "role": PROCESS.INSTANCE_ROLE,
         "instance_id": PROCESS.INSTANCE_ID,
@@ -51,6 +94,11 @@ def _bind_session(session_id, document, source_revision, artifacts):
         "source_revision": source_revision,
         "artifacts": dict(artifacts), "saved_path": None,
     }
+    if PROCESS.INSTANCE_ROLE == "source":
+        reference = NativeSourceReference(document)
+        App.addDocumentObserver(reference)
+        binding["source_reference"] = reference
+    PROCESS.SESSION_BINDINGS[session_id] = binding
     task["status"] = "active"
 
 
@@ -78,6 +126,12 @@ def _cleanup_session_metadata(owner, session_id, binding):
                 del history[key]
             except Exception as exc:
                 errors.append("history_cleanup: " + str(exc)[:200])
+    reference = binding.get("source_reference")
+    if not errors and reference is not None:
+        try:
+            App.removeDocumentObserver(reference)
+        except Exception as exc:
+            errors.append("source_observer_cleanup: " + str(exc)[:200])
     return {
         "status": "cleaned" if not errors else "failed",
         "errors": errors[:8],
@@ -173,12 +227,20 @@ class SessionOperations:
             suffix = "_%d" % number
             name = base[:100 - len(suffix)] + suffix
             number += 1
-        source_path = step_source_path(params["source_path"])
+        source_path = params.get("source_path")
+        source_kind = None
+        if source_path:
+            extensions = tuple(suffix for suffixes in NATIVE_SOURCE_EXTENSIONS.values() for suffix in suffixes)
+            source_path = native_source_path(source_path, extensions)
+            suffix = os.path.splitext(source_path)[1].lower()
+            source_kind = next(kind for kind, suffixes in NATIVE_SOURCE_EXTENSIONS.items() if suffix in suffixes)
+        elif role == "source":
+            raise ValueError("A Source workspace requires STP, STL or DXF")
         artifacts = _session_artifact_identity(params, source_path)
         resume = params.get("resume_path")
         if resume:
-            if role != "target":
-                raise ValueError("Only Target can resume a workspace")
+            if role != "target" or source_kind != "stp":
+                raise ValueError("Resume requires a Target and its explicit STP source")
             path = existing_fcstd_path(resume)
             if any(same_file_path(doc.FileName, path) for doc in App.listDocuments().values()):
                 raise ValueError("Checkpoint is already open in this process")
@@ -187,7 +249,7 @@ class SessionOperations:
             _attach_starting_document(document)
             try:
                 group = workspace(document)
-                if not same_file_path(group.SourceFile, source_path):
+                if not same_file_path(getattr(group, "SourceFile", None), source_path):
                     raise ValueError("Checkpoint SourceFile differs from explicit source_path")
                 snapshot = read_source_snapshot(group.SourceFile)
                 tolerance = ir_tolerance_contract(group)
@@ -202,39 +264,55 @@ class SessionOperations:
             except Exception:
                 App.closeDocument(document.Name)
                 raise
-        snapshot = read_source_snapshot(source_path)
-        shape = snapshot.Shape
-        summary = summarize_shape(shape)
-        if not summary["is_valid"] or summary["solid_count"] != 1:
-            raise ValueError("Source must contain one valid solid")
+        shape = mesh = summary = revision = revision_basis = None
+        if source_kind == "stp":
+            snapshot = read_source_snapshot(source_path)
+            shape = snapshot.Shape
+            summary = summarize_shape(shape)
+            if not summary["is_valid"] or summary["solid_count"] != 1:
+                raise ValueError("Source must contain one valid solid")
+            revision, revision_basis = snapshot.SourceSHA256, "step_sha256"
+        elif source_path:
+            revision, revision_basis = file_sha256(source_path), "file_sha256"
+            if role == "source" and source_kind == "mesh":
+                mesh = read_mesh(source_path, revision)
         tolerance = resolve_tolerance_contract(params, summary)
         operation_stage("native_execution", mutating=True)
         document = App.newDocument(name)
         _attach_starting_document(document)
         try:
             App.setActiveDocument(document.Name)
+            source = (_read_drawing(document, source_path, revision)
+                      if role == "source" and source_kind == "drawing" else None)
             # This is a newly created, REAgent-owned document; enable its native history.
             document.UndoMode = 1
             document.openTransaction("Initialize REAgent workspace")
             if role == "source":
-                source = document.addObject("Part::Feature", "Source")
-                source.Shape = shape
-                for key, value in (("SourceFile", source_path), ("SourceSHA256", snapshot.SourceSHA256),
+                if source_kind == "stp":
+                    source = document.addObject("Part::Feature", "Source")
+                    source.Shape = shape
+                    source.setEditorMode("Shape", 1)
+                elif source_kind == "mesh":
+                    source = document.addObject("Mesh::Feature", "Source")
+                    source.Mesh = mesh
+                    source.setEditorMode("Mesh", 1)
+                for key, value in (("SourceFile", source_path), ("SourceSHA256", revision),
                                    ("ToleranceContractJSON", compact_json(tolerance))):
                     add_read_only_string(source, key, value, "Source")
-                source.setEditorMode("Shape", 1)
-                source.setEditorMode("Placement", 1)
-                style_source_document(source)
+                if source_kind != "drawing":
+                    source.setEditorMode("Placement", 1)
             else:
                 group = create_body(document, "REAgentWorkspace", main=True)
-                for key, value in (("SourceFile", source_path),
-                                   ("ToleranceContractJSON", compact_json(tolerance))):
-                    add_read_only_string(group, key, value, "REAgent")
+                if source_path:
+                    add_read_only_string(group, "SourceFile", source_path, "REAgent")
+                add_read_only_string(group, "ToleranceContractJSON", compact_json(tolerance), "REAgent")
             document.recompute()
+            if role == "source":
+                style_source_document(source)
             document.commitTransaction()
-            _bind_session(session_id, document, snapshot.SourceSHA256, artifacts)
+            _bind_session(session_id, document, revision, artifacts)
             return {"document": document.Name, "source_path": source_path,
-                    "source_revision": snapshot.SourceSHA256, "source_revision_basis": "step_sha256",
+                    "source_revision": revision, "source_revision_basis": revision_basis,
                     "tolerance_contract": tolerance, "checkpoint_path": None, "artifacts": dict(artifacts),
                     "main_body": "REAgentWorkspace" if role == "target" else None}
         except Exception:

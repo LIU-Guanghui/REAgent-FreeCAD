@@ -11,43 +11,43 @@ Check connections, degeneracy and self-intersections before forming a solid; sol
 
 The owned Sketch is empty; convert measured coordinates into its local XY frame before using the same center values for geometry and DistanceX/DistanceY.
 
-Use this Python dictionary as a parameter template for the named native command. Bind every variable below to actual returned values and measurements, then submit the discovered command and this dictionary through agent_execute_command. Discover its exact schema on an earlier completed request. Choose other modes from current capabilities.
-
-Native command: `Sketcher_EditSketch`
+Bind the variables to actual readbacks and measurements. Read the command schema with `agent_get_capabilities` and pass this dictionary to `agent_execute_command`.
 
 ```python
 # Bind all variables to actual returned values and measurements before use.
 arguments = {
-    "body_name": body_name,
-    "intent": intent,
-    "evidence": [source_evidence_id, target_evidence_id],
-    "expected_revision": target_revision,
-    "sketch_name": sketch_name,
-    "geometry": [{
-        "kind": "circle",
-        "id": "section_circle",
-        "center": [profile_center_x_mm, profile_center_y_mm],
-        "radius_mm": profile_radius_mm,
-    }],
-    "constraints": [{
-        "kind": "DistanceX",
-        "point": {
+    "command": "Sketcher_EditSketch",
+    "arguments": {
+        "body_name": body_name,
+        "intent": intent,
+        "evidence": [source_evidence_id, target_evidence_id],
+        "sketch_name": sketch_name,
+        "geometry": [{
+            "kind": "circle",
+            "id": "section_circle",
+            "center": [profile_center_x_mm, profile_center_y_mm],
+            "radius_mm": profile_radius_mm,
+        }],
+        "constraints": [{
+            "kind": "DistanceX",
+            "point": {
+                "geometry_id": "section_circle",
+                "position": "center",
+            },
+            "value": profile_center_x_mm,
+        }, {
+            "kind": "DistanceY",
+            "point": {
+                "geometry_id": "section_circle",
+                "position": "center",
+            },
+            "value": profile_center_y_mm,
+        }, {
+            "kind": "Diameter",
             "geometry_id": "section_circle",
-            "position": "center",
-        },
-        "value": profile_center_x_mm,
-    }, {
-        "kind": "DistanceY",
-        "point": {
-            "geometry_id": "section_circle",
-            "position": "center",
-        },
-        "value": profile_center_y_mm,
-    }, {
-        "kind": "Diameter",
-        "geometry_id": "section_circle",
-        "value": profile_diameter_mm,
-    }],
+            "value": profile_diameter_mm,
+        }],
+    },
 }
 ```
 
@@ -55,7 +55,6 @@ arguments = {
 - `intent`: Explain this operation's measured geometric purpose.
 - `source_evidence_id`: Source evidence actually issued in this session.
 - `target_evidence_id`: Current applicable Target evidence actually issued in this session.
-- `target_revision`: Current Target revision matching the referenced Target observation.
 - `sketch_name`: Actual owned empty Sketch name returned by creation/state.
 - `profile_center_x_mm`: Signed circle center X relative to this Sketch's own origin and X axis, mm; convert coordinates from other frames first.
 - `profile_center_y_mm`: Signed circle center Y relative to this Sketch's own origin and Y axis, mm; convert coordinates from other frames first.

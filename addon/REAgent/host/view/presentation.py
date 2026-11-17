@@ -8,12 +8,22 @@ def style_source_document(source):
     if not getattr(App, "GuiUp", False):
         return
     try:
-        source.ViewObject.ShapeColor = (0.75, 0.80, 0.90)
-        source.ViewObject.LineColor = (0.20, 0.25, 0.35)
-        source.ViewObject.Transparency = 0
-        source.ViewObject.Selectable = False
-        Gui.activeDocument().activeView().viewAxonometric()
-        Gui.activeDocument().activeView().fitAll()
+        view = Gui.activeDocument().activeView()
+        if source.TypeId == "App::DocumentObjectGroup":
+            view.setCameraType("Orthographic")
+            view.viewTop()
+            view.fitAll()
+            return
+        view_object = source.ViewObject
+        if source.TypeId == "Mesh::Feature":
+            view_object.DisplayMode = "Shaded"
+        else:
+            view_object.ShapeColor = (0.75, 0.80, 0.90)
+            view_object.LineColor = (0.20, 0.25, 0.35)
+        view_object.Transparency = 0
+        view_object.Selectable = False
+        view.viewAxonometric()
+        view.fitAll()
     except Exception:
         pass
 

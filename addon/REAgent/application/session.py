@@ -1,21 +1,22 @@
-"""Coordinate chat and STEP-to-CAD actions on one worker."""
+"""Coordinate chat and CAD tasks on one Source worker."""
 
 from REAgent.agent.context import Conversation
 from REAgent.agent.actions import Action
 from REAgent.agent.errors import AgentError
 from REAgent.agent.run import Run, action_errors
 from REAgent.agent.tools import EmptyTools
-from REAgent.stp2cad.controller import Controller, has_retained_task
-from REAgent.stp2cad.discovery_policy import DiscoveryPolicy
-from REAgent.stp2cad.toolset import Stp2CadTools
-from REAgent.stp2cad.results import ToolResult
+from REAgent.cad.controller import Controller, has_retained_task
+from REAgent.cad.adopted_observations import AdoptedObservations
+from REAgent.cad.toolset import CadTools
+from REAgent.cad.results import ToolResult
+from REAgent.workflows.registry import WORKFLOWS
 from .presentation import snapshot_state
 
 
 _CHAT_INSTRUCTIONS = """
 You are REAgent, an assistant in FreeCAD.
 Answer the user's questions and help them explore design ideas.
-STP reconstruction starts only when the user explicitly runs /stp2cad.
+CAD modeling starts only when the user selects a CAD workflow from the Source task panel.
 """
 
 
@@ -44,7 +45,7 @@ class Session:
     @action_errors()
     def __init__(self, config, *, api_key, on_event=None):
         self.mode = None
-        self.stp2cad_tools = None
+        self.cad_tools = None
         self.comparison = None
         self.comparison_rows = ()
         try:
@@ -57,7 +58,7 @@ class Session:
     def configure(self, config, *, api_key):
         self.run.enter()
         try:
-            if self.stp2cad_tools is not None and self.stp2cad_tools.controller.task_state() is not None:
+            if self.cad_tools is not None and self.cad_tools.controller.task_state() is not None:
                 if (self.run.status not in ("paused", "ready")
                         or not self.run.update_model_key(config, api_key=api_key)):
                     raise RuntimeError("An active CAD task keeps its original model settings; pause to update its key")
@@ -73,7 +74,7 @@ class Session:
     def chat(self, text):
         self.run.enter()
         try:
-            if self.stp2cad_tools is not None and self.stp2cad_tools.controller.task_state() is not None:
+            if self.cad_tools is not None and self.cad_tools.controller.task_state() is not None:
                 raise RuntimeError("Use the active CAD task instead of opening another conversation")
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("A chat message must be non-empty")
@@ -81,8 +82,8 @@ class Session:
                 self.run.control.start_task()
                 conversation = Conversation(_CHAT_INSTRUCTIONS, text)
                 self._reset()
-                if self.stp2cad_tools is not None:
-                    self.stp2cad_tools.reset()
+                if self.cad_tools is not None:
+                    self.cad_tools.reset()
                 self.mode = "chat"
                 self.run.activate(conversation, None, None, EmptyTools())
             else:
@@ -95,62 +96,70 @@ class Session:
             self.run.lock.release()
 
     @action_errors()
-    def stp2cad(self, arguments, objective):
+    def start_task(self, kind, arguments, objective, *, prepare_inputs, view_input):
         self.run.enter()
         begun = False
         try:
-            if self.stp2cad_tools is None:
-                controller = Controller()
-                controller.observe_journal(self._journal_update)
-                self.stp2cad_tools = Stp2CadTools(controller)
-            if self.stp2cad_tools.controller.task_state() is not None:
+            if self.cad_tools is not None and self.cad_tools.controller.task_state() is not None:
                 raise RuntimeError("Finish the retained task before starting another")
-            self.stp2cad_tools.validate_stp2cad(arguments)
-            self.run.require_visual_model()
+            workflow = WORKFLOWS[kind]
+            if not objective.strip():
+                raise ValueError("Describe the part to create")
+            if workflow.requires_images:
+                self.run.require_visual_model()
+            if workflow.image_inputs:
+                arguments = dict(arguments)
+                try:
+                    arguments["inputs"] = prepare_inputs(arguments.pop("paths"))
+                except ValueError as exc:
+                    raise AgentError("invalid_reference", str(exc)) from exc
+            controller = Controller(workflow, view_input=view_input)
+            controller.observe_journal(self._journal_update)
+            self.cad_tools = CadTools(controller)
             continuing = self.mode == "chat" and self.run.conversation is not None
             if continuing:
                 self.run.control.capture(resume=True)
                 self.run.requests.recover_model_outcome()
                 self.run.commit_batch(recover=True)
                 conversation = self.run.conversation.fork()
-                conversation.set_instructions(self.stp2cad_tools.instructions())
+                conversation.set_instructions(self.cad_tools.instructions())
                 generation = self.run.control.advance_generation()
                 conversation.add_requirement(generation, objective)
             else:
-                conversation = Conversation(self.stp2cad_tools.instructions(), objective)
+                conversation = Conversation(self.cad_tools.instructions(), objective)
                 self.run.control.start_task()
             self._reset()
-            self.stp2cad_tools.reset()
+            self.cad_tools.reset()
             self.mode = "cad"
             self.run.stream_chat = False
             self.run.refresh_proxy_status()
             initial = Action.create("reconstruct", conversation.requirements[-1].generation, objective)
-            self.run.activate(conversation, DiscoveryPolicy(), None, self.stp2cad_tools, action=initial)
+            self.run.activate(conversation, AdoptedObservations(), None, self.cad_tools, action=initial)
             self.run.state("starting")
             begun = True
-            result = self.stp2cad_tools.controller.execute("agent_start_session", arguments, on_progress=self._progress,
+            result = self.cad_tools.controller.execute("agent_start_session", arguments, on_progress=self._progress,
                 execution={"actor": "human", "scope": "manual", "purpose": "action", "binding": None})
             self.run.batches.latest_results = (result,)
             self.run.batches.latest_identities = ({"function": "agent_start_session"},)
-            facts = self.stp2cad_tools.controller.task_state()
-            self.stp2cad_tools.bind(facts)
-            self.run.activate(conversation, DiscoveryPolicy(), self.stp2cad_tools.journal_binding, self.stp2cad_tools, action=initial)
+            facts = self.cad_tools.controller.task_state()
+            self.cad_tools.bind(facts)
+            self.run.activate(conversation, AdoptedObservations(), self.cad_tools.journal_binding, self.cad_tools, action=initial)
             if facts is not None:
-                self.stp2cad_tools.action_started(initial, self.stp2cad_tools.journal_binding)
+                self.cad_tools.action_started(initial, self.cad_tools.journal_binding)
             with self.run.control.lock:
                 self.run.control.active = facts is not None
             self._publish_human("agent_start_session", result)
-            self.run.record_human(result, lambda value: self.stp2cad_tools.human_material("agent_start_session", value),
+            self.run.record_human(result, lambda value: self.cad_tools.human_material("agent_start_session", value),
                                   function="agent_start_session")
             if result.is_error or facts is None:
                 return self.run.state("paused", "session_start_failed")
             return self._drive(resume=False)
         except BaseException:
             if begun:
-                facts = self.stp2cad_tools.controller.task_state()
-                self.stp2cad_tools.bind(facts)
+                facts = self.cad_tools.controller.task_state()
+                self.cad_tools.bind(facts)
                 active = self.run.active
-                self.run.activate(active.conversation, active.policy, self.stp2cad_tools.journal_binding, self.stp2cad_tools, action=active.action)
+                self.run.activate(active.conversation, active.policy, self.cad_tools.journal_binding, self.cad_tools, action=active.action)
                 with self.run.control.lock:
                     self.run.control.active = facts is not None
                 self.run.state("paused", "start_interrupted")
@@ -192,16 +201,16 @@ class Session:
             self.run.requests.begin_close()
             with self.run.control.lock:
                 self.run.control.supplements = []
-            if self.stp2cad_tools is None or self.stp2cad_tools.controller.task_state() is None:
+            if self.cad_tools is None or self.cad_tools.controller.task_state() is None:
                 self.run.requests.finish_close(released=True)
                 return self.run.state("closed", "task_ended")
-            result = self.stp2cad_tools.controller.execute("agent_close_session", {}, on_progress=self._progress,
-                execution={"actor": "human", "binding": self.stp2cad_tools.journal_binding, "scope": "manual", "purpose": "action"})
-            self.run.requests.finish_close(released=self.stp2cad_tools.controller.task_state() is None)
+            result = self.cad_tools.controller.execute("agent_close_session", {}, on_progress=self._progress,
+                execution={"actor": "human", "binding": self.cad_tools.journal_binding, "scope": "manual", "purpose": "action"})
+            self.run.requests.finish_close(released=self.cad_tools.controller.task_state() is None)
             self.run.batches.latest_results = (result,)
             self.run.batches.latest_identities = ({"function": "agent_close_session"},)
             self._publish_human("agent_close_session", result)
-            self.run.state("closed", "cleanup_pending" if self.stp2cad_tools.controller.task_state() else "task_ended")
+            self.run.state("closed", "cleanup_pending" if self.cad_tools.controller.task_state() else "task_ended")
             return result
         finally:
             self.run.lock.release()
@@ -217,17 +226,19 @@ class Session:
         self.run.enter()
         try:
             previous_status = self.run.status
-            if self.stp2cad_tools is None or self.run.conversation is None:
-                raise AgentError("task_required", "Start a CAD task before comparing")
+            if self.cad_tools is None or not self.cad_tools.workflow.paired_views or self.run.conversation is None:
+                raise AgentError("task_required", "Start an STP or STL task before comparing")
             try:
-                options, view_request = self.stp2cad_tools.prepare_comparison(options, view_request)
+                options, view_request = self.cad_tools.prepare_comparison(options, view_request)
             except ValueError as exc:
                 raise AgentError("invalid_comparison", str(exc)) from exc
+            if options is not None and not self.cad_tools.workflow.compares_stp:
+                raise AgentError("invalid_comparison", "STL comparison uses paired views")
             self._recover()
             facts = self.run.check(binding_only=True)
             if facts["session_status"] != "ready" or facts["target_writes_blocked"] or facts["source_basis_unknown"]:
                 raise AgentError("task_blocked", "Current binding, journal and restoration must be known before comparison")
-            binding = self.stp2cad_tools.journal_binding
+            binding = self.cad_tools.journal_binding
             documents = {"source": facts["source_document"], "target": facts["target_document"]}
             with self.run.control.lock:
                 generation = self.run.control.generation
@@ -244,13 +255,13 @@ class Session:
                 self.run.publish("tool_result", {**identity, "result": result.value,
                     "is_error": result.is_error, "side_effect": result.side_effect}, images=result.images)
 
-            comparison, stop_reason = self.stp2cad_tools.compare(options, view_request, binding=binding,
+            comparison, stop_reason = self.cad_tools.compare(options, view_request, binding=binding,
                 documents=documents, cancelled=cancelled, on_progress=self._progress, on_step=on_step)
             self.comparison = comparison
             aggregate = ToolResult(comparison)
             if self.run.batches.human is not None:
                 raise AgentError("pending_results", "The original human result is still awaiting recording")
-            self.run.batches.human = (aggregate, lambda item: self.stp2cad_tools.human_material("Session.compare", item))
+            self.run.batches.human = (aggregate, lambda item: self.cad_tools.human_material("Session.compare", item))
             self.run.requests.local_log("comparison.completed", {"comparison_id": comparison["comparison_id"], "actor": "human",
                 "steps": [{key: child[key] for key in ("function", "comparison_step", "operation_id", "is_error", "side_effect")}
                           for child in comparison["steps"]]}, function="Session.compare")
@@ -279,18 +290,18 @@ class Session:
         self.run.requests.recover_model_outcome()
         self.run.commit_batch(recover=True)
         self.run.replay_report()
-        if self.stp2cad_tools is not None and self.stp2cad_tools.controller.task_state() is not None:
-            facts = self.stp2cad_tools.controller.task_state()
+        if self.cad_tools is not None and self.cad_tools.controller.task_state() is not None:
+            facts = self.cad_tools.controller.task_state()
             if not facts["journal"]["complete"]:
-                meta = self.stp2cad_tools.model_journal(binding=self.stp2cad_tools.journal_binding, flush=True)
+                meta = self.cad_tools.model_journal(binding=self.cad_tools.journal_binding, flush=True)
                 if not meta["complete"]:
                     raise AgentError("journal_pending", "Original task journal is still incomplete")
-            result = self.stp2cad_tools.controller.recover_delivery(self.stp2cad_tools.journal_binding)
+            result = self.cad_tools.controller.recover_delivery(self.cad_tools.journal_binding)
             if result is not None:
                 self.run.publish("tool_result", {"function": "agent_finish_reconstruction",
                     "result": result.value, "is_error": result.is_error, "side_effect": result.side_effect,
                     "recovered": True})
-            current = self.stp2cad_tools.controller.task_state() or {}
+            current = self.cad_tools.controller.task_state() or {}
             receipt = current.get("delivery_receipt") or {}
             if self.run.action and receipt.get("run_id") == self.run.action.id:
                 self.run.finish_action()
@@ -312,17 +323,17 @@ class Session:
         self.run.enter()
         try:
             with action_errors():
-                if self.run.conversation is None or self.stp2cad_tools is None:
+                if self.run.conversation is None or self.cad_tools is None:
                     raise RuntimeError("Start a task first")
                 self.run.requests.recover_model_outcome()
                 self.run.commit_batch(recover=True)
-                result = self.stp2cad_tools.controller.execute(name, arguments, on_progress=self._progress,
-                    execution={"actor": "human", "binding": self.stp2cad_tools.journal_binding, "scope": "manual", "purpose": "action"})
+                result = self.cad_tools.controller.execute(name, arguments, on_progress=self._progress,
+                    execution={"actor": "human", "binding": self.cad_tools.journal_binding, "scope": "manual", "purpose": "action"})
                 self.run.batches.latest_results = (result,)
                 self.run.batches.latest_identities = ({"function": name},)
                 self._publish_human(name, result)
-                self.run.record_human(result, lambda value: self.stp2cad_tools.human_material(name, value), function=name)
-                closed = self.stp2cad_tools.controller.task_state() is None
+                self.run.record_human(result, lambda value: self.cad_tools.human_material(name, value), function=name)
+                closed = self.cad_tools.controller.task_state() is None
                 if closed:
                     self.run.activate(None, None, None, EmptyTools())
                     self.mode = None
@@ -342,9 +353,9 @@ class Session:
                          "is_error": result.is_error, "side_effect": result.side_effect}, images=result.images)
 
     def _journal(self, **values):
-        if self.stp2cad_tools is None:
+        if self.cad_tools is None:
             raise AgentError("task_binding_changed", "There is no original task Journal")
-        return self.stp2cad_tools.model_journal(**values)
+        return self.cad_tools.model_journal(**values)
 
     def _journal_update(self, recorder):
         rows, characters = [], 0

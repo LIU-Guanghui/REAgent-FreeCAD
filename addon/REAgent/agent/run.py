@@ -69,9 +69,9 @@ class Run:
         self.callback_error = self.estimate = self.context_info = self.proxy = self.last_compaction = None
 
     def directory(self):
-        if self.report_only:
+        if self.report_only or self.active is None:
             return {}
-        return self.tools.directory(self.action) if self.active is not None else {}
+        return self.tools.directory(self.action)
 
     def facts(self):
         return self.tools.facts(self.active.policy, self.action) if self.active is not None else None
@@ -251,8 +251,7 @@ class Run:
             candidate.record_human(project(result))
         for number, text in supplements:
             candidate.add_requirement(number, text)
-        policy = self.tools.prepare_context(active.policy, candidate.retained_tool_results())
-        replacement = ActiveContext(candidate, policy, active.binding, next_action)
+        replacement = replace(active, conversation=candidate, action=next_action)
         last = tuple(row[1] for row in rows) if pending is not None and rows else self.batches.latest_results
         # All domain work, logging and callbacks precede this short compare/exchange.
         with self.control.lock:
@@ -286,10 +285,13 @@ class Run:
             raise ModelError("pending_results", "Recover the original results and journal before preparing context")
         if self.cancelled(generation):
             raise ModelError("request_cancelled", "Requirements changed before context preparation")
+        active = self.active
+        revision = active.conversation.revision
+
         return {"cancelled": lambda: self.cancelled(generation),
                 "request_summary": lambda prepared, validate: self.requests.request(
                     "summary", prepared, generation, validate_reply=validate),
-                "commit": lambda candidate, source: self._adopt_context(candidate, source, generation),
+                "commit": lambda candidate: self._adopt_context(candidate, active, revision, generation),
                 "attempt_key": (generation, self._model.identity, self._model.config)}
 
     def record_human(self, result, project, *, function):
@@ -303,10 +305,10 @@ class Run:
     def prepare_request(self, generation):
         active = self.active
         self.check()
-        facts, published = self.facts(), self.directory()
+        facts, tools = self.facts(), self.directory()
         self.state("preparing_model")
         try:
-            prepared = active.conversation.prepare(self.context_model, published, facts,
+            prepared = active.conversation.prepare(self.context_model, tools, facts,
                                                   **self.context_callbacks(generation))
         except CapacityError as exc:
             self.requests.request("model", None, generation, prepare_error=exc)
@@ -317,11 +319,11 @@ class Run:
                         or self.report.requested):
                     raise ModelError("request_cancelled", "The report was already requested or this run stopped")
                 self.report = replace(self.report, requested=True)
-        record = self.requests.capture(prepared, generation, published)
+        record = self.requests.capture(prepared, generation)
         self.estimate = dict(prepared.estimate)
         self.refresh_proxy_status()
         self.state("requesting_model")
-        return record, published
+        return record
 
     def request_model(self, record, generation):
         try:
@@ -331,16 +333,15 @@ class Run:
                 raise
             active = self.active
             self.check()
-            published = self.directory()
-            prepared = active.conversation.compact(self.context_model, published, self.facts(),
+            prepared = active.conversation.compact(self.context_model, self.directory(), self.facts(),
                 **self.context_callbacks(generation), reason="service_context_limit")
-            record = self.requests.capture(prepared, generation, published)
+            record = self.requests.capture(prepared, generation)
             self.estimate = dict(prepared.estimate)
             reply = self.requests.request("model", prepared, generation, record=record)
         self._adopt_receipt(record)
         self._model.observe_usage(record.prepared.request, reply)
         self.call_ids.update(call.id for call in reply.calls)
-        return reply
+        return reply, record.directory
 
     def public_reply(self, reply, generation, *, progress):
         if not self.cancelled(generation):
@@ -393,8 +394,7 @@ class Run:
                 conversation = self.conversation.fork()
                 conversation.discard_provider_state()
                 active = self.active
-                policy = self.tools.prepare_context(active.policy, conversation.retained_tool_results())
-                self.activate(conversation, policy, active.binding, self.tools, action=active.action)
+                self.activate(conversation, active.policy, active.binding, self.tools, action=active.action)
             if pending is not None:
                 pending.reply = replace(pending.reply, provider_state=None)
         self._model = self.context_model.client = model
@@ -417,22 +417,19 @@ class Run:
         config = self._model.config
         return {**context_budget(config_fields(config)), "input_limit_tokens": input_limit_tokens(config)}
 
-    def _adopt_context(self, candidate, source, generation):
-        active = self.active
-        revision = source.revision
+    def _adopt_context(self, candidate, active, revision, generation):
+        source = active.conversation
         if (self.batches.pending is not None or self.batches.human is not None or self.requests.model_result_pending
                 or self.requests.context_log_pending):
             raise ModelError("pending_results", "Original results must be resolved before context adoption")
         changed = candidate.last_compaction is not source.last_compaction
-        policy = self.tools.prepare_context(active.policy, candidate.retained_tool_results())
-        replacement = ActiveContext(candidate, policy, active.binding, active.action)
         if changed:
             self.requests.local_log("context.replacement_prepared", candidate.last_compaction, function="Run._adopt_context")
         with self.control.lock:
             if (self.control.paused or self.control.generation != generation or self.active is not active
-                    or active.conversation is not source or source.revision != revision):
+                    or source.revision != revision):
                 raise ModelError("request_cancelled", "Context replacement cancelled; original history retained")
-            self.active = replacement
+            self.active = replace(active, conversation=candidate)
             if changed:
                 self.last_compaction = candidate.last_compaction
 

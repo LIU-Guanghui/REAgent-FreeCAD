@@ -1,6 +1,7 @@
 """Native workspace ownership and explicit result selection."""
 
 import json
+import math
 import os
 
 import Part
@@ -8,13 +9,14 @@ import Part
 from REAgent.host.process_state import require_document, PROCESS
 from REAgent.host.file_digest import file_sha256
 from REAgent.host.numeric import vector_dict
+from REAgent.protocol.definitions import NATIVE_SOURCE_EXTENSIONS
 
 
 def workspace(document):
     group = document.getObject("REAgentWorkspace")
     if (group is None or group.TypeId != "PartDesign::Body"
             or not all(hasattr(group, key) for key in
-                       ("REAgentBodyNames", "Origin", "SourceFile", "ToleranceContractJSON"))):
+                       ("REAgentBodyNames", "Origin", "ToleranceContractJSON"))):
         raise ValueError("Document has no native REAgent workspace; old checkpoints are not supported")
     return group
 
@@ -145,21 +147,41 @@ def validate_boolean_tools(group, feature, tools):
 def target_state(document_name):
     _require_instance_role("target")
     document = require_document(document_name)
-    group = workspace(document)
-    path = step_source_path(group.SourceFile)
-    source = read_source_snapshot(path)
-    return document, source, group, group
+    return document, workspace(document)
 
 
 def read_source_snapshot(path):
-    """Pair a STEP import with equal observed hashes; never claim atomic I/O."""
-    path = step_source_path(path)
+    """Pair an STP import with equal observed hashes; never claim atomic I/O."""
+    path = stp_source_path(path)
     before = file_sha256(path)
     shape = Part.read(path)
     after = file_sha256(path)
     if before != after:
-        raise ValueError("Source STEP changed during import; choose a stable source before starting a session")
+        raise ValueError("Source STP changed during import; choose a stable source before starting a session")
     return _SourceReference(shape, path, after)
+
+
+def read_stp_reference(document, group, session_id):
+    binding = PROCESS.SESSION_BINDINGS.get(session_id)
+    if binding is None or binding["document"] is not document:
+        raise ValueError("STP comparison requires the bound Target")
+    snapshot = read_source_snapshot(getattr(group, "SourceFile", None))
+    if snapshot.SourceSHA256 != binding["source_revision"]:
+        raise ValueError("STP file differs from the bound reference revision")
+    return snapshot
+
+
+def read_mesh(path, revision):
+    import Mesh
+
+    mesh = Mesh.Mesh(path)
+    if file_sha256(path) != revision:
+        raise ValueError("STL file differs from the bound reference revision")
+    box = mesh.BoundBox
+    if not mesh.CountFacets or not all(
+            math.isfinite(getattr(box, axis + end)) for axis in "XYZ" for end in ("Min", "Max")):
+        raise ValueError("STL must contain a nonempty mesh with finite bounds")
+    return mesh
 
 
 def resolve_result_object(group):
@@ -303,30 +325,40 @@ def compact_json(value):
     )
 
 
-def step_source_path(value):
+def native_source_path(value, extensions):
     if not isinstance(value, str) or not value:
         raise ValueError("source_path must be a non-empty absolute path")
     if not os.path.isabs(value):
         raise ValueError("source_path must be an absolute path")
     path = os.path.normpath(value)
-    if os.path.splitext(path)[1].lower() not in (".stp", ".step"):
-        raise ValueError("source_path must use the .stp or .step extension")
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix not in extensions:
+        raise ValueError("source_path must use " + " or ".join(extensions))
     if not os.path.isfile(path):
-        raise ValueError("STEP source file does not exist: %s" % path)
+        raise ValueError("Source file does not exist: " + path)
+    if suffix not in NATIVE_SOURCE_EXTENSIONS["stp"] and os.path.getsize(path) > 64 * 1024 * 1024:
+        raise ValueError(f"Choose a {suffix[1:].upper()} file of at most 64 MiB")
     return path
+
+
+def stp_source_path(value):
+    return native_source_path(value, NATIVE_SOURCE_EXTENSIONS["stp"])
 
 
 def source_objects(document_name):
     _require_instance_role("source")
     document = require_document(document_name)
     source = document.getObject("Source")
-    if source is None or getattr(source, "TypeId", None) != "Part::Feature":
+    if source is None or source.TypeId not in ("Part::Feature", "Mesh::Feature", "App::DocumentObjectGroup"):
         raise KeyError("Reconstruction Source object not found")
     if document.getObject("REAgentWorkspace") is not None:
         raise ValueError("Source document must not contain a Target workspace")
-    shape = getattr(source, "Shape", None)
-    if shape is None or shape.isNull():
-        raise ValueError("Reconstruction Source has no shape")
+    if source.TypeId == "Mesh::Feature" and not source.Mesh.CountFacets:
+        raise ValueError("Source mesh has no facets")
+    if source.TypeId == "Part::Feature" and source.Shape.isNull():
+        raise ValueError("Source STP has no shape")
+    if source.TypeId == "App::DocumentObjectGroup" and not source.Group:
+        raise ValueError("Source DXF has no drawing objects")
     return document, source
 
 

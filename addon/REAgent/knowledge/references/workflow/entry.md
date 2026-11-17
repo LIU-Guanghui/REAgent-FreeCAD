@@ -10,7 +10,7 @@ If image delivery exceeds limits, lower resolution and retry all fourteen direct
 
 For paused or follow-up conversation and changes of action scope, use [session control](session-and-isolation.md).
 
-In reconstruction, obtain any missing Target observation before the first native feature write; an empty workspace supports a [global observation](observation.md), and applicable observations can be reused.
+Before the first native feature write, obtain any missing [Target evidence](observation.md).
 
 Use [observation](observation.md) to resolve shape, occlusion and dimensional questions, and the [feature guide](../features/entry.md) to choose a construction. Reusing affected Target measurements or references after history changes requires current evidence. `agent_get_state` reports current document, history and session evidence.
 

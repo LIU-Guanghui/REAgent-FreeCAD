@@ -19,7 +19,6 @@ class SendRecord:
     revision: int
     generation: int
     binding: str | None
-    published: str
     prepared: object
     unit_ids: tuple
     delivery_ids: tuple
@@ -31,7 +30,7 @@ class SendRecord:
 
     @property
     def directory(self):
-        return decode_json(self.published)
+        return decode_json(self.prepared.request.tools_key)
 
 
 class ModelRequests:
@@ -55,7 +54,7 @@ class ModelRequests:
         self._request_number = 0
         self._last_usage = self._last_model_diagnostic = self._model_outcome = None
 
-    def capture(self, prepared, generation, published):
+    def capture(self, prepared, generation):
         active = self.run.active
         messages = prepared.messages if prepared is not None else ()
         sent = {id(message) for message in messages}
@@ -74,7 +73,7 @@ class ModelRequests:
                         if not payload.get("delivery_id") or payload["delivery_id"] in delivery_ids)
         action = active.action
         return SendRecord(active, active.conversation.revision, generation, active.binding,
-                          encode_json(published), prepared, tuple(unit.id for unit in units),
+                          prepared, tuple(unit.id for unit in units),
                           delivery_ids, encode_json(markers), self.run.purpose,
                           action.id if action else None, tuple(sorted(requirements)), tuple(user_generations))
 
@@ -158,7 +157,7 @@ class ModelRequests:
             raise ModelError("model_journal_pending", "Use Continue to recover the original journal before another model request")
         config, identity = self._model.config, self._model.identity
         self._request_number += 1
-        record = record or self.capture(prepared, generation, self.run.directory())
+        record = record or self.capture(prepared, generation)
         slot = {"record": record, "identity": identity, "number": self._request_number, "kind": kind, "generation": generation,
                 "binding": record.binding,
                 "started": time.perf_counter(), "network_started": False, "reply": None, "error": None,
@@ -210,7 +209,7 @@ class ModelRequests:
             if kind == "model":
                 if any(call.id in self.run.call_ids for call in slot["reply"].calls):
                     raise ModelError("duplicate_call_id", "Model reused an earlier tool call identity")
-                if not slot["record"].directory and slot["reply"].calls:
+                if slot["reply"].calls and not record.directory:
                     if record.purpose == "report":
                         raise ModelError("report_tools_unavailable", "The delivered run only permits a text report; its receipt remains available")
                     raise ModelError("chat_tools_unavailable", "No tools were published for this conversation")

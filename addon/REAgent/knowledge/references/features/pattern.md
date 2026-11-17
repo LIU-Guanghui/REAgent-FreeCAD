@@ -9,28 +9,28 @@ Choose the receiving Body and references in the current Target state.
 
 Measured repetition supports these actual seed features, one direction and a per-step offset.
 
-Use this Python dictionary as a parameter template for the named native command. Bind every variable below to actual returned values and measurements, then submit the discovered command and this dictionary through agent_execute_command. Discover its exact schema on an earlier completed request. Choose other modes from current capabilities.
-
-Native command: `PartDesign_LinearPattern`
+Bind the variables to actual readbacks and measurements. Read the command schema with `agent_get_capabilities` and pass this dictionary to `agent_execute_command`.
 
 ```python
 # Bind all variables to actual returned values and measurements before use.
 arguments = {
-    "body_name": body_name,
-    "intent": intent,
-    "evidence": [source_evidence_id, target_evidence_id],
-    "expected_revision": target_revision,
-    "feature_name": feature_name,
-    "predecessor_name": predecessor_name,
-    "source_feature_names": source_feature_names,
-    "axis": {
-        "kind": "origin_axis",
-        "role": pattern_axis_role,
+    "command": "PartDesign_LinearPattern",
+    "arguments": {
+        "body_name": body_name,
+        "intent": intent,
+        "evidence": [source_evidence_id, target_evidence_id],
+        "feature_name": feature_name,
+        "predecessor_name": predecessor_name,
+        "source_feature_names": source_feature_names,
+        "axis": {
+            "kind": "origin_axis",
+            "role": pattern_axis_role,
+        },
+        "extent_mode": "offset",
+        "distance_mm": pattern_offset_mm,
+        "occurrences": occurrences,
+        "reversed": reverse_direction,
     },
-    "extent_mode": "offset",
-    "distance_mm": pattern_offset_mm,
-    "occurrences": occurrences,
-    "reversed": reverse_direction,
 }
 ```
 
@@ -38,7 +38,6 @@ arguments = {
 - `intent`: Explain this operation's measured geometric purpose.
 - `source_evidence_id`: Source evidence actually issued in this session.
 - `target_evidence_id`: Current applicable Target evidence actually issued in this session.
-- `target_revision`: Current Target revision matching the referenced Target observation.
 - `feature_name`: Choose an unused native name for this new feature.
 - `predecessor_name`: Actual current solid Tip of the receiving Body.
 - `source_feature_names`: Actual caller-ordered additive/subtractive seed feature names.

@@ -7,9 +7,10 @@ from threading import Lock
 from REAgent.application.session import Session, action_error
 from REAgent.json_values import to_json_value
 from REAgent.ui import QtCore
+from REAgent.ui.input_images import prepare_inputs, render_input
 
 
-_ACTIONS = frozenset(("stp2cad", "chat", "advance", "compare", "compact", "save", "close", "configure"))
+_ACTIONS = frozenset(("start_task", "chat", "advance", "compare", "compact", "save", "close", "configure"))
 def tool_fault(event):
     value = event.get("result") or {}
     if (value.get("caused_by_tool_call_id") or value.get("code") == "not_executed"
@@ -163,7 +164,7 @@ class Worker(QtCore.QThread):
             previous_batch = self._session.last_batch if self._session is not None else None
             try:
                 with self._lock:
-                    skipped = self._pause_intent and action in ("stp2cad", "chat", "advance", "compare", "compact")
+                    skipped = self._pause_intent and action in ("start_task", "chat", "advance", "compare", "compact")
                 if not skipped:
                     value = self._perform(action, args)
             except BaseException as exc:
@@ -194,7 +195,7 @@ class Worker(QtCore.QThread):
                           "new_results": bool(rows) and rows is not previous_batch,
                           "presentation_backlog": self._overflowed,
                           "paused_before_start": skipped,
-                          "credentials_consumed": action in ("stp2cad", "chat", "configure")}
+                          "credentials_consumed": action in ("start_task", "chat", "configure")}
                 with self._lock:
                     self._completion = packet
                     self._busy = False
@@ -257,7 +258,7 @@ class Worker(QtCore.QThread):
         return not paused
 
     def _perform(self, action, args):
-        if action in ("stp2cad", "chat"):
+        if action in ("start_task", "chat"):
             if self._session is not None and self._session.snapshot().get("controller") is not None:
                 raise RuntimeError("Finish the retained task first")
             if self._session is None:
@@ -266,7 +267,8 @@ class Worker(QtCore.QThread):
                     self._session = session
             if action == "chat":
                 return self._session.chat(args["text"])
-            return self._session.stp2cad(args["task"], args["objective"])
+            return self._session.start_task(args["kind"], args["task"], args["objective"],
+                                            prepare_inputs=prepare_inputs, view_input=render_input)
         if self._session is None:
             raise RuntimeError("Start a task first")
         if action == "advance":

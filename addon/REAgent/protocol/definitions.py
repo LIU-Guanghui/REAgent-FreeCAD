@@ -67,15 +67,18 @@ _DOCUMENT = string("Internal FreeCAD document name")
 
 OUTPUT_DIR_SCHEMA = string("Absolute task output directory for all session artifacts; created if missing")
 
+NATIVE_SOURCE_EXTENSIONS = {"stp": (".stp", ".step"), "mesh": (".stl",), "drawing": (".dxf",)}
+
 SESSION_ARTIFACTS_SCHEMA = object_schema({
-    "source_stem": string("Unmodified STEP filename stem"),
+    "stem": string("Input filename stem or default model name"),
     "basename": string("Exclusively allocated session artifact basename"),
     "output_dir": OUTPUT_DIR_SCHEMA,
     "model_path": string("Allocated output FCStd, not proof of a save"),
     "journal_path": string("Unique reconstruction process journal"),
-}, ("source_stem", "basename", "output_dir", "model_path", "journal_path"))
+}, ("stem", "basename", "output_dir", "model_path", "journal_path"))
 
 NAME_SCHEMA = {"type": "string", "pattern": r"^[A-Za-z][A-Za-z0-9_]{0,99}$"}
+OBSERVATION_ID_SCHEMA = {"type": "string", "pattern": r"^evidence-[a-f0-9]{20}$"}
 
 VALIDATION_OPTIONS_SCHEMA = object_schema(
     {

@@ -3,7 +3,7 @@
 from REAgent.host.process_state import require_document, PROCESS
 from REAgent.protocol.definitions import validation_items
 from REAgent.host.file_digest import file_sha256
-from REAgent.host.workspace.model import comparison_inputs_state, comparison_shape, step_source_path, workspace
+from REAgent.host.workspace.model import comparison_inputs_state, comparison_shape, stp_source_path, workspace
 from REAgent.host.workspace.state import target_view_revision
 from REAgent.host.validation.comparison import compare_shapes
 from REAgent.host.validation.parameters import parameter_conclusion, parametric_audit
@@ -22,7 +22,7 @@ class ValidationOperations:
         checks, provenance, read_errors = {}, {}, {}
         target_revision = None
         try:
-            target_revision = target_view_revision(document, group, group)
+            target_revision = target_view_revision(document, group)
         except (OSError, AttributeError, RuntimeError, TypeError, ValueError) as exc:
             read_errors["revision"] = {"reason": str(exc)[:300], "exception_type": type(exc).__name__}
         if requests:
@@ -31,23 +31,23 @@ class ValidationOperations:
                     raise ValueError("Target write state is unknown" if blocked else "Target revision is unavailable")
                 import Part
                 target, inputs = comparison_shape(group)
-                if target_view_revision(document, group, group) != target_revision:
+                if target_view_revision(document, group) != target_revision:
                     raise ValueError("Target changed while copying comparison geometry")
-                path = step_source_path(group.SourceFile)
+                path = stp_source_path(group.SourceFile)
                 source_revision = file_sha256(path)
                 binding = PROCESS.SESSION_BINDINGS.get(params["session_id"])
                 if binding is None or binding["document"] is not document or binding["source_revision"] != source_revision:
-                    raise ValueError("Source STEP differs from the bound session snapshot")
+                    raise ValueError("Source STP differs from the bound session snapshot")
                 source = Part.read(path)
                 if file_sha256(path) != source_revision:
-                    raise ValueError("Source STEP changed during comparison read")
+                    raise ValueError("Source STP changed during comparison read")
                 if source.isNull() or not source.isValid() or len(source.Solids) != 1:
                     raise ValueError("Source is not a readable valid single solid")
                 checks = compare_shapes(source, target, ir_tolerance_contract(group), options)
                 applicability, reason = "current", "same_dependency_revisions"
                 try:
                     if (comparison_inputs_state(group) != inputs
-                            or target_view_revision(document, group, group) != target_revision
+                            or target_view_revision(document, group) != target_revision
                             or file_sha256(path) != source_revision):
                         applicability, reason = "stale", "comparison_inputs_changed"
                 except (OSError, AttributeError, RuntimeError, TypeError, ValueError) as exc:
@@ -68,7 +68,7 @@ class ValidationOperations:
                 audit = {"status": "unavailable", "reason": "write_state_unknown" if blocked else "target_revision_unavailable"}
             else:
                 audit = parametric_audit(group)
-                after = target_view_revision(document, group, group)
+                after = target_view_revision(document, group)
                 if after != target_revision:
                     from REAgent.host.workspace.recovery import block_document_writes
                     raise block_document_writes(document, "Parameter audit changed persistent Target revision")

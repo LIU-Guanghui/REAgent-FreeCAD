@@ -4,15 +4,33 @@ import math
 
 from REAgent.host.analysis.measurements import summarize_shape
 from REAgent.host.analysis.topology import stable_digest
+from REAgent.host.process_state import PROCESS
 from REAgent.host.workspace.model import copy_world_shape, owned_objects, placement_summary, result_shape
 from REAgent.host.workspace.properties import _CODECS, encode, sketch_content_state
 
 
+class NativeSourceReference:
+    """Notice changes to the imported Source outside owned observation."""
+
+    def __init__(self, document):
+        self.document = document
+        self.changed = False
+
+    def slotChangedObject(self, obj, prop=None):
+        if prop in ("Label", "Label2", "Visibility"):
+            return
+        operation = PROCESS.ACTIVE_OPERATION or {}
+        if obj.Document is self.document and operation.get("stage") != "observation":
+            self.changed = True
+
+    slotCreatedObject = slotDeletedObject = slotChangedObject
+
+
 def source_view_revision(source):
-    revision = getattr(source, "SourceSHA256", None)
-    if not isinstance(revision, str) or not revision:
-        raise ValueError("Source has no STEP SHA-256 revision")
-    return revision
+    binding = PROCESS.SESSION_BINDINGS[PROCESS.ACTIVE_TASK["session_id"]]
+    if binding["document"] is not source.Document or binding["source_reference"].changed:
+        raise ValueError("The native Source changed. Start a new task from the reference file.")
+    return binding["source_revision"]
 
 
 def document_history_state(document):
@@ -37,6 +55,15 @@ def source_model_state(source, *, include_history=True):
 
 
 def source_geometry_state(source):
+    if source.TypeId == "App::DocumentObjectGroup":
+        return None
+    if source.TypeId == "Mesh::Feature":
+        mesh = source.Mesh
+        box = mesh.BoundBox
+        return {"facet_count": mesh.CountFacets, "bounding_box_mm": {
+            axis.lower() + "_" + suffix.lower(): float(getattr(box, axis + suffix))
+            for axis in "XYZ" for suffix in ("Min", "Length")
+        }}
     return summarize_shape(source.Shape)
 
 
@@ -109,7 +136,7 @@ def geometry_digest(shapes):
     return stable_digest(shapes, length=24)
 
 
-def target_view_revision(document, target_body, reconstruction_ir):
+def target_view_revision(document, target_body):
     # Active observation transactions and derived geometry are recovery
     # evidence, not part of the persistent model revision.
     state = target_model_state(document, target_body, include_history=False)

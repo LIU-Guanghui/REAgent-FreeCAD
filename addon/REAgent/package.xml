@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
     <name>REAgent</name>
-    <description>An embedded minimal agent for editable native STEP reconstruction.</description>
+    <description>An embedded agent for editable FreeCAD modeling from STP, STL, DXF drawings, images and text.</description>
     <version>0.0.1</version>
     <date>2026-10-28</date>
     <maintainer>REAgentFreeCAD contributors</maintainer>

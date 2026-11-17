@@ -2,11 +2,10 @@
 
 import os
 
+from REAgent.application.session import WORKFLOWS
 from REAgent.ui import QtCore, QtGui, QtWidgets
 from REAgent.ui.transcript import Transcript
 
-
-_DEFAULT_GOAL = "Reconstruct the STEP using editable native FreeCAD features; inspect the result and report unresolved questions."
 
 
 def plain_label(text=""):
@@ -73,7 +72,7 @@ class Panel(QtWidgets.QDockWidget):
         self.commands = {}
         self._callbacks = {}
         for name, label, callback in (
-            ("stp2cad", "STEP to CAD…", self.stp2cad),
+            *((name, task.title + "…", lambda key=name: self.start_task(key)) for name, task in WORKFLOWS.items()),
             ("compact", "Compact context", lambda: manager.action("compact")),
             ("status", "Status", lambda: manager.open_viewer("status")),
             ("compare", "Compare Source and Target…", manager.compare),
@@ -145,6 +144,7 @@ class Panel(QtWidgets.QDockWidget):
     def set_controls(self, enabled, *, can_new_task, can_send):
         for name, action in self.commands.items():
             action.setEnabled(enabled[name])
+        self.commands["compare"].setVisible(enabled["compare_available"])
         self.settings.setEnabled(enabled["settings"])
         self.new_task.setEnabled(can_new_task)
         self.images.setEnabled(enabled["images"])
@@ -196,35 +196,61 @@ class Panel(QtWidgets.QDockWidget):
             return False
         return self._callbacks[name]() is not False
 
-    def stp2cad(self, objective=None):
-        if objective is None:
-            objective = self.input.toPlainText().strip()
-            if objective.startswith("/"):
-                objective = ""
-        objective = objective or _DEFAULT_GOAL
+    def start_task(self, kind):
+        workflow = WORKFLOWS[kind]
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("STEP to CAD")
+        dialog.setWindowTitle(workflow.title)
         layout = QtWidgets.QVBoxLayout(dialog)
         form = QtWidgets.QFormLayout()
-        source = self._path_row(form, "STEP file", False)
-        output = self._path_row(form, "Save to", True)
+        source = None
+        multiple = workflow.image_inputs
+        if workflow.file_label:
+            source = self._path_row(form, workflow.file_label, file_filter=workflow.file_filter, multiple=multiple)
+        output = self._path_row(form, "Save to")
         output.setPlaceholderText("Folder for the model and task log")
+        description = QtWidgets.QPlainTextEdit()
+        description.setMaximumHeight(100)
+        original = self.input.toPlainText().strip()
+        if not original.startswith("/"):
+            description.setPlainText(original)
+        form.addRow("Part description" if source is None else "Additional instructions", description)
 
-        def suggest_output(path):
-            if not output.text().strip() and os.path.isfile(path):
-                output.setText(os.path.dirname(path))
+        def paths():
+            if source is None:
+                return []
+            if multiple:
+                return [path.strip() for path in source.toPlainText().splitlines() if path.strip()]
+            return [source.text().strip()] if source.text().strip() else []
 
-        source.textChanged.connect(suggest_output)
+        def update():
+            selected = paths()
+            if selected and not output.text().strip() and os.path.isfile(selected[0]):
+                output.setText(os.path.dirname(selected[0]))
+            valid_input = all(os.path.isabs(path) and os.path.isfile(path) for path in selected)
+            has_input = bool(selected) if source is not None else bool(description.toPlainText().strip())
+            buttons.button(QtWidgets.QDialogButtonBox.Ok).setEnabled(
+                has_input and valid_input and os.path.isabs(output.text().strip()) and os.path.isdir(output.text().strip()))
+
         layout.addLayout(form)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Start")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
+        if source is not None:
+            source.textChanged.connect(update)
+        output.textChanged.connect(update)
+        description.textChanged.connect(update)
+        update()
         accepted = self._manager.present(dialog) == QtWidgets.QDialog.Accepted
-        source_path, output_dir = source.text(), output.text()
+        task = {"output_dir": output.text().strip()}
+        if workflow.native_source and paths():
+            task["source_path"] = paths()[0]
+        elif workflow.image_inputs:
+            task["paths"] = paths()
+        objective = description.toPlainText().strip() or workflow.objective
         dialog.deleteLater()
-        if accepted and self._manager.stp2cad(source_path, output_dir, objective):
+        if accepted and self._manager.start_task(kind, task, objective):
             self.message("user", objective)
             self.input.clear()
             return True
@@ -245,10 +271,11 @@ class Panel(QtWidgets.QDockWidget):
         snapshot, context = details["snapshot"], details["context"]
         facts = snapshot.get("controller") or {}
         artifacts = facts.get("artifacts") or {}
+        workflow = WORKFLOWS.get(facts.get("workflow"))
         state = str(snapshot.get("status", "idle")).replace("_", " ")
         rows = ["Task", "Last reported state: " + state[:1].upper() + state[1:],
                 "Snapshot received: " + str(details["snapshot_received_at"] or "Not received"),
-                "Type: " + ("CAD reconstruction" if facts else "Conversation" if snapshot.get("mode") == "chat" else
+                "Type: " + (workflow.title if workflow else "Conversation" if snapshot.get("mode") == "chat" else
                             "Ready for the first message" if details["task_open"] else "No active task"),
                 "", "Model: " + str(context.get("model") or "Not configured"), "", "Context"]
         capacity = context.get("capacity_tokens")
@@ -296,8 +323,13 @@ class Panel(QtWidgets.QDockWidget):
         if snapshot.get("callback_error"):
             rows.append("Presentation callback failed: " + str(snapshot["callback_error"]))
         if facts:
-            rows.extend(("", "CAD documents", "Source: " + str(facts.get("source_document") or "Not created"),
-                         "Target: " + str(facts.get("target_document") or "Not created"), "", "Output",
+            rows.extend(("", "CAD documents", "Target: " + str(facts.get("target_document") or "Not created")))
+            if workflow and workflow.native_source:
+                rows.append("Source: " + str(facts.get("source_document") or "Not created"))
+            if facts.get("inputs"):
+                rows.extend(("", "Reference files"))
+                rows.extend(item["filename"] for item in facts["inputs"])
+            rows.extend(("", "Output",
                          "Folder: " + str(artifacts.get("output_dir") or "Not selected"),
                          "Model file (planned): " + str(artifacts.get("model_path") or "Not allocated")))
             action = snapshot.get("action") or {}
@@ -308,12 +340,32 @@ class Panel(QtWidgets.QDockWidget):
             rows.append("Messages awaiting model processing: " + str(sum(item["status"] == "pending" for item in requirements)))
             receipt = facts.get("delivery_receipt")
             if receipt:
-                rows.extend(("", "Last confirmed reconstruction delivery"))
-                for name, check in receipt.get("checks", {}).items():
-                    rows.append(name + ": " + str(check.get("status") or "unknown"))
-                limits = receipt.get("limitations") or []
-                rows.append("Limitations: " + (str(len(limits)) if limits else "None recorded"))
-                rows.extend("  " + item["check"] + ": " + str(item.get("reason") or item["status"]) for item in limits)
+                rows.extend(("", "Last reconstruction delivery"))
+                if workflow and workflow.compares_stp:
+                    for name, check in receipt["checks"].items():
+                        rows.append(name + ": " + str(check.get("status") or "unknown"))
+                    limits = receipt["limitations"]
+                    rows.append("Limitations: " + (str(len(limits)) if limits else "None recorded"))
+                    rows.extend("  " + item["check"] + ": " + str(item.get("reason") or item["status"]) for item in limits)
+                else:
+                    solid_count = receipt["model_state"]["result_geometry"]["solid_count"]
+                    rows.extend((f"Native result · {solid_count} valid solid", "Evidence cited in the model's checks"))
+                    for check in receipt["checks"]:
+                        rows.extend(("", check["requirement"] + " · " + check["verdict"],
+                                     check["observed"], check["source"] + " · " + check["observation_id"]))
+                        measurement = check.get("measurement")
+                        if measurement is not None:
+                            unit = measurement["unit"]
+                            field = " / ".join(str(key) for key in measurement["readback_path"])
+                            if measurement.get("target_object"):
+                                field = measurement["target_object"] + " · " + field
+                            rows.append("Target field · " + field)
+                            rows.append(f'Nominal {measurement["nominal"]} {unit} · Measured {measurement["measured"]} {unit}')
+                            tolerance = measurement.get("tolerance")
+                            if tolerance is not None:
+                                rows.append(f'Drawing tolerance {tolerance["lower"]:+} to {tolerance["upper"]:+} {unit}')
+                    if receipt["notes"]:
+                        rows.append(receipt["notes"])
             manual = facts.get("recent_manual_comparison") or {}
             if manual.get("status") == "recorded":
                 rows.append("Last manual comparison: " + str(manual.get("applicability", "unknown")))
@@ -346,7 +398,7 @@ class Panel(QtWidgets.QDockWidget):
         event.ignore()
 
     def _command_problem(self, text):
-        hint = "Valid commands: " + ", ".join("/" + name for name in self.commands) + "."
+        hint = "Valid commands: " + ", ".join("/" + name for name, action in self.commands.items() if action.isVisible()) + "."
         parts = text.split()
         if len(parts) != 1:
             return "Commands do not accept inline arguments. " + hint
@@ -390,7 +442,8 @@ class Panel(QtWidgets.QDockWidget):
                 or (raw[1:].casefold() in self.commands and self.commands[raw[1:].casefold()].isEnabled())):
             self._suggestions.hide()
             return
-        names = [name for name in self.commands if name.startswith(raw[1:].lower())]
+        names = [name for name, action in self.commands.items()
+                 if action.isVisible() and name.startswith(raw[1:].lower())]
         available = []
         for name in names:
             item = QtWidgets.QListWidgetItem("/" + name + "    " + self.commands[name].text())
@@ -437,18 +490,25 @@ class Panel(QtWidgets.QDockWidget):
         if accepted:
             self.input.clear()
 
-    def _path_row(self, form, title, directory):
+    def _path_row(self, form, title, *, file_filter=None, multiple=False):
         widget = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(widget)
         row.setContentsMargins(0, 0, 0, 0)
-        edit = QtWidgets.QLineEdit()
+        edit = QtWidgets.QPlainTextEdit() if multiple else QtWidgets.QLineEdit()
+        if multiple:
+            edit.setMaximumHeight(84)
         button = QtWidgets.QPushButton("…")
 
         def browse():
-            if directory:
-                selected = QtWidgets.QFileDialog.getExistingDirectory(self, title, edit.text())
+            if multiple:
+                selected, _ = QtWidgets.QFileDialog.getOpenFileNames(self, title, "", file_filter)
+                if selected:
+                    edit.setPlainText("\n".join(selected))
+                return
+            if file_filter:
+                selected = QtWidgets.QFileDialog.getOpenFileName(self, title, edit.text(), file_filter)[0]
             else:
-                selected = QtWidgets.QFileDialog.getOpenFileName(self, title, edit.text(), "STEP (*.step *.stp)")[0]
+                selected = QtWidgets.QFileDialog.getExistingDirectory(self, title, edit.text())
             if selected:
                 edit.setText(selected)
 

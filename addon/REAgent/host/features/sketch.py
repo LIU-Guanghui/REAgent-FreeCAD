@@ -357,7 +357,7 @@ class SketchOperations:
 
     def _validate_sketch(self, params):
 
-        document, _source, group, config = target_state(params["document"])
+        document, group = target_state(params["document"])
         binding = PROCESS.SESSION_BINDINGS.get(params["session_id"])
         if (binding is None or binding.get("document") is not document
                 or binding.get("role") != "target"):
@@ -374,7 +374,7 @@ class SketchOperations:
             return (list(document.UndoNames), list(document.RedoNames),
                     bool(document.HasPendingTransaction), sketch.GeometryCount,
                     sketch.ConstraintCount, [str(state) for state in sketch.State],
-                    target_view_revision(document, group, config))
+                    target_view_revision(document, group))
 
         before = snapshot()
         try:

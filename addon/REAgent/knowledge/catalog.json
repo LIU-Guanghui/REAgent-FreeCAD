@@ -2,6 +2,31 @@
   "entry": "SKILL.md",
   "cards": [
     {
+      "knowledge_id": "tasks/drawing2cad",
+      "relative_path": "references/tasks/drawing2cad.md",
+      "purpose": "Model against a dimensioned DXF engineering drawing."
+    },
+    {
+      "knowledge_id": "tasks/image2cad",
+      "relative_path": "references/tasks/image2cad.md",
+      "purpose": "Infer an editable part from reference images."
+    },
+    {
+      "knowledge_id": "tasks/stl2cad",
+      "relative_path": "references/tasks/stl2cad.md",
+      "purpose": "Reconstruct and compare a part from an STL mesh."
+    },
+    {
+      "knowledge_id": "tasks/stp2cad",
+      "relative_path": "references/tasks/stp2cad.md",
+      "purpose": "Reconstruct and compare a single STP solid."
+    },
+    {
+      "knowledge_id": "tasks/text2cad",
+      "relative_path": "references/tasks/text2cad.md",
+      "purpose": "Model a single part and check it against the user requirements."
+    },
+    {
       "knowledge_id": "workflow/entry",
       "relative_path": "references/workflow/entry.md",
       "purpose": "End-to-end iterative reconstruction workflow."

@@ -3,6 +3,7 @@
 import json
 
 from REAgent.ui import QtCore, QtGui, QtWidgets
+from REAgent.ui.input_images import read_input
 from REAgent.ui.panel import plain_label
 from REAgent.application.presentation import read_preview_image
 
@@ -24,13 +25,12 @@ class ImageView(QtWidgets.QGraphicsView):
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
 
-    def set_image(self, data):
+    def set_image(self, pixmap):
         self._fit = False
         self.resetTransform()
-        pixmap = QtGui.QPixmap()
-        loaded = pixmap.loadFromData(data, "PNG")
         self._item.setPixmap(pixmap)
         self.scene().setSceneRect(QtCore.QRectF(pixmap.rect()))
+        loaded = not pixmap.isNull()
         self.setEnabled(loaded)
         if loaded:
             self.fit_image()
@@ -73,7 +73,7 @@ class ImageView(QtWidgets.QGraphicsView):
             self.fit_image()
 
 class ImageViewer(QtWidgets.QDialog):
-    """Nonmodal task history; load only the selected registered capture."""
+    """Nonmodal task images; load only the selected file."""
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -112,7 +112,9 @@ class ImageViewer(QtWidgets.QDialog):
     def update_entries(self, entries):
         if [entry["image_id"] for entry in entries] == [entry["image_id"] for entry in self._entries]:
             return
-        selected = self.select.currentIndex()
+        previous = self.select.currentIndex()
+        selected_id = self._entries[previous]["image_id"] if 0 <= previous < len(self._entries) else None
+        selected = next((index for index, entry in enumerate(entries) if entry["image_id"] == selected_id), -1)
         self._entries = list(entries)
         self.select.blockSignals(True)
         self.select.clear()
@@ -132,14 +134,23 @@ class ImageViewer(QtWidgets.QDialog):
         entry = self._entries[index]
         self.previous.setEnabled(index > 0)
         self.next.setEnabled(index + 1 < len(self._entries))
+        reference = entry.get("input")
         try:
-            data = read_preview_image(entry)
-            if not self.image.set_image(data):
-                raise ValueError("PNG decoding failed")
+            if reference is not None:
+                pixmap = QtGui.QPixmap.fromImage(read_input(reference))
+            else:
+                pixmap = QtGui.QPixmap()
+                pixmap.loadFromData(read_preview_image(entry), "PNG")
+            if not self.image.set_image(pixmap):
+                raise ValueError("Image decoding failed")
         except (OSError, KeyError, AttributeError, RuntimeError, TypeError, ValueError) as exc:
-            self.image.set_image(b"")
+            self.image.set_image(QtGui.QPixmap())
             self.zoom.setText("—")
             self.identity.setText("Image unavailable: " + str(exc)[:400])
+            return
+        if reference is not None:
+            self.identity.setText("Source image %s · %s" % (reference["index"], reference["filename"]))
+            self.identity.setToolTip(reference["path"])
             return
         artifact = entry["artifact"]
         self.identity.setText("Capture %s · %s · historical revision %s" % (

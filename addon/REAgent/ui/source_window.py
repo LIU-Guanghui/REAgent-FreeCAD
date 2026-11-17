@@ -1,14 +1,13 @@
 """Main-window owner of one task, worker, presentation and cooperative shutdown."""
 
 import json
-import os
 from datetime import datetime
 from enum import Enum
 
 import FreeCADGui as Gui
 
 from REAgent.ui import QtCore, QtWidgets
-from REAgent.application.session import assert_source_release
+from REAgent.application.session import WORKFLOWS, assert_source_release
 from REAgent.application.profiles import idle_context
 from REAgent.ui.panel import Panel
 from REAgent.ui.viewers import ImageViewer, TaskViewer
@@ -219,27 +218,20 @@ class SourceWindowController(QtCore.QObject):
             if self._close_intent:
                 QtCore.QTimer.singleShot(0, lambda: self._advance_close("progress"))
 
-    def stp2cad(self, source, output, objective):
+    def start_task(self, kind, task, objective):
         if not self._task_open or self._snapshot.get("controller"):
-            self.notice("Finish the current action/task before starting another.")
-            return False
-        if (not os.path.isabs(source) or not os.path.isfile(source)
-                or os.path.splitext(source)[1].lower() not in (".step", ".stp")
-                or not os.path.isabs(output) or not os.path.isdir(output)):
-            self.notice("Choose an existing absolute STEP path and an existing absolute output directory.")
+            self.notice("Finish the current action or task before starting another.")
             return False
         if not self._snapshot.get("model_configured") and (self._config is None or self._draft_credentials is None):
             self.configure()
             if self._config is None or self._draft_credentials is None:
                 return False
-        if self.action("stp2cad", {"config": self._config, "credentials": self._draft_credentials,
-                                   "task": {"source_path": source, "output_dir": output, "observation_policy": "visual"},
-                                   "objective": objective}):
+        if self.action("start_task", {"config": self._config, "credentials": self._draft_credentials,
+                                      "kind": kind, "task": task, "objective": objective}):
             self._reset_views()
             self._results = ()
             self._progress = None
             self.panel.reset_task()
-            self.notice("STEP: " + source + "\nOutput: " + output)
             self._render()
             return True
         return False
@@ -248,11 +240,11 @@ class SourceWindowController(QtCore.QObject):
         if not self._can_act(closing=closing):
             self.notice("The original worker is busy or closing; this action was not queued.")
             return False
-        if action not in ("stp2cad", "chat", "configure", "advance", "compact", "close") and not self._snapshot.get("controller"):
+        if action not in ("start_task", "chat", "configure", "advance", "compact", "close") and not self._snapshot.get("controller"):
             self.notice("There is no retained task for this action.")
             return False
         if self._worker is None:
-            if action not in ("stp2cad", "chat"):
+            if action not in ("start_task", "chat"):
                 return False
             self._worker = Worker(self)
             self._worker.ready.connect(self._drain, QtCore.Qt.QueuedConnection)
@@ -306,7 +298,7 @@ class SourceWindowController(QtCore.QObject):
 
     def compare(self):
         facts = self._snapshot.get("controller") or {}
-        dialog = ComparisonDialog(self.panel, facts)
+        dialog = ComparisonDialog(self.panel, facts, geometry=WORKFLOWS[facts["workflow"]].compares_stp)
         accepted = self.present(dialog) == QtWidgets.QDialog.Accepted
         options, request = dialog.options, dialog.view_request
         dialog.deleteLater()
@@ -442,10 +434,14 @@ class SourceWindowController(QtCore.QObject):
         idle = self._can_act()
         writable = active and facts.get("session_status") == "ready" and not facts.get("target_writes_blocked")
         viewing = self._input_dialog is None and self._close_intent is None
+        workflow = WORKFLOWS.get(facts.get("workflow"))
+        compares = bool(workflow and workflow.paired_views)
         enabled = {"settings": idle and (not active or self._snapshot.get("status") in ("paused", "ready")),
-                   "stp2cad": idle and self._task_open and not active, "pause": self._busy and self._close_intent is None,
+                   **{name: idle and self._task_open and not active for name in WORKFLOWS},
+                   "pause": self._busy and self._close_intent is None,
                    "compact": idle and live and bool((self._snapshot.get("context") or {}).get("can_compact")),
-                   "compare": idle and writable and not facts.get("source_basis_unknown"),
+                   "compare": idle and writable and compares and not facts.get("source_basis_unknown"),
+                   "compare_available": compares,
                    "save": idle and self._can_save(), "journal": viewing and bool(self._journal_cache),
                    "close": (self._task_open or live or self._busy) and viewing and not self._worker_failed,
                    "status": viewing, "images": viewing and bool(self._image_entries)}
@@ -453,8 +449,8 @@ class SourceWindowController(QtCore.QObject):
         self.panel.set_controls(enabled, can_new_task=idle and not self._task_open and not live, can_send=can_send)
         self.panel.images.setToolTip("Task is ending." if self._close_intent else
             "Close the input form first." if self._input_dialog is not None else
-            "No prepared images yet. Source initial views appear after capture and preparation." if not self._image_entries else
-            "Browse all %d prepared task images." % len(self._image_entries))
+            "No task images yet." if not self._image_entries else
+            "Browse all %d task images." % len(self._image_entries))
         status = {"idle": "Ready", "ready": "Ready", "closed": "Ready", "paused": "Paused"}.get(self._snapshot.get("status"), "Working")
         if self._busy:
             status = "Pausing" if self._snapshot.get("pause", {}).get("paused") else "Working"
@@ -561,7 +557,7 @@ class SourceWindowController(QtCore.QObject):
         if self._viewer is None:
             return
         if self._viewer_kind == "images":
-            self._viewer.update_entries(list(self._image_entries.values()))
+            self._viewer.update_entries(sorted(self._image_entries.values(), key=lambda entry: "input" not in entry))
             return
         if self._viewer_kind == "status":
             details = self.details()
@@ -653,6 +649,10 @@ class SourceWindowController(QtCore.QObject):
         if facts.get("session_id"):
             self._presentation_session = facts["session_id"]
             self._task_artifacts = facts.get("artifacts") or self._task_artifacts
+            for item in facts.get("reference_images", []):
+                image_id = "reference-" + str(item["index"])
+                self._image_entries.setdefault((self._presentation_session, image_id),
+                    {"image_id": image_id, "label": item["filename"] + " · Source", "input": item})
         self._present_report((snapshot.get("report") or {}).get("reply"))
 
     def _present_report(self, report):

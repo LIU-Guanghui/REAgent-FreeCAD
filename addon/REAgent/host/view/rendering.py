@@ -11,7 +11,7 @@ from REAgent.host.analysis.measurements import geometry_bound_box
 from REAgent.protocol.observations import DEFAULT_VIEW_DIRECTIONS, IMAGE_CONTENT_LIMITS, view_direction_label
 from REAgent.host.view.cameras import VIEW_CAMERA_SPECS
 from REAgent.host.file_digest import file_sha256
-from REAgent.host.view.camera import apply_canonical_view, read_camera_metadata, camera_numeric_state, camera_state_differences, canonical_view_method, direction_error_deg, normalize_projection, refresh_camera, record_camera_failure, set_camera_height, set_camera_focus, set_orthographic_projection, wait_for_camera_stable
+from REAgent.host.view.camera import _camera_framing, apply_canonical_view, read_camera_metadata, camera_numeric_state, camera_state_differences, canonical_view_method, direction_error_deg, normalize_projection, refresh_camera, record_camera_failure, set_camera_height, set_camera_focus, set_orthographic_projection, wait_for_camera_stable
 
 
 def existing_directory(value):
@@ -255,7 +255,7 @@ def _render_canonical_views_core(
             "scale": {
                 "shared": True,
                 "camera_height_mm": float(common_height),
-                "millimeters_per_pixel": float(common_height) / float(height),
+                "millimeters_per_pixel": float(common_height) / min(width, height),
                 "margin_factor": 1.05,
                 "width_px": int(width),
                 "height_px": int(height),
@@ -332,6 +332,41 @@ def _render_canonical_views_core(
     return camera_metadata
 
 
+def render_drawing_view(view, capture, width, height, *, scope, region):
+    """Frame the visible DXF sheet or detail using its original presentation."""
+    direction = "top"
+    set_orthographic_projection(view)
+    apply_canonical_view(view, direction, scope)
+    view.fitAll()
+    state = wait_for_camera_stable(view, direction, scope, phase="fit")
+    view.stopAnimating()
+    center = None
+    if region is None:
+        viewport_width, viewport_height = view.getSize()
+        viewport_scale = state["fields"]["height"] / min(viewport_width, viewport_height)
+        scale = viewport_scale * max(viewport_width / width, viewport_height / height)
+    else:
+        x0, x1, y0, y1 = (region[key] for key in ("x_min", "x_max", "y_min", "y_max"))
+        if x1 <= x0 or y1 <= y0:
+            raise ValueError("Each sheet_region_mm maximum must exceed its minimum")
+        center = _camera_framing(view, state=state)["focus_mm"]
+        center.update(x=(x0 + x1) / 2, y=(y0 + y1) / 2)
+        scale = max((x1 - x0) / width, (y1 - y0) / height)
+        set_camera_focus(view, center, state=state)
+    camera_height = set_camera_height(view, 1.05 * scale * min(width, height))
+    state = wait_for_camera_stable(view, direction, scope, phase="drawing_frame", center=center)
+    pose = read_camera_metadata(view, direction, camera_height, width, height, state=state, center=center)
+    camera = {"projection": "orthographic", "requested_display_mode": None,
+              "normalized_display_mode": None, "object_display_mode": None,
+              "requested_transparency": 0, "transparency": {}, "camera": {direction: pose},
+              "scale": {"shared": True, "camera_height_mm": camera_height,
+                        "millimeters_per_pixel": pose["millimeters_per_pixel"], "margin_factor": 1.05,
+                        "width_px": width, "height_px": height, "focus_mm": pose["focus_mm"]}}
+    capture("source", direction, view, camera)
+    read_camera_metadata(view, direction, camera_height, width, height, center=center, expected=state)
+    return camera
+
+
 def focus_box(value):
     if value is None:
         return None, None
@@ -392,6 +427,8 @@ def _set_display_mode(view_object, label, requested):
 
 def normalize_view_query(query):
     """Apply view defaults and cross-field semantics after Bridge validation."""
+    if "sheet_region_mm" in query:
+        raise ValueError("sheet_region_mm is available for DXF Source captures")
     paired = query.get("paired", False)
     include_section = query.get("include_section", False)
     if include_section and not paired:
@@ -496,15 +533,23 @@ class _CaptureOutput:
             pass
         if view.saveImage(self.frame_path, width, height, "White") is False:
             raise RuntimeError("Native frame save failed")
-        reader = QtGui.QImageReader(self.frame_path)
-        dimensions = reader.size()
-        if (dimensions.width(), dimensions.height()) != (width, height):
-            raise RuntimeError("Native frame dimensions changed")
-        image = reader.read()
-        if (image.isNull() or image.depth() > 32
-                or image.bytesPerLine() * image.height() > 4 * IMAGE_CONTENT_LIMITS["max_image_pixels"]
-                or not _image_has_visible_content(image)):
-            raise RuntimeError("Native view frame is unreadable, blank or outside the raw allocation budget")
+        frame = QtCore.QFile(self.frame_path)
+        if not frame.open(QtCore.QIODevice.ReadOnly):
+            raise RuntimeError("Native view frame is unreadable: " + frame.errorString())
+        reader = QtGui.QImageReader(frame)
+        try:
+            dimensions = reader.size()
+            if (dimensions.width(), dimensions.height()) != (width, height):
+                raise RuntimeError("Native frame dimensions changed: " + reader.errorString())
+            image = reader.read()
+            if image.isNull():
+                raise RuntimeError("Native view frame is unreadable: " + reader.errorString())
+        finally:
+            frame.close()
+        if image.depth() > 32 or image.bytesPerLine() * image.height() > 4 * IMAGE_CONTENT_LIMITS["max_image_pixels"]:
+            raise RuntimeError("Native view frame exceeds the raw allocation budget")
+        if not _image_has_visible_content(image):
+            raise RuntimeError("The captured view is blank. Check the requested region or capture a wider view.")
         visible = [obj.Name for obj in self.scope.document.Objects
                    if getattr(getattr(obj, "ViewObject", None), "Visibility", False)]
         if output_direction == "section":

@@ -2,11 +2,21 @@
 
 from REAgent.protocol.definitions import CAPABILITY_VIEWS, LOG_READ_PROPERTIES, SESSION_ARTIFACTS_SCHEMA, TEXT_SCHEMA, VALIDATION_OPTIONS_SCHEMA, _DOCUMENT, operation
 from REAgent.protocol.features import FEATURE_SPECS
-from REAgent.protocol.observations import ENTITY_QUERY_SCHEMA, FEATURE_QUERY_SCHEMA, OBSERVATION_ROLES, SELECTION_RESOLUTION_QUERY_SCHEMA, SESSION_OBSERVATION_POLICY_SCHEMA, VIEW_EVIDENCE_CONTRACT, VIEW_QUERY_SCHEMA
-from REAgent.json_schema import array, branch, nullable, number, object_schema, open_object_schema, string, validate_schema_definition
+from REAgent.protocol.observations import (
+    ENTITY_QUERY_SCHEMA, FACE_NAME_SCHEMA, FEATURE_QUERY_SCHEMA, OBSERVATION_ROLES,
+    SELECTION_RESOLUTION_QUERY_SCHEMA, SESSION_OBSERVATION_POLICY_SCHEMA,
+    VIEW_EVIDENCE_CONTRACT, VIEW_QUERY_SCHEMA,
+)
+from REAgent.json_schema import array, integer, nullable, number, object_schema, open_object_schema, string, validate_schema_definition
 
 _OBSERVATION_QUERIES = {
-    "global": object_schema(),
+    "global": object_schema({
+        "mesh_section": object_schema({
+            "axis": string("STL Source only. Axis normal to the section plane", ("x", "y", "z")),
+            "coordinate_mm": number("Axis coordinate of the plane in model millimetres"),
+            "offset": integer("Zero-based first contour, default 0", 0),
+        }, ("axis", "coordinate_mm")),
+    }),
     "entity": {**ENTITY_QUERY_SCHEMA, "properties": {**ENTITY_QUERY_SCHEMA["properties"],
                 "edit_object": {**_DOCUMENT, "description": "Obtain writable geometry of this existing feature's actual predecessor"}}},
     "feature": FEATURE_QUERY_SCHEMA,
@@ -34,9 +44,9 @@ _OBSERVATION_QUERIES = {
         ),
     },
     "support_extension": object_schema({
-        "faces": ENTITY_QUERY_SCHEMA["properties"]["faces"],
+        "faces": array("Transition face handles", FACE_NAME_SCHEMA, minimum=1),
         "selectors": ENTITY_QUERY_SCHEMA["properties"]["selectors"],
-        "support_faces": array("Supporting face handles", string("FaceN handle")),
+        "support_faces": array("Supporting face handles", FACE_NAME_SCHEMA, minimum=1),
         "radius_mm": nullable(number("Optional extension radius in millimetres")),
     }),
     "view": VIEW_QUERY_SCHEMA,
@@ -66,19 +76,19 @@ OPERATION_SPECS = {
     ),
     "agent_start_session": operation(
         "session",
-        "Create or resume a role-local session with the Controller-allocated artifact identity bound to the actual Document. Match explicit source_path on resume before binding. Return the current STEP revision without certifying the checkpoint's historical source.",
+        "Create a role-local workspace bound to the allocated artifacts. Source uses STP, STL or DXF. Resume requires the original STP reference.",
         ("source", "target"),
         "committed",
         {
             "document": _DOCUMENT,
-            "source_path": string("Absolute STEP/STP source path"),
+            "source_path": string("Absolute STP, STL or DXF source path"),
             "resume_path": nullable(string("Existing Target FCStd checkpoint")),
             "artifacts": SESSION_ARTIFACTS_SCHEMA,
             "linear_tolerance_mm": number("Linear tolerance in millimetres"),
             "angular_tolerance_deg": number("Angular tolerance in degrees"),
             "session_id": TEXT_SCHEMA,
         },
-        ("document", "source_path", "artifacts", "session_id"),
+        ("document", "artifacts", "session_id"),
         ("The active process role supports reconstruction.",),
         timeout_class="long",
     ) | {"session_observation_policy": SESSION_OBSERVATION_POLICY_SCHEMA},
@@ -95,7 +105,7 @@ OPERATION_SPECS = {
     ),
     "agent_get_state": operation(
         "session",
-        "Read native objects, Result and transaction state without importing STEP. Report the bound Source revision and independent current-file hash availability/match; safe reads do not adopt changed source or clear recovery uncertainty.",
+        "Read native objects, Result and transaction state. When a native reference is bound, report its revision and the current file hash. Safe reads preserve the original task binding and recovery state.",
         ("target",),
         "none",
         {"document": _DOCUMENT},
@@ -139,9 +149,11 @@ OPERATION_SPECS = {
 
 }
 
+_TRANSACTION_NAME = {**TEXT_SCHEMA, "description": "Copy the full native stack-top name, including the REAgent prefix, from the transaction receipt or current native history."}
+
 for _name, _properties, _required, _effect in (
-    ("agent_undo", {"transaction": TEXT_SCHEMA}, ("transaction",), "committed"),
-    ("agent_redo", {"transaction": TEXT_SCHEMA}, ("transaction",), "committed"),
+    ("agent_undo", {"transaction": _TRANSACTION_NAME}, ("transaction",), "committed"),
+    ("agent_redo", {"transaction": _TRANSACTION_NAME}, ("transaction",), "committed"),
     ("agent_save", {}, (), "committed"),
 ):
     OPERATION_SPECS[_name] = operation("modeling" if _name != "agent_save" else "persistence",
@@ -175,11 +187,6 @@ if set(_observe_spec["input_schema"]["properties"]["kind"]["enum"]) != set(_obse
 if not set(_observe_spec["read_only_kinds"]) <= set(_observe_spec["query_schemas"]):
     raise ValueError("Read-only observation kinds exceed the declared queries")
 
-OBSERVATION_REQUEST_SCHEMA = {"oneOf": [
-    branch("kind", kind, {"query": query})
-    for kind, query in OPERATION_SPECS["agent_observe"]["query_schemas"].items()
-]}
-
 def request_side_effect(method, params):
     """Classify a schema-validated request; GUI/file-producing views are writes."""
     spec = OPERATION_SPECS[method]
@@ -192,5 +199,5 @@ def request_side_effect(method, params):
 for _spec in OPERATION_SPECS.values():
     validate_schema_definition(_spec["input_schema"])
 
-for _schema_value in (OBSERVATION_REQUEST_SCHEMA,):
-    validate_schema_definition(_schema_value)
+for _query in _OBSERVATION_QUERIES.values():
+    validate_schema_definition(_query)

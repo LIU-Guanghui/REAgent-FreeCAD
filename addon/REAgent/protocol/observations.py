@@ -19,6 +19,8 @@ def validate_observation_role(kind, query, role):
     if required and role != required:
         raise ValueError("%s is available only from %s" % (key, required.title()))
 
+INITIAL_SOURCE_DISPLAY_MODES = {"stp": "flat_lines", "mesh": "shaded"}
+
 INITIAL_VIEW_GROUPS = {
     "orthographic": {"columns": 3, "rows": 2, "directions": list(VIEW_DIRECTIONS[:6])},
     "corners": {"columns": 4, "rows": 2, "directions": list(VIEW_DIRECTIONS[6:])},
@@ -115,7 +117,7 @@ VIEW_EVIDENCE_CONTRACT = {
                "sampling": "width/height control native sampling; output_long_edge_px only caps final size; no upsampling",
                "limits": "Check pixels/allocation and count before rendering; actual PNG bytes after encoding; reject the entire group"},
     "initial_views": {"role": OBSERVATION_ROLES["initial_views"], "directions": list(VIEW_DIRECTIONS),
-                      "groups": INITIAL_VIEW_GROUPS, "projection": "orthographic", "display_mode": "flat_lines",
+                      "groups": INITIAL_VIEW_GROUPS, "projection": "orthographic", "display_modes": INITIAL_SOURCE_DISPLAY_MODES,
                       "transparency": 0, "header_height_px": 24},
 }
 
@@ -133,6 +135,8 @@ _FOCUS_BOX_SCHEMA = object_schema(
     },
     ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max"),
 )
+
+_SHEET_COORDINATES = ("x_min", "x_max", "y_min", "y_max")
 
 VIEW_QUERY_SCHEMA = object_schema(
     {
@@ -153,6 +157,10 @@ VIEW_QUERY_SCHEMA = object_schema(
             "Verified camera projection", VIEW_PROJECTIONS
         ),
         "focus_box_mm": nullable(_FOCUS_BOX_SCHEMA),
+        "sheet_region_mm": object_schema(
+            {key: number("DXF sheet coordinate in millimetres") for key in _SHEET_COORDINATES},
+            _SHEET_COORDINATES,
+        ),
         "paired": boolean(
             "Render Source and current Target together; requires role=%s. Pairs remain adjacent; up to two pairs per row"
             % OBSERVATION_ROLES["paired_view"]
@@ -253,6 +261,9 @@ FEATURE_QUERY_SCHEMA = object_schema({
     }),
 }, ("object",))
 
+FACE_NAME_SCHEMA = {**string("Face handle, e.g. Face1"), "pattern": r"^Face[1-9][0-9]*$"}
+EDGE_NAME_SCHEMA = {**string("Edge handle, e.g. Edge1"), "pattern": r"^Edge[1-9][0-9]*$"}
+
 ENTITY_QUERY_SCHEMA = object_schema(
     {
         "object": {
@@ -263,20 +274,16 @@ ENTITY_QUERY_SCHEMA = object_schema(
                 "Body's current Tip selection geometry; whole-result measurements use Body Shape."
             ),
         },
-        "faces": array(
-            "Omitted: all faces unless selectors are supplied; []: no faces; otherwise exact FaceN subset",
-            string("Transient face handle"),
-        ),
-        "edges": array(
-            "Omitted: all edges unless selectors are supplied; []: no edges; otherwise exact EdgeN subset",
-            string("Transient edge handle"),
-        ),
+        "faces": {"description": "Read all face records or name specific faces. Omitting faces, edges and selectors reads both kinds.",
+                  "oneOf": [string("All faces", ("all",)), array("Exact face names", FACE_NAME_SCHEMA, minimum=1)]},
+        "edges": {"description": "Read all edge records or name specific edges. Specify only the kinds you need.",
+                  "oneOf": [string("All edges", ("all",)), array("Exact edge names", EDGE_NAME_SCHEMA, minimum=1)]},
         "selectors": array(
-            "Geometry selectors copied from observation; omitted or [] adds no selection",
-            STABLE_SELECTOR_SCHEMA,
+            "Geometry selectors copied from an observation. Matched entities are added to the explicit selection.",
+            STABLE_SELECTOR_SCHEMA, minimum=1,
         ),
         "fields": array(
-            "Top-level entity keys; default compact. Face: " + ", ".join(ENTITY_FIELDS["face"]) + ". Edge: " + ", ".join(ENTITY_FIELDS["edge"]) + ". Use surface/curve for nested details. ['*'] discovers this scope's actual fields; stable_selector/semantic_ref require a writable current predecessor. Historical/Body/empty objects have no writable refs; quality flags are not exposed.",
+            "Top-level entity keys; default compact. Face: " + ", ".join((*ENTITY_FIELDS["face"], "boundary_edges")) + ". Edge: " + ", ".join(ENTITY_FIELDS["edge"]) + ". Use boundary_edges for a face's edge handles and edges to select edge records. Use surface/curve for nested details. ['*'] discovers this scope's actual fields; stable_selector/semantic_ref require a writable current predecessor.",
             string("Top-level field name; nested radius/axis values are under surface or curve"),
         ),
         "include": array("Optional global sections; default none", string("Section", ("wires", "topology", "stable_selection", "repetition", "relations", "semantic_regions"))),

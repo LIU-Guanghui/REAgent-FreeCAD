@@ -21,14 +21,13 @@ def _notify(session, tools, call, arguments, result, *, remaining=0, reason=None
 
 
 def _execute_batch(session, tools, reply, published, generation):
-    active = session.active
     calls = project_calls(reply.calls)
-    parsed, invalid, rejection = tools.preflight(calls, published, active.policy)
-    rejection_index = next((i for i, error in enumerate(invalid) if error is not None), 0)
+    parsed, invalid, rejection = tools.preflight(calls, published)
+    rejection_index = rejection["index"] if rejection else None
     rejection_id = calls[rejection_index].id if rejection else None
     rows = [(arguments, tools.unexecuted(
         "invalid_tool_request" if invalid[index] is not None else "batch_rejected" if rejection else "not_executed",
-        invalid[index] or rejection or "Call has not executed",
+        invalid[index] or (rejection["message"] if rejection else "Call has not executed"),
         cause=rejection_id if index != rejection_index else None))
         for index, arguments in enumerate(parsed)]
     session.begin_batch(reply, rows, rejection=rejection)
@@ -107,8 +106,8 @@ def run(session, tools, *, resume):
                 session.replay_report()
                 return session.publish(status="model_stopped", reason="report_run_ended")
             session.request_identity = {}
-            record, published = session.prepare_request(generation)
-            reply = session.request_model(record, generation)
+            record = session.prepare_request(generation)
+            reply, published = session.request_model(record, generation)
             if not reply.calls:
                 session.commit_batch(reply)
                 if session.report_only:

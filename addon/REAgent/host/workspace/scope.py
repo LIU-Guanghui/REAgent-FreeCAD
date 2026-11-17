@@ -259,9 +259,9 @@ class _ObservationScope:
     def owns_pending_transaction(self):
         return self.open_count == 1 and self.owns_active_transaction()
 
-    def create_preview(self, name):
+    def create_preview(self, name, type_id="Part::Feature"):
         self.assert_render_safe()
-        preview = self.document.addObject("Part::Feature", name)
+        preview = self.document.addObject(type_id, name)
         if not self.owns_pending_transaction():
             raise RuntimeError("Observation preview did not establish its owned document transaction")
         return preview

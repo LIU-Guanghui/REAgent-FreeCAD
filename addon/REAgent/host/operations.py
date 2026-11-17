@@ -6,6 +6,7 @@ from REAgent.resources import ADDON_PATH
 from REAgent.host.process_state import active_task_state, require_document, PROCESS
 from REAgent.host.view.presentation import main_window_state
 from REAgent.host.view.rendering import normalize_view_query
+from REAgent.host.workspace.model import source_objects
 from REAgent.host.capabilities import addon_metadata, capability_response
 from REAgent.protocol.definitions import PRODUCT_ID
 from REAgent.protocol.observations import initial_view_layout
@@ -51,22 +52,33 @@ class AdapterOperations:
         return self.queries.get_target_state(params)
 
     def _observe(self, params):
+        role = PROCESS.INSTANCE_ROLE
         kind, query = params["kind"], params["query"]
         forwarded = dict(query)
         forwarded["document"] = params.get("document")
+        if role == "source":
+            document, source = source_objects(forwarded["document"])
+            if source.TypeId == "App::DocumentObjectGroup":
+                if kind != "view":
+                    raise ValueError("DXF Source observations use the drawing view")
+                forwarded["session_id"] = params["session_id"]
+                result = self.scope.isolated_observation(document, self.views.get_drawing_view, forwarded, temporary=False)
+                return self.queries.with_observation_revision(document.Name, result)
         if kind == "global":
-            if PROCESS.INSTANCE_ROLE == "source":
+            if "mesh_section" in query and (role != "source" or source.TypeId != "Mesh::Feature"):
+                raise ValueError("mesh_section is available for an STL Source")
+            if role == "source":
                 result = self.queries.analyze_source(forwarded)
             else:
                 result = self.queries.observe_target_global(forwarded)
         elif kind == "entity":
             result = self.queries.inspect_geometry(forwarded)
         elif kind == "feature":
-            if PROCESS.INSTANCE_ROLE != "target":
+            if role != "target":
                 raise ValueError("Feature observation requires the Target instance")
             result = self.queries.observe_feature(forwarded)
         elif kind == "selection_resolution":
-            if PROCESS.INSTANCE_ROLE != "target":
+            if role != "target":
                 raise ValueError(
                     "Selection resolution requires the Target instance"
                 )
@@ -92,7 +104,7 @@ class AdapterOperations:
             forwarded["document"] = params.get("document")
             forwarded["session_id"] = params["session_id"]
             paired = forwarded.pop("paired")
-            if PROCESS.INSTANCE_ROLE == "target" and paired:
+            if role == "target" and paired:
                 result = self.scope.isolated_observation(doc, self.views.get_reconstruction_views, forwarded)
             else:
                 forwarded.pop("include_section", None)
