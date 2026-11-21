@@ -7,6 +7,7 @@ from threading import Lock
 from REAgent.protocol.features import FEATURE_SPECS
 from REAgent.protocol.definitions import resolve_retry_action
 from REAgent.json_schema import validate_input_schema
+from REAgent.cad.client import BridgeConnectionError
 from REAgent.cad.errors import PublicError, error_payload
 from REAgent.cad.results import ToolResult
 from REAgent.json_values import to_json_value
@@ -68,6 +69,27 @@ class Controller:
     def observe_journal(self, observer):
         self.workflow.journal_observer = observer
 
+    def pin_expected_target(self, expected_target):
+        """Set or clear the expected Target identity before opening a task."""
+        if not _execution_lock.acquire(blocking=False):
+            raise RuntimeError("The original Controller is still busy")
+        try:
+            if self.workflow.sessions or _current_controller not in (None, self):
+                raise PublicError("task_active", "controller_preflight",
+                                  "Finish the retained task before changing the expected Target")
+            client = self.workflow.clients["target"]
+            if expected_target is None:
+                client.reset_binding(clear_pin=True)
+                return
+            try:
+                if not isinstance(expected_target, dict) or set(expected_target) != {"process_id", "instance_id"}:
+                    raise ValueError("expected_target must be an object with process_id and instance_id")
+                client.pin_instance(expected_target["process_id"], expected_target["instance_id"])
+            except (ValueError, BridgeConnectionError) as exc:
+                raise PublicError("instance_binding_unavailable", "controller_preflight", str(exc)) from exc
+        finally:
+            _execution_lock.release()
+
     def execute(self, name, arguments=None, *, on_progress=None, execution=None):
         global _current_controller
         if not _execution_lock.acquire(blocking=False):
@@ -103,14 +125,14 @@ class Controller:
             result = self._execute_tool(name, arguments, context)
             # Startup tracks creation uncertainty; end reports binding effects.
             if (result.side_effect == "unknown"
-                    and name not in ("agent_start_session", "agent_close_session")):
+                    and name not in ("agent_open_session", "agent_close_session")):
                 for record in self.workflow.sessions.values():
                     mark_target_unknown(record)
             self.operation = {**self.operation, "status": "completed",
                               "side_effect": result.side_effect}
             return result
         except BaseException:
-            metadata_only = name in ("agent_finish_reconstruction", "agent_view_input")
+            metadata_only = name in ("agent_finish_reconstruction", "agent_read_image")
             if self.operation is not None:
                 self.operation = {**self.operation, "status": "interrupted",
                                   "side_effect": "none" if metadata_only else "unknown"}
@@ -121,15 +143,15 @@ class Controller:
             for record in self.workflow.sessions.values():
                 phase = record["startup"]["phase"]
                 if (name == "agent_close_session"
-                        or name == "agent_start_session" and phase in ("cleanup", "failed")):
+                        or name == "agent_open_session" and phase in ("cleanup", "failed")):
                     continue
                 mark_target_unknown(record)
                 role = ({"target_start": "target", "source_start": "source"}.get(phase)
-                        if name == "agent_start_session" else context.get("request_role"))
+                        if name == "agent_open_session" else context.get("request_role"))
                 if role == "source":
                     record["source_basis_unknown"] = True
                     record["initial_source_views"] = None
-                if name == "agent_start_session" and role and role not in record["startup"]["unconfirmed_roles"]:
+                if name == "agent_open_session" and role and role not in record["startup"]["unconfirmed_roles"]:
                     record["startup"]["unconfirmed_roles"].append(role)
             raise
         finally:
@@ -265,7 +287,7 @@ class Controller:
         context["request_summary"], context["request_role"] = _request_summary(name, args)
         record = workflow.record(args["session_id"]) if "session_id" in args else None
         if (record is not None and (record["startup"]["status"] != "ready" or record["closed"])
-                and name not in ("agent_get_state", "agent_close_session", "agent_journal")):
+                and name not in ("agent_get_state", "agent_close_session", "agent_manage_journal")):
             raise PublicError("session_start_incomplete", "public_preflight",
                               "Session is not active; inspect startup, close and journal facts before any modeling",
                               side_effect="unknown" if record["blocked"] else "none")
@@ -293,7 +315,7 @@ class Controller:
                               "The Controller supplies the current task binding")
         arguments = to_json_value(arguments)
         record = next(iter(self.workflow.sessions.values()), None)
-        if (name != "agent_start_session" and record is not None
+        if (name != "agent_open_session" and record is not None
                 and "session_id" in binding_keys(TOOLS[name]["input_schema"])):
             arguments["session_id"] = record["session_id"]
         return arguments
@@ -401,7 +423,7 @@ class Controller:
                 )
             if hasattr(exc, "runtime"): error["runtime"] = exc.runtime
             query, role = context.get("request_summary", {}), context.get("request_role", "agent")
-            if name != "agent_journal":
+            if name != "agent_manage_journal":
                 workflow.emit(record, "operation.failed", name, failure_summary(error, query), context["started"],
                               level="error", role=role, persist=not (record and record["journal"].start_failed))
             if record is not None: error["journal"] = record["journal"].metadata()

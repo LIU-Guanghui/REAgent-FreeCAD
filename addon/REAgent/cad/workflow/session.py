@@ -47,7 +47,7 @@ def _startup_phase(ctx, record, phase):
     record["startup"]["phase"] = phase
     ctx.progress(session_id=record["session_id"], phase=phase,
                  source_document=record["source_document"], target_document=record["target_document"],
-                 source_path=record["startup"]["source_path"], resume_path=record["startup"]["resume_path"],
+                 source_path=record["startup"]["source_path"],
                  artifacts=dict(record["artifacts"]))
 
 
@@ -78,6 +78,7 @@ def _release_closed(record, ctx):
                    if role != "target" or not target_abandoned]
     if (record["closed"] and record["journal"].complete and not unconfirmed
             and not record["source_document"] and (not record["target_document"] or target_abandoned)):
+        ctx.clients["target"].reset_binding(clear_pin=True)
         del ctx.sessions[record["session_id"]]
         return True
     return False
@@ -99,24 +100,19 @@ def start(args, ctx):
     for client in _clients.values():
         client.reset_binding()
     policy = args.get("observation_policy", SESSION_OBSERVATION_POLICY_SCHEMA["default"])
-    validate_input_schema(policy, SESSION_OBSERVATION_POLICY_SCHEMA, path="agent_start_session.observation_policy")
+    validate_input_schema(policy, SESSION_OBSERVATION_POLICY_SCHEMA, path="agent_open_session.observation_policy")
     workflow = ctx.spec
-    source_path = (absolute_path(args["source_path"], "agent_start_session.source_path",
+    source_path = (absolute_path(args["source_path"], "agent_open_session.source_path",
                                 NATIVE_SOURCE_EXTENSIONS[workflow.native_source]) if workflow.native_source else None)
     inputs = args.get("inputs", [])
     if bool(inputs) != workflow.image_inputs or (not source_path and "source_path" in args):
         raise ValueError("Input files must match the selected CAD workflow")
     stem = Path(source_path or inputs[0]["path"]).stem if source_path or inputs else "Model"
-    output_dir = absolute_path(args["output_dir"], "agent_start_session.output_dir")
-    resume_path = (absolute_path(args["resume_path"], "agent_start_session.resume_path", (".fcstd",))
-                   if "resume_path" in args else None)
-    if resume_path and not workflow.compares_stp:
-        raise ValueError("Checkpoint resume requires an STP workflow")
-    for field, path in (("source_path", source_path), ("resume_path", resume_path)):
-        if path and not os.path.isfile(path):
-            failure = PublicError("invalid_request", "public_validation", field + " must name an existing file")
-            failure.field_path = "agent_start_session." + field
-            raise failure
+    output_dir = absolute_path(args["output_dir"], "agent_open_session.output_dir")
+    if source_path and not os.path.isfile(source_path):
+        failure = PublicError("invalid_request", "public_validation", "source_path must name an existing file")
+        failure.field_path = "agent_open_session.source_path"
+        raise failure
     session_id = "session-" + uuid.uuid4().hex[:20]
     record = {"session_id": session_id, "workflow": workflow, "inputs": inputs,
               "source_document": None, "target_document": None, "source_revision": None,
@@ -130,7 +126,7 @@ def start(args, ctx):
     record.update(observation_policy=policy, initial_source_views=None, source_basis_unknown=False)
     record["startup"] = {
         "status": "starting", "phase": "preflight", "unconfirmed_roles": [],
-        "source_path": source_path, "resume_path": resume_path,
+        "source_path": source_path,
     }
     record["journal"] = JournalRecorder(session_id, record["artifacts"], on_update=ctx.journal_observer)
     _sessions[session_id] = record
@@ -138,17 +134,15 @@ def start(args, ctx):
     payload = {k: v for k, v in args.items() if k not in ("output_dir", "observation_policy", "inputs")}
     if source_path:
         payload["source_path"] = source_path
-    if resume_path:
-        payload["resume_path"] = resume_path
     payload.setdefault("document", "Model")
     source_revision_basis = "step_sha256" if workflow.compares_stp else "file_sha256"
     payload["session_id"] = session_id
     created = []
     try:
         _startup_phase(ctx, record, "journal_start")
-        record["journal"].record_start(function="agent_start_session", resume_path=resume_path, summary={
+        record["journal"].record_start(function="agent_open_session", summary={
             "operation_id": (ctx.call_context.get() or {}).get("operation_id"),
-            "workflow": workflow.name, "source_path": source_path, "resume_path": resume_path,
+            "workflow": workflow.name, "source_path": source_path,
             "input_count": len(inputs), "inputs": _input_labels(inputs),
             "observation_policy": policy})
         payload["artifacts"] = dict(record["artifacts"])
@@ -165,14 +159,14 @@ def start(args, ctx):
                               "A GUI retains an active or unresolved task; do not replace its binding")
         _startup_phase(ctx, record, "target_start")
         ctx.guard_journal(record)
-        target = _clients["target"].call("agent_start_session", **payload)
+        target = _clients["target"].call("agent_open_session", **payload)
         record["startup"]["source_path"] = target["source_path"]
         record["target_document"] = target["document"]
         created.append("target")
         context = ctx.call_context.get()
         if context is not None:
             context["side_effect"] = "committed"
-        _emit(record, "session.role_started", "agent_start_session", {"role": "target", "document": target["document"]}, role="target")
+        _emit(record, "session.role_started", "agent_open_session", {"role": "target", "document": target["document"]}, role="target")
         if target.get("artifacts") != record["artifacts"]:
             raise ValueError("Target must confirm the allocated artifact identity")
         if source_path:
@@ -183,10 +177,10 @@ def start(args, ctx):
                               if k in ("linear_tolerance_mm", "angular_tolerance_deg")}}
             _startup_phase(ctx, record, "source_start")
             ctx.guard_journal(record)
-            source = _clients["source"].call("agent_start_session", **source_args)
+            source = _clients["source"].call("agent_open_session", **source_args)
             record["source_document"] = source["document"]
             created.append("source")
-            _emit(record, "session.role_started", "agent_start_session",
+            _emit(record, "session.role_started", "agent_open_session",
                   {"role": "source", "document": source["document"]}, role="source")
             _startup_phase(ctx, record, "verify_revision")
             revision = target.get("source_revision")
@@ -232,7 +226,7 @@ def start(args, ctx):
         _startup_phase(ctx, record, "failed")
         raise
     _startup_phase(ctx, record, "record_started")
-    _emit(record, "task.started", "agent_start_session", {"source_path": target.get("source_path"),
+    _emit(record, "task.started", "agent_open_session", {"source_path": target.get("source_path"),
                                                   "target_document": target["document"], "observation_policy": policy})
     record["startup"]["status"] = "ready"
     _startup_phase(ctx, record, "ready")
@@ -354,14 +348,14 @@ def run(name, args, record, started, ctx):
     _emit = ctx.emit
     _KNOWN_EVIDENCE_ID_LIMIT = ctx.known_evidence_limit
     if name == "agent_ping": return _runtime("both" if ctx.spec.native_source else "target")
-    if name == "agent_start_session": return start(args, ctx)
+    if name == "agent_open_session": return start(args, ctx)
     if record is None: raise ValueError("session_id is required")
     if name == "agent_finish_reconstruction":
         return finish_reconstruction(args, record, ctx)
-    if name == "agent_journal":
+    if name == "agent_manage_journal":
         if args["action"] == "read":
             return record["journal"].read(args.get("after_sequence", 0), args.get("limit", 100))
-        output_dir = absolute_path(args["output_dir"], "agent_journal.output_dir")
+        output_dir = absolute_path(args["output_dir"], "agent_manage_journal.output_dir")
         if not same_path(output_dir, record["artifacts"]["output_dir"]):
             raise ValueError("flush output_dir must match the session's bound directory")
         journal = record["journal"].flush()
@@ -472,5 +466,5 @@ def run(name, args, record, started, ctx):
 
 
 def contribute():
-    return {name: run for name in ('agent_ping', 'agent_start_session', 'agent_get_state', 'agent_close_session',
-                                  'agent_journal', 'agent_finish_reconstruction')}
+    return {name: run for name in ('agent_ping', 'agent_open_session', 'agent_get_state', 'agent_close_session',
+                                  'agent_manage_journal', 'agent_finish_reconstruction')}

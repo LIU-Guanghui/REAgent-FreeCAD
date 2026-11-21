@@ -4,7 +4,7 @@ from REAgent.host.analysis.measurements import shape_summary_consistent
 from REAgent.host.validation.structure import single_solid_summary
 from REAgent.host.workspace.model import session_bodies, validate_boolean_tools, copy_world_shape
 from REAgent.host.workspace.properties import metadata, same_placement, set_bool, set_enum
-from REAgent.host.features.support.construction import history_context, shape_readback
+from REAgent.host.features.construction import history_context, shape_readback
 
 
 def preserve_tool_placement(tool, expected, original, changes):

@@ -50,24 +50,46 @@ After installation, `<FreeCAD installation directory>/Mod/REAgent/InitGui.py` sh
 4. **Observe and adjust:** Follow progress in the conversation. Open **Image** to browse the captured views and **Journal** to review the operation log. Use regular chat messages to request changes to the model.
 5. **Save the result:** In the Target window, inspect the feature tree and check that feature parameters are editable. In the Source panel, click **Save**. Confirm that the save succeeded, then click **End task**.
 
-## System architecture
+## CLI example
 
-The complete Addon lives in `addon/REAgent/`. `InitGui.py` registers the workbench and binds each FreeCAD process as Source or Target. Both roles run a local Bridge on the GUI thread.
+**REAgent** provides a command-line interface (CLI) that you can invoke with `python -m REAgent`.
 
-```text
-Source panel (GUI thread)
-    |
-    v
-Source worker: application/ -> agent/ <-> model/ <-> Model service
-                               |
-                               v
-                               cad/
-                               |
-                               +-- Local Bridge --> Source host/ (GUI thread)
-                               |                    Read-only observation
-                               |
-                               +-- Local Bridge --> Target host/ (GUI thread)
-                                                    Native modeling
+Save your model configuration as described above, then run the Python script below. Set `freecad_dir` to your FreeCAD installation directory. The example starts the Source and Target windows and uses the returned instance IDs to create a solid 10 mm cube with `text2cad`.
+
+```python
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+freecad_dir = Path(r"C:\Program Files\FreeCAD 1.1")
+cli_command = [str(freecad_dir / "bin" / "python.exe"), "-m", "REAgent"]
+cli_env = {**os.environ, "PYTHONPATH": str(freecad_dir / "Mod")}
+
+def run_cli(*args):
+    output = subprocess.check_output([*cli_command, *args,],env=cli_env,)
+    return json.loads(output)
+
+instances = run_cli("lifecycle", "start_instances","--freecad-exe", str(freecad_dir / "bin" / "FreeCAD.exe"),)["result"]
+source_args = ("--source-instance-id", instances["source"]["instance_id"])
+
+task_id = run_cli("ui", "new_task", *source_args,)["task_id"]
+task_args = ("--task-id", task_id, *source_args)
+
+run_cli(
+    "ui", "start_task", *task_args,
+    "--workflow", "text2cad",
+    "--target-instance-id", instances["target"]["instance_id"],
+    "--output-dir", tempfile.mkdtemp(prefix="reagent-box-"),
+    "--objective", "Create a solid 10 mm × 10 mm × 10 mm box at the origin.",
+)
+
+saved = run_cli("ui", "save", *task_args,)["result"]["last_saved_checkpoint"]
+print(saved["saved_to"])
+
+end = run_cli("ui", "end_task", *task_args)
+print(end["result"]["reason"])
 ```
 
 ## License

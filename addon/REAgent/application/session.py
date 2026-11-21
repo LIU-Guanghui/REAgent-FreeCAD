@@ -6,11 +6,44 @@ from REAgent.agent.errors import AgentError
 from REAgent.agent.run import Run, action_errors
 from REAgent.agent.tools import EmptyTools
 from REAgent.cad.controller import Controller, has_retained_task
+from REAgent.cad.errors import PublicError
 from REAgent.cad.adopted_observations import AdoptedObservations
 from REAgent.cad.toolset import CadTools
 from REAgent.cad.results import ToolResult
-from REAgent.workflows.registry import WORKFLOWS
-from .presentation import snapshot_state
+from REAgent.cad.tasks.registry import WORKFLOWS
+from .presentation import journal_update_payload, snapshot_state
+
+
+def normalize_objective(kind, objective=None):
+    """Return explicit non-empty objective or the file workflow's canonical default objective."""
+    if kind not in WORKFLOWS:
+        raise ValueError("Unknown CAD workflow: " + str(kind))
+    if objective is not None and not isinstance(objective, str):
+        raise ValueError("Objective must be a string")
+    text = objective.strip() if isinstance(objective, str) else ""
+    if text:
+        return text
+    workflow = WORKFLOWS[kind]
+    if workflow.objective:
+        return workflow.objective
+    raise ValueError("Describe the part to create")
+
+
+def prepare_open_arguments(workflow, arguments, prepare_inputs):
+    """Prepare arguments for agent_open_session, converting image2cad paths once in Worker."""
+    if not isinstance(arguments, dict):
+        raise AgentError("invalid_request", "Session arguments must be an object")
+    args = dict(arguments)
+    if workflow.image_inputs:
+        if "paths" not in args or not isinstance(args["paths"], list):
+            raise AgentError("invalid_reference", "Image workflow requires a paths list")
+        try:
+            args["inputs"] = prepare_inputs(args.pop("paths"))
+        except ValueError as exc:
+            raise AgentError("invalid_reference", str(exc)) from exc
+    elif "paths" in args:
+        raise AgentError("invalid_request", "Only image2cad accepts paths")
+    return args
 
 
 _CHAT_INSTRUCTIONS = """
@@ -96,24 +129,22 @@ class Session:
             self.run.lock.release()
 
     @action_errors()
-    def start_task(self, kind, arguments, objective, *, prepare_inputs, view_input):
+    def start_task(self, kind, arguments, objective=None, *, prepare_inputs, view_input, expected_target=None):
         self.run.enter()
         begun = False
         try:
             if self.cad_tools is not None and self.cad_tools.controller.task_state() is not None:
                 raise RuntimeError("Finish the retained task before starting another")
             workflow = WORKFLOWS[kind]
-            if not objective.strip():
-                raise ValueError("Describe the part to create")
+            objective = normalize_objective(kind, objective)
             if workflow.requires_images:
                 self.run.require_visual_model()
-            if workflow.image_inputs:
-                arguments = dict(arguments)
-                try:
-                    arguments["inputs"] = prepare_inputs(arguments.pop("paths"))
-                except ValueError as exc:
-                    raise AgentError("invalid_reference", str(exc)) from exc
+            arguments = prepare_open_arguments(workflow, arguments, prepare_inputs)
             controller = Controller(workflow, view_input=view_input)
+            try:
+                controller.pin_expected_target(expected_target)
+            except PublicError as exc:
+                raise AgentError(exc.code, str(exc)) from exc
             controller.observe_journal(self._journal_update)
             self.cad_tools = CadTools(controller)
             continuing = self.mode == "chat" and self.run.conversation is not None
@@ -137,10 +168,10 @@ class Session:
             self.run.activate(conversation, AdoptedObservations(), None, self.cad_tools, action=initial)
             self.run.state("starting")
             begun = True
-            result = self.cad_tools.controller.execute("agent_start_session", arguments, on_progress=self._progress,
+            result = self.cad_tools.controller.execute("agent_open_session", arguments, on_progress=self._progress,
                 execution={"actor": "human", "scope": "manual", "purpose": "action", "binding": None})
             self.run.batches.latest_results = (result,)
-            self.run.batches.latest_identities = ({"function": "agent_start_session"},)
+            self.run.batches.latest_identities = ({"function": "agent_open_session"},)
             facts = self.cad_tools.controller.task_state()
             self.cad_tools.bind(facts)
             self.run.activate(conversation, AdoptedObservations(), self.cad_tools.journal_binding, self.cad_tools, action=initial)
@@ -148,9 +179,9 @@ class Session:
                 self.cad_tools.action_started(initial, self.cad_tools.journal_binding)
             with self.run.control.lock:
                 self.run.control.active = facts is not None
-            self._publish_human("agent_start_session", result)
-            self.run.record_human(result, lambda value: self.cad_tools.human_material("agent_start_session", value),
-                                  function="agent_start_session")
+            self._publish_human("agent_open_session", result)
+            self.run.record_human(result, lambda value: self.cad_tools.human_material("agent_open_session", value),
+                                  function="agent_open_session")
             if result.is_error or facts is None:
                 return self.run.state("paused", "session_start_failed")
             return self._drive(resume=False)
@@ -358,12 +389,4 @@ class Session:
         return self.cad_tools.model_journal(**values)
 
     def _journal_update(self, recorder):
-        rows, characters = [], 0
-        for row in reversed(recorder.events[-200:]):
-            cost = len(str(row))
-            if characters + cost > 196608:
-                break
-            rows.append(row)
-            characters += cost
-        self.run.publish("journal_update", {"session_id": recorder.task,
-                         "events": list(reversed(rows)), "journal": recorder.metadata()})
+        self.run.publish("journal_update", journal_update_payload(recorder))

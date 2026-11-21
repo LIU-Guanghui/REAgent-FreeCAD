@@ -79,13 +79,13 @@ class JournalRecorder:
         self._notify()
         return record
 
-    def record_start(self, *, function, summary, resume_path=None):
+    def record_start(self, *, function, summary):
         """Strict startup gate; deliberately bypass WorkflowContext.emit."""
         stage = "journal_record"
         try:
             first = self._append("task.starting", function=function, summary=summary, role="agent")
             stage = "artifact_allocation"
-            selected, reservation = claim_artifacts(self.artifacts, resume_path)
+            selected, reservation = claim_artifacts(self.artifacts)
             self.artifacts.update(selected)
             self._path_claimed = True
             stage = "journal_claim_close"

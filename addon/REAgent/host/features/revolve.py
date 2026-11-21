@@ -3,8 +3,8 @@
 from functools import partial
 
 from REAgent.host.workspace.properties import metadata, native_link, number_readback, set_bool, set_enum, set_number
-from REAgent.host.features.support.construction import history_context, profile_readback, set_profile, shape_readback
-from REAgent.host.features.support.references import role_object
+from REAgent.host.features.construction import history_context, profile_readback, set_profile, shape_readback
+from REAgent.host.features.references import role_object
 
 _REVOLVE_TYPES = {
     "PartDesign_Revolution": "PartDesign::Revolution",

@@ -281,8 +281,11 @@ def request_summary(name, arguments: dict):
         summary["changed_fields"] = sorted(arguments["changes"])
         summary["values"] = {key: item for key, item in arguments["changes"].items()
                              if isinstance(item, (int, float, bool, str))}
-    if name == "agent_view_input":
-        summary["input_view"] = _pick(arguments, ("index", "region", "long_edge_px"))
+    if name == "agent_read_image":
+        if "index" in arguments:
+            summary["input_view"] = _pick(arguments, ("index", "region", "long_edge_px"))
+        else:
+            summary["evidence_read"] = _pick(arguments, ("evidence_id", "artifact_key"))
     if name == "agent_observe":
         summary["observation"] = observation_request_summary(arguments)
     elif "request" in arguments:
@@ -298,8 +301,10 @@ def request_summary(name, arguments: dict):
 def tool_message(event: ToolEvent, *, started=False):
     """A short presentation of actual request/result facts, without inferred reasoning."""
     name = str(event.get("function") or "Tool")
-    request = event.get("request", {})
-    value = {} if started else event["result"]
+    raw_request = event.get("request")
+    request = raw_request if isinstance(raw_request, dict) else {}
+    raw_result = None if started else event.get("result")
+    value = raw_result if isinstance(raw_result, dict) else {}
     label = name.removeprefix("agent_").replace("_", " ")
     if name == "agent_observe":
         observation = request.get("observation", {})
@@ -336,9 +341,16 @@ def tool_message(event: ToolEvent, *, started=False):
         if feature:
             label += " · " + str(feature)
     elif name == "agent_validate":
-        options = request.get("options") or value.get("requested") or {}
-        selected = [*options.get("measurements", []), *options.get("boolean_operations", [])]
-        selected.extend(key for key in ("surface_sampling", "parameter_audit") if options.get(key))
+        raw_options = request.get("options")
+        if not isinstance(raw_options, dict) or not raw_options:
+            raw_options = value.get("requested")
+        options = raw_options if isinstance(raw_options, dict) else {}
+        selected = []
+        for key in ("measurements", "boolean_operations"):
+            items = options.get(key)
+            if isinstance(items, list):
+                selected.extend(str(item) for item in items)
+        selected.extend(key for key in ("surface_sampling", "parameter_audit") if options.get(key) is True)
         label = "Compare / audit" + (" · " + ", ".join(selected) if selected else "")
     label = label[:1].upper() + label[1:]
     if started:

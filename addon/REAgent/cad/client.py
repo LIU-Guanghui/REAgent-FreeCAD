@@ -65,11 +65,31 @@ class BridgeClient:
         self.role = role
         self._operation_contract: dict[str, dict[str, Any]] = {}
         self._instance = None
+        self._pinned_instance = None
 
-    def reset_binding(self):
+    def pin_instance(self, process_id: int, instance_id: str) -> None:
+        """Require initial and subsequent native bindings to match this expected instance."""
+        if (isinstance(process_id, bool) or not isinstance(process_id, int) or process_id <= 0
+                or not isinstance(instance_id, str) or not instance_id):
+            raise ValueError("Expected instance identity requires a positive process_id and non-empty instance_id")
+        identity = (process_id, instance_id, self.role, self.port)
+        if self._instance is not None and identity != self._instance:
+            raise BridgeConnectionError(
+                "The bound FreeCAD instance differs from the expected instance; preserve the current task",
+                operation=OperationResult.failure(
+                    "agent_ping", error_class="precondition", code="instance_binding_unavailable",
+                    message="The bound FreeCAD instance differs from the expected instance",
+                    side_effect="none", retry_action="correct_request",
+                ),
+            )
+        self._pinned_instance = identity
+
+    def reset_binding(self, *, clear_pin: bool = False):
         """Only a new, explicitly started task may bind another GUI instance."""
         self._instance = None
         self._operation_contract = {}
+        if clear_pin:
+            self._pinned_instance = None
 
     def install_operation_contract(self, contract: Any) -> None:
         """Cache transport policy and input schemas from the Bridge capability source."""
@@ -192,6 +212,8 @@ class BridgeClient:
                 or window.get("gui_available") is not True):
             fail("The user-bound visible FreeCAD instance has invalid role, PID or startup identity")
         identity = (pid, token, self.role, self.port)
+        if self._pinned_instance is not None and identity != self._pinned_instance:
+            fail("The visible FreeCAD instance does not match the expected instance identity")
         if self._instance is not None and identity != self._instance:
             fail("The bound FreeCAD instance changed; preserve the current task and do not send another write")
         self._instance = identity

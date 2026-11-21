@@ -2,7 +2,7 @@
 
 from REAgent.protocol.features import validate_feature_relations
 from REAgent.host.workspace.properties import metadata, number_readback, set_bool, set_enum, set_number
-from REAgent.host.features.support.construction import history_context, profile_readback, set_profile, shape_readback
+from REAgent.host.features.construction import history_context, profile_readback, set_profile, shape_readback
 
 _HOLE_ENUM = {
     "DepthType": {"dimension": "Dimension", "through_all": "ThroughAll"},

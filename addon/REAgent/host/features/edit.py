@@ -13,7 +13,7 @@ from REAgent.host.workspace.properties import _CODECS, native_link, same_placeme
 from REAgent.host.workspace.state import geometry_digest, object_geometry_state, owned_geometry_state, target_model_state
 from .edit_parameters import prepare_parameters
 from .edit_sketch import SketchEdit
-from .support.construction import closed_profile, section_or_path, distinct_section_planes, whole_sketch_link
+from .construction import closed_profile, section_or_path, distinct_section_planes, whole_sketch_link
 from .hole import circle_profile
 
 

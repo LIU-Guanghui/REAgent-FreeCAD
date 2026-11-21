@@ -1,29 +1,14 @@
-"""Named fixed-provider profiles and platform-specific API key persistence."""
+"""Model profile settings dialog; pure profile/key validation lives in application."""
 
 import json
 import os
 import re
 
-
+from REAgent.application.credentials import open_key, protect_key
 from REAgent.application.profiles import (
     config_values, default_profiles, profile_connection, profile_efforts, read_profiles, semantic_inputs, validate_config,
 )
 from REAgent.ui import QtCore, QtWidgets
-from REAgent.ui.credentials import open_key, protect_key
-
-
-def saved_settings(read_settings):
-    """Restore only the current format, without probing or creating a worker."""
-    profiles, name = read_profiles(read_settings())
-    if name not in profiles:
-        return None
-    row = profiles[name]
-    config = validate_config(config_values(row))
-    credentials = None
-    if os.name == "nt" and row.get("protected_key"):
-        connection = profile_connection(row["provider"], row["base_url"])
-        credentials = {"api_key": open_key(row["protected_key"], connection["credential_binding"])}
-    return config, credentials, name
 
 
 class SettingsDialog(QtWidgets.QDialog):

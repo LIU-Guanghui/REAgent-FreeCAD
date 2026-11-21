@@ -4,13 +4,14 @@ from collections import deque
 from queue import Full, Queue
 from threading import Lock
 
+from REAgent.application.fixed_session import FixedSession
 from REAgent.application.session import Session, action_error
 from REAgent.json_values import to_json_value
 from REAgent.ui import QtCore
 from REAgent.ui.input_images import prepare_inputs, render_input
 
 
-_ACTIONS = frozenset(("start_task", "chat", "advance", "compare", "compact", "save", "close", "configure"))
+_ACTIONS = frozenset(("start_task", "chat", "advance", "compare", "compact", "save", "close", "configure", "exec_fixed"))
 def tool_fault(event):
     value = event.get("result") or {}
     if (value.get("caused_by_tool_call_id") or value.get("code") == "not_executed"
@@ -46,6 +47,8 @@ class Worker(QtCore.QThread):
         self._parked = False
         self._action_number = 0
         self._identity = {}
+        self._action_terminal_error = None
+        self._unbound_ping_result = None
         self._overflow_fault = self._overflow_terminal = self._overflow_reply = None
 
     def submit(self, action, arguments=None, *, presentation_task):
@@ -161,7 +164,10 @@ class Worker(QtCore.QThread):
             skipped = False
             self._overflowed = False
             self._overflow_fault = self._overflow_terminal = self._overflow_reply = None
+            self._action_terminal_error = None
+            self._unbound_ping_result = None
             previous_batch = self._session.last_batch if self._session is not None else None
+            prev_comparison = self._session.comparison if self._session is not None else None
             try:
                 with self._lock:
                     skipped = self._pause_intent and action in ("start_task", "chat", "advance", "compare", "compact")
@@ -177,25 +183,58 @@ class Worker(QtCore.QThread):
                 if credentials is not None:
                     credentials.clear()
                 snapshot = self.snapshot()
-                rows = self._session.last_batch if self._session is not None else ()
-                identities = self._session.last_result_identities if self._session is not None else ()
-                packet = {"action": action, **self._identity, "snapshot": snapshot, "error": error,
-                          "comparison": self._session.comparison if self._session else None,
+                if self._unbound_ping_result is not None:
+                    rows = (self._unbound_ping_result,)
+                    identities = ({"function": "agent_ping"},)
+                    new_results = True
+                elif self._session is not None:
+                    rows = self._session.last_batch
+                    identities = self._session.last_result_identities
+                    new_results = bool(rows) and rows is not previous_batch
+                elif hasattr(value, "value") and hasattr(value, "is_error"):
+                    rows = (value,)
+                    identities = ({"function": args.get("command", action)},)
+                    new_results = True
+                else:
+                    rows = ()
+                    identities = ()
+                    new_results = False
+                terminal_error = error or self._action_terminal_error
+                if terminal_error is None and action == "start_task" and snapshot.get("reason") == "session_start_failed":
+                    if new_results and rows and getattr(rows[-1], "is_error", False):
+                        val = to_json_value(rows[-1].value)
+                        terminal_error = val if isinstance(val, dict) else {"code": "session_start_failed", "message": str(val)}
+                    else:
+                        terminal_error = {"code": "session_start_failed", "message": "CAD session failed to start"}
+                if terminal_error is None and hasattr(value, "is_error") and getattr(value, "is_error", False):
+                    val = to_json_value(value.value)
+                    terminal_error = val if isinstance(val, dict) else {"code": "tool_failed", "message": str(val)}
+                comp_changed = (
+                    action == "compare"
+                    and self._session is not None
+                    and self._session.comparison is not prev_comparison
+                )
+                packet = {"action": action, "command": args.get("command") if action == "exec_fixed" else None,
+                          **self._identity, "snapshot": snapshot, "error": error, "terminal_error": terminal_error,
+                          "comparison": self._session.comparison if comp_changed else None,
                           "comparison_results": tuple({**identity, **self._identity,
                               "value": to_json_value(row.value), "images": tuple(row.images),
                               "is_error": row.is_error, "side_effect": row.side_effect}
-                              for identity, row in (self._session.comparison_rows if self._session else ())),
+                              for identity, row in (self._session.comparison_rows if comp_changed else ())),
                           "presentation_fallback": tuple(event for event in (
                               self._overflow_reply, self._overflow_fault, self._overflow_terminal) if event is not None),
-                          "ok": error is None and not getattr(value, "is_error", False),
+                          "ok": terminal_error is None and not getattr(value, "is_error", False),
                           "results": tuple({**identity, **self._identity, "value": to_json_value(row.value),
                                             "images": tuple(row.images), "is_error": row.is_error,
                                             "side_effect": row.side_effect}
                                            for identity, row in zip(identities, rows)),
-                          "new_results": bool(rows) and rows is not previous_batch,
+                          "new_results": new_results,
                           "presentation_backlog": self._overflowed,
                           "paused_before_start": skipped,
                           "credentials_consumed": action in ("start_task", "chat", "configure")}
+                if isinstance(self._session, FixedSession) and not self._session.active:
+                    with self._lock:
+                        self._session = None
                 with self._lock:
                     self._completion = packet
                     self._busy = False
@@ -207,6 +246,11 @@ class Worker(QtCore.QThread):
     def _event(self, event):
         event = {**event, **self._identity}
         kind = event["event"]
+        if kind == "error":
+            with self._lock:
+                self._action_terminal_error = to_json_value({
+                    k: event[k] for k in ("code", "message", "diagnostics", "request_number") if k in event
+                })
         if kind == "journal_update":
             with self._lock:
                 self._journal_event = event
@@ -258,8 +302,42 @@ class Worker(QtCore.QThread):
         return not paused
 
     def _perform(self, action, args):
+        if action == "exec_fixed":
+            command = args["command"]
+            workflow = args.get("workflow") or "stp2cad"
+            if command == "agent_ping" and (self._session is None or not isinstance(self._session, FixedSession)):
+                if self._session is not None:
+                    if self._session.mode is not None or self._session.snapshot().get("controller") is not None:
+                        raise RuntimeError("Finish the active model session before running unbound agent_ping")
+                res = FixedSession.probe_ping(workflow)
+                self._unbound_ping_result = res
+                return res
+            if self._session is not None and not isinstance(self._session, FixedSession):
+                if (
+                    command == "agent_open_session"
+                    and self._session.mode is None
+                    and self._session.snapshot().get("controller") is None
+                ):
+                    with self._lock:
+                        self._session = None
+                else:
+                    raise RuntimeError("Finish the active model session before running fixed commands")
+            if self._session is None:
+                if command != "agent_open_session":
+                    raise RuntimeError("Open a fixed session first with agent_open_session")
+                session = FixedSession(workflow, on_event=self._event,
+                                       prepare_inputs=prepare_inputs, view_input=render_input)
+                with self._lock:
+                    self._session = session
+            return self._session.execute(
+                command,
+                args.get("args"),
+                workflow=args.get("workflow"),
+                expected_target=args.get("expected_target"),
+            )
         if action in ("start_task", "chat"):
-            if self._session is not None and self._session.snapshot().get("controller") is not None:
+            if self._session is not None and (
+                    isinstance(self._session, FixedSession) or self._session.snapshot().get("controller") is not None):
                 raise RuntimeError("Finish the retained task first")
             if self._session is None:
                 session = Session(args["config"], on_event=self._event, **args["credentials"])
@@ -267,10 +345,17 @@ class Worker(QtCore.QThread):
                     self._session = session
             if action == "chat":
                 return self._session.chat(args["text"])
-            return self._session.start_task(args["kind"], args["task"], args["objective"],
-                                            prepare_inputs=prepare_inputs, view_input=render_input)
+            return self._session.start_task(
+                args["kind"], args["task"], args["objective"],
+                prepare_inputs=prepare_inputs, view_input=render_input,
+                expected_target=args.get("expected_target"),
+            )
         if self._session is None:
             raise RuntimeError("Start a task first")
+        if action == "close":
+            return self._session.close()
+        if not isinstance(self._session, Session):
+            raise RuntimeError("This action requires a model session")
         if action == "advance":
             # The explicit user request is part of the protected requirement stream.
             self._session.supplement(args["intent"])
@@ -281,8 +366,6 @@ class Worker(QtCore.QThread):
             return self._session.save()
         if action == "compare":
             return self._session.compare(args["options"], args["view_request"])
-        if action == "close":
-            return self._session.close()
         if action == "configure":
             return self._session.configure(args["config"], **args["credentials"])
         raise ValueError("Unknown human action")

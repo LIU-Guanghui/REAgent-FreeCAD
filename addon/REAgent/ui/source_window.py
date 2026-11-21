@@ -1,20 +1,31 @@
 """Main-window owner of one task, worker, presentation and cooperative shutdown."""
 
+import hashlib
 import json
+import uuid
 from datetime import datetime
 from enum import Enum
 
 import FreeCADGui as Gui
 
 from REAgent.ui import QtCore, QtWidgets
-from REAgent.application.session import WORKFLOWS, assert_source_release
-from REAgent.application.profiles import idle_context
+from REAgent.application.control import (
+    FIXED_TOOLS,
+    can_save_snapshot,
+    mode_controls,
+    project_close_terminal,
+    project_completion,
+)
+from REAgent.application.presentation import (
+    assemble_details, prepare_comparison, preview_entries, status_text, tool_message,
+)
+from REAgent.application.profiles import load_model_config, saved_settings, semantic_inputs
+from REAgent.application.session import WORKFLOWS, assert_source_release, normalize_objective
+from REAgent.json_values import to_json_value
 from REAgent.ui.panel import Panel
 from REAgent.ui.viewers import ImageViewer, TaskViewer
 from REAgent.ui.comparison import ComparisonDialog, comparison_text
-from REAgent.application.presentation import preview_entries
-from REAgent.application.presentation import tool_message
-from REAgent.ui.settings import SettingsDialog, saved_settings
+from REAgent.ui.settings import SettingsDialog
 from REAgent.ui.worker import Worker, tool_fault
 
 
@@ -62,6 +73,8 @@ class SourceWindowController(QtCore.QObject):
         self._pending_config = None
         self._profile_name = None
         self._pending_profile = None
+        self._active_key_hash = None
+        self._pending_key_hash = None
         self._draft_credentials = None
         self._credential_dialog = None
         self._close_intent: CloseIntent | None = None
@@ -78,8 +91,17 @@ class SourceWindowController(QtCore.QObject):
         self._image_entries = {}
         self._presentation_session = None
         self._task_artifacts = {}
+        self._task_prefix = uuid.uuid4().hex
         self._presentation_task = 0
         self._action_number = None
+        self._completions = {}
+        self._task_close_terminals = {}
+        self._pending_followup = None
+        self._auto_opened_fixed_task = None
+        self._stop_scheduled = False
+        self._before_native_close = None
+        self._on_stop_aborted = None
+        self._cli_exit_requested = False
         self._obsolete_generation = -1
         self._presented = set()
         self._reports_presented = set()
@@ -127,14 +149,66 @@ class SourceWindowController(QtCore.QObject):
         self.panel.status.setToolTip(message)
 
     def details(self):
-        context = self._snapshot.get("context")
-        if context is None or not (self._snapshot.get("controller") or self._snapshot.get("mode") == "chat"):
-            context = idle_context(self._config)
-        return {"snapshot": self._snapshot, "task_open": self._task_open, "last_completed_batch": [
-            {**{key: row[key] for key in ("function", "action_number", "request_number", "response_id",
-                                         "generation", "tool_call_id", "is_error", "side_effect") if key in row},
-             "result": row["value"]} for row in self._results], "last_progress": self._progress,
-                "snapshot_received_at": self._snapshot_received_at, "context": context}
+        snapshot = (
+            self._worker.snapshot()
+            if self._busy and self._worker is not None and not self._worker_failed
+            else self._snapshot
+        )
+        return assemble_details(
+            snapshot,
+            task_open=self._task_open,
+            results=self._results,
+            progress=self._progress,
+            snapshot_received_at=self._snapshot_received_at,
+            fallback_config=self._config,
+        )
+
+    @staticmethod
+    def _key_hash(credentials):
+        api_key = credentials.get("api_key") if isinstance(credentials, dict) else None
+        if not isinstance(api_key, str) or not api_key:
+            return None
+        return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+    def _restore_saved_credentials(self):
+        if self._snapshot.get("model_configured"):
+            return True
+        if self._config is not None and self._draft_credentials is not None:
+            return True
+        if self._config is not None and self._profile_name:
+            try:
+                config, credentials, profile_name = load_model_config(
+                    {"profile": self._profile_name, **self._config},
+                    self._read_settings,
+                )
+                self._config = config
+                self._draft_credentials = credentials
+                self._profile_name = profile_name
+                return True
+            except ValueError:
+                pass
+        try:
+            saved = saved_settings(self._read_settings)
+        except ValueError:
+            saved = None
+        if saved is not None and saved[1] is not None:
+            self._config, self._draft_credentials, self._profile_name = saved
+            return True
+        return bool(self._config is not None and self._draft_credentials is not None)
+
+    def _task_id(self, presentation_task=None):
+        number = self._presentation_task if presentation_task is None else presentation_task
+        return f"{self._task_prefix}-{number}"
+
+    def _ensure_worker(self):
+        if self._worker is None:
+            self._worker = Worker(self)
+            self._worker.ready.connect(self._drain, QtCore.Qt.QueuedConnection)
+            self._worker.finished.connect(self._finished, QtCore.Qt.QueuedConnection)
+            self._worker.start()
+        elif not self._worker.isRunning():
+            self._worker.reactivate()
+        return self._worker
 
     def new_task(self):
         if (self._task_open or not self._can_act() or self._snapshot.get("controller")
@@ -160,7 +234,7 @@ class SourceWindowController(QtCore.QObject):
             return False
         facts = self._snapshot.get("controller")
         if not facts and not self._busy:
-            if not self._snapshot.get("model_configured") and (self._config is None or self._draft_credentials is None):
+            if not self._snapshot.get("model_configured") and not self._restore_saved_credentials():
                 self.configure()
                 if self._config is None or self._draft_credentials is None:
                     return False
@@ -218,16 +292,18 @@ class SourceWindowController(QtCore.QObject):
             if self._close_intent:
                 QtCore.QTimer.singleShot(0, lambda: self._advance_close("progress"))
 
-    def start_task(self, kind, task, objective):
-        if not self._task_open or self._snapshot.get("controller"):
+    def start_task(self, kind, task, objective=None, *, expected_target=None):
+        if not self._task_open or self._snapshot.get("controller") or self._snapshot.get("mode") == "fixed":
             self.notice("Finish the current action or task before starting another.")
             return False
-        if not self._snapshot.get("model_configured") and (self._config is None or self._draft_credentials is None):
+        objective = normalize_objective(kind, objective)
+        if not self._snapshot.get("model_configured") and not self._restore_saved_credentials():
             self.configure()
             if self._config is None or self._draft_credentials is None:
                 return False
         if self.action("start_task", {"config": self._config, "credentials": self._draft_credentials,
-                                      "kind": kind, "task": task, "objective": objective}):
+                                      "kind": kind, "task": task, "objective": objective,
+                                      "expected_target": expected_target}):
             self._reset_views()
             self._results = ()
             self._progress = None
@@ -240,23 +316,21 @@ class SourceWindowController(QtCore.QObject):
         if not self._can_act(closing=closing):
             self.notice("The original worker is busy or closing; this action was not queued.")
             return False
-        if action not in ("start_task", "chat", "configure", "advance", "compact", "close") and not self._snapshot.get("controller"):
+        if action not in ("start_task", "chat", "configure", "advance", "compact", "close", "exec_fixed") and not self._snapshot.get("controller"):
             self.notice("There is no retained task for this action.")
             return False
-        if self._worker is None:
-            if action not in ("start_task", "chat"):
-                return False
-            self._worker = Worker(self)
-            self._worker.ready.connect(self._drain, QtCore.Qt.QueuedConnection)
-            self._worker.finished.connect(self._finished, QtCore.Qt.QueuedConnection)
-            self._worker.start()
+        if self._worker is None and action not in ("start_task", "chat", "exec_fixed"):
+            return False
+        worker = self._ensure_worker()
         try:
-            if not self._worker.isRunning():
-                self._worker.reactivate()
             if arguments is not None and arguments.get("config") is not None:
                 arguments = {**arguments, "config": dict(arguments["config"])}
-            self._action_number = self._worker.submit(action, arguments, presentation_task=self._presentation_task)
+            if action == "configure" or (action in ("start_task", "chat") and not self._snapshot.get("model_configured")):
+                self._pending_key_hash = self._key_hash((arguments or {}).get("credentials"))
+            self._action_number = worker.submit(action, arguments, presentation_task=self._presentation_task)
         except (ValueError, RuntimeError) as exc:
+            if action == "configure" or (action in ("start_task", "chat") and not self._snapshot.get("model_configured")):
+                self._pending_key_hash = None
             self.notice(str(exc))
             return False
         self._busy = True
@@ -270,6 +344,8 @@ class SourceWindowController(QtCore.QObject):
         return True
 
     def pause(self):
+        if self._pending_followup is not None:
+            self._pending_followup["cancelled"] = True
         if self._worker is not None:
             self._worker.pause()
             self._invalidate_previews()
@@ -359,7 +435,37 @@ class SourceWindowController(QtCore.QObject):
     def request_close(self, intent):
         self._advance_close("request", intent=CloseIntent(intent))
 
+    def _store_task_close_terminal(self, task_id, payload):
+        if not task_id:
+            return
+        self._task_close_terminals[task_id] = to_json_value(payload)
+        while len(self._task_close_terminals) > 64:
+            self._task_close_terminals.pop(next(iter(self._task_close_terminals)))
+
     def cancel_close(self):
+        if self._pending_followup is not None:
+            self._pending_followup["cancelled"] = True
+        if self._close_intent is CloseIntent.TASK and self._presentation_task > 0:
+            tid = self._task_id()
+            has_session = bool(self._snapshot.get("controller") or self._snapshot.get("mode") in ("chat", "fixed"))
+            self._store_task_close_terminal(
+                tid,
+                {
+                    "action_status": "completed",
+                    "ok": False,
+                    "task_id": tid,
+                    "ended": False,
+                    "session_retained": has_session,
+                    "task_open": self._task_open,
+                    "error": {"code": "close_cancelled", "message": "Task close was cancelled"},
+                },
+            )
+        self._stop_scheduled = False
+        self._cli_exit_requested = False
+        self._before_native_close = None
+        abort_cb, self._on_stop_aborted = self._on_stop_aborted, None
+        if abort_cb is not None:
+            abort_cb()
         self._advance_close("cancel")
         self._timer.stop()
         if self._dialog is not None:
@@ -416,37 +522,35 @@ class SourceWindowController(QtCore.QObject):
         self._fault(text)
 
     def _can_save(self):
-        facts = self._snapshot.get("controller") or {}
-        # A journal block alone must not prevent explicit preservation of a
-        # known Target. Controller/native guards decide the actual save result.
-        return bool(facts.get("target_document") and facts.get("session_status") == "ready"
-                    and not facts.get("write_block_sources", {}).get("controller"))
+        return can_save_snapshot(self._snapshot)
 
     def _can_act(self, *, allow_busy=False, closing=False):
         return not ((self._busy and not allow_busy) or self._worker_failed or self._worker_retiring
-                    or self._input_dialog is not None or (self._close_intent and not closing))
+                    or self._stop_scheduled or self._input_dialog is not None or (self._close_intent and not closing))
+
+    def _mode_controls(self):
+        facts = self._snapshot.get("controller") or {}
+        workflow = WORKFLOWS.get(facts.get("workflow"))
+        return mode_controls(
+            snapshot=self._snapshot,
+            task_open=self._task_open,
+            busy=self._busy,
+            worker_failed=self._worker_failed,
+            worker_retiring=self._worker_retiring,
+            input_dialog_open=self._input_dialog is not None,
+            close_intent_active=(self._close_intent is not None or self._stop_scheduled),
+            has_journal_cache=bool(self._journal_cache),
+            has_image_entries=bool(self._image_entries),
+            workflow_names=tuple(WORKFLOWS),
+            paired_views=bool(workflow and workflow.paired_views),
+        )
 
     def _render(self):
         facts = self._snapshot.get("controller") or {}
         active = bool(facts)
-        chatting = self._snapshot.get("mode") == "chat"
-        live = active or chatting
-        idle = self._can_act()
         writable = active and facts.get("session_status") == "ready" and not facts.get("target_writes_blocked")
-        viewing = self._input_dialog is None and self._close_intent is None
-        workflow = WORKFLOWS.get(facts.get("workflow"))
-        compares = bool(workflow and workflow.paired_views)
-        enabled = {"settings": idle and (not active or self._snapshot.get("status") in ("paused", "ready")),
-                   **{name: idle and self._task_open and not active for name in WORKFLOWS},
-                   "pause": self._busy and self._close_intent is None,
-                   "compact": idle and live and bool((self._snapshot.get("context") or {}).get("can_compact")),
-                   "compare": idle and writable and compares and not facts.get("source_basis_unknown"),
-                   "compare_available": compares,
-                   "save": idle and self._can_save(), "journal": viewing and bool(self._journal_cache),
-                   "close": (self._task_open or live or self._busy) and viewing and not self._worker_failed,
-                   "status": viewing, "images": viewing and bool(self._image_entries)}
-        can_send = self._task_open and self._can_act(allow_busy=live)
-        self.panel.set_controls(enabled, can_new_task=idle and not self._task_open and not live, can_send=can_send)
+        enabled = self._mode_controls()
+        self.panel.set_controls(enabled, can_new_task=enabled["new_task"], can_send=enabled["send"])
         self.panel.images.setToolTip("Task is ending." if self._close_intent else
             "Close the input form first." if self._input_dialog is not None else
             "No task images yet." if not self._image_entries else
@@ -688,10 +792,18 @@ class SourceWindowController(QtCore.QObject):
         elif kind == "state":
             self._receive_state({key: value for key, value in event.items() if key not in ("event", "images")})
         elif kind == "tool_result":
+            if event.get("mode") == "fixed":
+                card_key = ("fixed_tool", event["presentation_task"], event["action_number"])
+                self.panel.message("progress", tool_message(event), request=card_key, complete=True)
             self._present_result(event)
             self._results = ({**event, "value": event["result"]},)
             self._progress = {**event, "images": ()}
-        elif kind in ("tool_progress", "tool_started"):
+        elif kind == "tool_started":
+            if event.get("mode") == "fixed":
+                card_key = ("fixed_tool", event["presentation_task"], event["action_number"])
+                self.panel.message("progress", tool_message(event, started=True), request=card_key)
+            self._progress = {key: value for key, value in event.items() if key not in ("event", "images")}
+        elif kind == "tool_progress":
             self._progress = {key: value for key, value in event.items() if key not in ("event", "images")}
         elif kind == "error":
             key = ("terminal", event.get("request_number"), event["code"])
@@ -700,64 +812,130 @@ class SourceWindowController(QtCore.QObject):
                 self._presented.add(key)
                 self._model_error(event)
 
+    def _report_presentation_error(self, context, exc):
+        message = f"Presentation update failed ({context}): {type(exc).__name__}: {str(exc)[:300]}"
+        try:
+            self._fault(message)
+        except Exception:
+            pass
+
     @QtCore.Slot()
     def _drain(self):
         if self._worker is None:
             return
         events, completion = self._worker.drain()
         for event in events:
-            if event["event"] == "journal_update":
-                self._receive_event(event)
+            if event.get("event") == "journal_update":
+                try:
+                    self._receive_event(event)
+                except Exception as exc:
+                    self._report_presentation_error("journal_update", exc)
         for event in events:
-            if event["event"] != "journal_update":
-                self._receive_event(event)
+            if event.get("event") != "journal_update":
+                try:
+                    self._receive_event(event)
+                except Exception as exc:
+                    self._report_presentation_error(event.get("event", "event"), exc)
         if completion is not None:
             self._busy = False
             self._action = None
-            self._receive_state(completion["snapshot"])
-            for event in completion["presentation_fallback"]:
-                self._receive_event(event)
-            self.panel.text.discard_previews()
-            if completion["action"] == "configure":
-                if completion["ok"]:
-                    self._config = self._pending_config
-                    self._profile_name = self._pending_profile
-                    self.notice("Model settings applied." + (" API key is available for this session only."
-                                 if self._credential_dialog is not None and self._credential_dialog.session_key_only else ""))
-                self._pending_config = None
-                self._pending_profile = None
-            if completion["new_results"]:
-                self._results = completion["results"]
-                for row in self._results:
-                    self._present_result({**row, "result": row["value"], "session_id": self._presentation_session})
-            for row in completion.get("comparison_results", ()):
-                self._present_result({**row, "result": row["value"], "session_id": self._presentation_session})
-            comparison = completion.get("comparison")
-            if comparison is not None:
-                changed = comparison.get("comparison_id") != (self._comparison or {}).get("comparison_id")
-                self._comparison = comparison
-                if changed and not self._close_intent:
-                    self.open_viewer("comparison")
-            if completion["credentials_consumed"]:
-                self._clear_credentials()
-            if completion["error"]:
-                self._model_error(completion["error"])
-            if completion["action"] == "close":
-                final = completion["results"][-1]["value"] if completion["new_results"] else {}
-                self._task_ended(final.get("journal"))
-                if self._snapshot.get("controller"):
-                    self.notice("Task ended locally. Use End task to retry pending cleanup.")
-                else:
-                    self.notice("Task ended. Surviving documents remain open.")
-            if completion["presentation_backlog"]:
-                self.notice("Paused after presentation backlog. Inspect retained results in Status.")
-            if completion["paused_before_start"]:
-                self.notice("Paused before this action began.")
-            self._dismiss_wait()
-            if self._close_intent and completion["action"] == "close":
-                self._advance_close("task_completed")
+            recorded = False
+            try:
+                try:
+                    self._receive_state(completion["snapshot"])
+                except Exception as exc:
+                    self._snapshot = completion["snapshot"]
+                    self._report_presentation_error("state", exc)
+                for event in completion["presentation_fallback"]:
+                    try:
+                        self._receive_event(event)
+                    except Exception as exc:
+                        self._report_presentation_error(event.get("event", "fallback"), exc)
+                try:
+                    self.panel.text.discard_previews()
+                except Exception as exc:
+                    self._report_presentation_error("discard_previews", exc)
+                if completion["action"] == "configure":
+                    if completion["ok"]:
+                        self._config = self._pending_config
+                        self._profile_name = self._pending_profile
+                        self._active_key_hash = self._pending_key_hash
+                        self.notice("Model settings applied." + (" API key is available for this session only."
+                                     if self._credential_dialog is not None and self._credential_dialog.session_key_only else ""))
+                    self._pending_config = None
+                    self._pending_profile = None
+                    self._pending_key_hash = None
+                elif completion["action"] in ("start_task", "chat"):
+                    if self._snapshot.get("model_configured") and self._pending_key_hash is not None:
+                        self._active_key_hash = self._pending_key_hash
+                    self._pending_key_hash = None
+                if not self._snapshot.get("model_configured"):
+                    self._active_key_hash = None
+                if completion["new_results"]:
+                    self._results = completion["results"]
+                    for row in self._results:
+                        try:
+                            self._present_result({**row, "result": row["value"], "session_id": self._presentation_session})
+                        except Exception as exc:
+                            self._report_presentation_error("tool_result", exc)
+                for row in completion.get("comparison_results", ()):
+                    try:
+                        self._present_result({**row, "result": row["value"], "session_id": self._presentation_session})
+                    except Exception as exc:
+                        self._report_presentation_error("comparison_result", exc)
+                comparison = completion.get("comparison")
+                if comparison is not None:
+                    changed = comparison.get("comparison_id") != (self._comparison or {}).get("comparison_id")
+                    self._comparison = comparison
+                    if changed and not self._close_intent:
+                        try:
+                            self.open_viewer("comparison")
+                        except Exception as exc:
+                            self._report_presentation_error("comparison", exc)
+                if completion["credentials_consumed"]:
+                    self._clear_credentials()
+                if completion["error"]:
+                    try:
+                        self._model_error(completion["error"])
+                    except Exception as exc:
+                        self._report_presentation_error("error", exc)
+                if completion["action"] == "close":
+                    final = completion["results"][-1]["value"] if completion["new_results"] else {}
+                    self._task_ended(final.get("journal"))
+                    if self._snapshot.get("controller"):
+                        self.notice("Task ended locally. Use End task to retry pending cleanup.")
+                    else:
+                        self.notice("Task ended. Surviving documents remain open.")
+                elif completion["action"] == "exec_fixed":
+                    fn = completion.get("command")
+                    if self._task_open and not self._snapshot.get("controller"):
+                        final = completion["results"][-1]["value"] if completion["new_results"] else {}
+                        if fn in ("agent_close_session", "agent_manage_journal"):
+                            self._task_ended(final.get("journal"))
+                        elif (
+                            fn == "agent_open_session"
+                            and self._auto_opened_fixed_task == completion.get("presentation_task")
+                        ):
+                            self._task_ended(final.get("journal"))
+                    if fn == "agent_open_session":
+                        self._auto_opened_fixed_task = None
+                if completion["presentation_backlog"]:
+                    self.notice("Paused after presentation backlog. Inspect retained results in Status.")
+                if completion["paused_before_start"]:
+                    self.notice("Paused before this action began.")
+                self._record_completion(completion)
+                recorded = True
+            finally:
+                if not recorded:
+                    self._record_completion(completion)
+                self._dismiss_wait()
+                if self._close_intent and completion["action"] == "close":
+                    self._advance_close("task_completed")
         if completion is not None or events:
-            self._render()
+            try:
+                self._render()
+            except Exception as exc:
+                self._report_presentation_error("render", exc)
         self._advance_close("progress")
 
     def _dismiss_wait(self):
@@ -826,18 +1004,32 @@ class SourceWindowController(QtCore.QObject):
             if not self.action("close", closing=True):
                 self.cancel_close()
         elif step in ("task", "release_pending", "thread", "native", "release"):
+            closing_tid = self._task_id() if self._presentation_task > 0 else None
             if self._task_open:
                 self._task_ended()
             if step == "task":
                 self._timer.stop()
                 self._render()
+                if closing_tid and closing_tid not in self._task_close_terminals:
+                    self._store_task_close_terminal(
+                        closing_tid,
+                        {
+                            "action_status": "completed",
+                            **project_close_terminal(
+                                task_id=closing_tid,
+                                snapshot=self._snapshot,
+                                task_open=self._task_open,
+                                journal_metadata=self._journal_cache.get("metadata"),
+                            ),
+                        },
+                    )
             elif step == "release_pending":
                 self.notice("Source or journal cleanup is pending. End task can retry; the main window can still exit.")
                 self.cancel_close()
             elif step == "thread":
                 self._worker_retiring = True
                 try:
-                    if self._close_intent is CloseIntent.EXIT:
+                    if self._close_intent is CloseIntent.EXIT and not self._cli_exit_requested:
                         self._worker.park()
                     else:
                         self._worker.shutdown()
@@ -856,6 +1048,13 @@ class SourceWindowController(QtCore.QObject):
     def _native_close(self):
         if self._window_gone or self._close_intent is not CloseIntent.EXIT or self._worker is not None and self._worker.isRunning():
             return
+        before_cb, self._before_native_close = self._before_native_close, None
+        if before_cb is not None:
+            try:
+                before_cb()
+            except Exception as exc:
+                if not self._window_gone:
+                    self.notice("Temp document cleanup failed: " + str(exc)[:300])
         metadata = self._journal_cache.get("metadata") or {}
         if metadata and not metadata.get("complete"):
             self.notice("The log is incomplete; some facts exist only in this process's memory.")
@@ -869,6 +1068,18 @@ class SourceWindowController(QtCore.QObject):
         finally:
             self._native_close_permit = False
             self._advance_close("native_returned")
+        if self._cli_exit_requested or self._stop_scheduled:
+            self._cli_exit_requested = False
+            self._stop_scheduled = False
+            abort_cb, self._on_stop_aborted = self._on_stop_aborted, None
+            if accepted:
+                try:
+                    self._release_role()
+                except Exception as exc:
+                    if not self._window_gone:
+                        self.notice("Bridge stop failed after close: " + str(exc)[:300])
+            elif abort_cb is not None:
+                abort_cb()
         if not self._window_gone:
             if not accepted:
                 self.notice("Window close cancelled. The task remains ended; images and journal are available.")
@@ -952,9 +1163,19 @@ class SourceWindowController(QtCore.QObject):
         try:
             self._release_role()
         except Exception as exc:
+            self._cli_exit_requested = False
+            self._before_native_close = None
+            abort_cb, self._on_stop_aborted = self._on_stop_aborted, None
+            if abort_cb is not None:
+                abort_cb()
+            self._stop_scheduled = False
             self._fault(f"Role release failed. {exc}")
             self.cancel_close()
             return
+        self._stop_scheduled = False
+        self._cli_exit_requested = False
+        self._before_native_close = None
+        self._on_stop_aborted = None
         self._reset_views()
         self._clear_credentials()
         self._workbench_timer.stop()
@@ -965,3 +1186,553 @@ class SourceWindowController(QtCore.QObject):
         self.panel.deleteLater()
         self._window._reagent_source_controller = None
         self.deleteLater()
+
+    def _record_completion(self, completion):
+        p_task = completion.get("presentation_task")
+        task_id = None if not p_task else self._task_id(p_task)
+        action_number = completion["action_number"]
+        messages = [{"role": row.role, "text": row.text} for row in self.panel.text._rows[-32:]]
+        entry = project_completion(
+            completion,
+            task_id=task_id,
+            task_open=self._task_open,
+            messages=messages,
+            journal_metadata=self._journal_cache.get("metadata"),
+        )
+        if (
+            self._pending_followup is not None
+            and self._pending_followup["task_id"] == task_id
+            and self._pending_followup["configure_action"] == action_number
+            and completion["action"] == "configure"
+        ):
+            followup, self._pending_followup = self._pending_followup, None
+            if followup.get("cancelled"):
+                entry["ok"] = False
+                entry["cancelled"] = True
+                entry["followup_error"] = {
+                    "code": "action_cancelled",
+                    "message": f"{followup['kind']} was cancelled by pause or close before dispatch",
+                }
+            elif entry["ok"]:
+                try:
+                    kind, next_action = self._dispatch_followup(followup)
+                    if kind == "queued":
+                        entry["queued"] = True
+                        entry["followup_queued"] = True
+                        entry["followup_action"] = "supplement"
+                    else:
+                        entry["followup_action_number"] = next_action
+                except Exception as exc:
+                    entry["ok"] = False
+                    entry["followup_error"] = {"code": "invalid_request", "message": str(exc)}
+        self._completions[(task_id, action_number)] = entry
+        if completion["action"] == "close" and task_id:
+            self._store_task_close_terminal(task_id, {**entry, "action_status": "completed"})
+        while len(self._completions) > 128:
+            self._completions.pop(next(iter(self._completions)))
+
+    def _dispatch_followup(self, followup):
+        enabled = self._mode_controls()
+        kind = followup["kind"]
+        if kind == "start_task":
+            wf = followup["workflow"]
+            if not enabled.get(wf):
+                raise ValueError("Task is no longer eligible for start_task after configure")
+            if not self.start_task(wf, followup["task"], followup["objective"], expected_target=followup.get("expected_target")):
+                raise ValueError("Failed to dispatch start_task after configure")
+            self.panel.message("user", followup["objective"])
+            return "dispatched", self._action_number
+        if kind == "send":
+            if not enabled.get("send"):
+                raise ValueError("Task is no longer eligible for send after configure")
+            prev_action = self._action_number
+            if not self.send(followup["text"]):
+                raise ValueError("Failed to dispatch send after configure")
+            if self._action_number == prev_action:
+                return "queued", None
+            return "dispatched", self._action_number
+        raise ValueError("Unknown followup action")
+
+    def cli_stop_role(self, *, quit=False, before_native_close=None, on_stop_aborted=None):
+        if self._dialog_wait:
+            return {
+                "stop_accepted": False,
+                "waiting_user_or_in_flight": True,
+                "role": "source",
+                "last_confirmed_stage": "waiting_user_or_in_flight",
+            }
+        if self._stop_scheduled:
+            raise RuntimeError("Role stop is already in progress")
+        if (self._busy or self._task_open or self._snapshot.get("controller")
+                or self._snapshot.get("mode") in ("chat", "fixed")):
+            raise RuntimeError("Finish the active or retained task before releasing Source")
+        if self._input_dialog is not None or self._close_intent is not None or self._worker_retiring or self._worker_failed:
+            raise RuntimeError("Source window cannot be released in its current UI state")
+        self.assert_release()
+        self._stop_scheduled = True
+        self._before_native_close = before_native_close
+        self._on_stop_aborted = on_stop_aborted
+        self._cli_exit_requested = bool(quit)
+        self._render()
+
+        def trigger():
+            if not self._window_gone:
+                self.request_close("exit" if self._cli_exit_requested else "release")
+            else:
+                self._stop_scheduled = False
+                self._cli_exit_requested = False
+                self._before_native_close = None
+                abort_cb, self._on_stop_aborted = self._on_stop_aborted, None
+                if abort_cb is not None:
+                    abort_cb()
+
+        QtCore.QTimer.singleShot(0, trigger)
+        return {
+            "stop_accepted": True,
+            "role": "source",
+            "quit_requested": bool(quit),
+            "last_confirmed_stage": "accepted",
+        }
+
+    def cli_ui_action(self, params):
+        action = params.get("action")
+        task_id = params.get("task_id")
+        args = params.get("args")
+        args = {} if args is None else args
+        if not isinstance(args, dict):
+            raise ValueError("args must be a JSON object")
+        model_config = params.get("model_config")
+        expected_target = params.get("expected_target")
+        if model_config is not None and action not in ("start_task", "send"):
+            raise ValueError("model_config is only accepted by start_task or send")
+        if expected_target is not None and action != "start_task":
+            raise ValueError("expected_target is only accepted by start_task")
+
+        has_retained = bool(self._snapshot.get("controller")) or self._snapshot.get("mode") in ("chat", "fixed")
+        current_task_id = self._task_id() if (self._task_open or has_retained) and self._presentation_task > 0 else None
+        if action == "status":
+            if task_id is not None and task_id != self._task_id():
+                raise ValueError("task_id does not match the active or recent task")
+            details = self.details()
+            return to_json_value({
+                "task_id": current_task_id,
+                "task_open": self._task_open,
+                "details": details,
+                "status_text": status_text(details),
+            })
+
+        if self._stop_scheduled:
+            raise ValueError("Source role stop is already in progress")
+
+        enabled = self._mode_controls()
+        if action == "new_task":
+            if task_id is not None:
+                raise ValueError("new_task creates a new task_id and must not receive task_id")
+            if not enabled["new_task"] or not self.new_task():
+                raise ValueError("End the current task before starting another")
+            return {
+                "accepted": True,
+                "task_id": self._task_id(),
+                "action_number": None,
+                "task_open": True,
+                "status": "Ready",
+            }
+
+        if not self._task_open and not has_retained:
+            raise ValueError("No active task; call new_task first")
+        if not isinstance(task_id, str) or task_id != self._task_id():
+            raise ValueError("task_id is required and must match the open task")
+
+        if action == "end_task":
+            if not self._can_act(allow_busy=True, closing=True) or self._worker_failed:
+                raise ValueError("Task cannot be ended in the current worker state")
+            empty_task = (not self._snapshot.get("controller")
+                          and self._snapshot.get("mode") not in ("chat", "fixed")
+                          and not self._busy)
+            self._task_close_terminals.pop(task_id, None)
+            prev_action = self._action_number
+            self.request_close("task")
+            if empty_task:
+                terminal = project_close_terminal(
+                    task_id=task_id,
+                    snapshot=self._snapshot,
+                    task_open=self._task_open,
+                    journal_metadata=self._journal_cache.get("metadata"),
+                )
+                self._store_task_close_terminal(task_id, {"action_status": "completed", **terminal})
+                return {
+                    "accepted": True,
+                    "completed": True,
+                    **terminal,
+                    "action_number": None,
+                }
+            return {
+                "accepted": True,
+                "completed": False,
+                "task_id": task_id,
+                "action_number": self._action_number if self._action_number != prev_action else None,
+                "close_phase": self._close_phase.value if self._close_phase else None,
+            }
+
+        if action == "pause":
+            target_action = self._action_number if self._busy else None
+            self.pause()
+            return to_json_value({
+                "accepted": True,
+                "task_id": task_id,
+                "action_number": target_action,
+                "busy": self._busy,
+                "snapshot": self._snapshot,
+            })
+
+        if self._snapshot.get("mode") == "fixed":
+            raise ValueError(f"{action} is disabled in fixed command mode")
+
+        if action == "compact":
+            if not enabled["compact"] or not self.action("compact"):
+                raise ValueError("Context compaction is unavailable in the current task state")
+            return {"accepted": True, "task_id": task_id, "action_number": self._action_number}
+
+        if action == "save":
+            if not enabled["save"] or not self.action("save"):
+                raise ValueError("Save is unavailable in the current task state")
+            return {"accepted": True, "task_id": task_id, "action_number": self._action_number}
+
+        if action == "compare":
+            if not enabled["compare"]:
+                raise ValueError("Manual comparison is unavailable in the current task state")
+            unknown_keys = set(args) - {"options", "view_request"}
+            if unknown_keys:
+                raise ValueError("Unknown compare arguments: " + ", ".join(sorted(unknown_keys)))
+            options, view_request = prepare_comparison(args.get("options"), args.get("view_request"))
+            facts = self._snapshot.get("controller") or {}
+            if options is not None and not WORKFLOWS[facts["workflow"]].compares_stp:
+                raise ValueError("STL comparison uses paired views")
+            if not self.action("compare", {"options": options, "view_request": view_request}):
+                raise ValueError("Failed to queue comparison action")
+            return {"accepted": True, "task_id": task_id, "action_number": self._action_number}
+
+        if action == "start_task":
+            wf = args.get("workflow")
+            if wf not in WORKFLOWS:
+                raise ValueError("Unknown or missing workflow: " + str(wf))
+            if not enabled.get(wf):
+                raise ValueError("Finish the current action or task before starting another")
+            allowed_keys = {"workflow", "output_dir", "objective", "source_path", "paths",
+                            "document", "observation_policy", "linear_tolerance_mm", "angular_tolerance_deg"}
+            extra_keys = set(args) - allowed_keys
+            if extra_keys:
+                raise ValueError("Unknown start_task arguments: " + ", ".join(sorted(extra_keys)))
+            output_dir = args.get("output_dir")
+            if not isinstance(output_dir, str) or not output_dir.strip():
+                raise ValueError("output_dir is required")
+            objective = normalize_objective(wf, args.get("objective"))
+            task_args = {k: v for k, v in args.items() if k not in ("workflow", "objective")}
+            if model_config is not None:
+                config, credentials, profile_name = load_model_config(model_config, self._read_settings)
+                try:
+                    if self._snapshot.get("model_configured"):
+                        same_model = (
+                            config == self._config
+                            and profile_name == self._profile_name
+                            and self._key_hash(credentials) == self._active_key_hash
+                        )
+                        if same_model:
+                            credentials.clear()
+                        else:
+                            if not self.action("configure", {"config": config, "credentials": credentials}):
+                                raise ValueError("Failed to queue model configuration update")
+                            self._pending_config = config
+                            self._pending_profile = profile_name
+                            self._pending_followup = {
+                                "task_id": task_id,
+                                "configure_action": self._action_number,
+                                "kind": "start_task",
+                                "workflow": wf,
+                                "task": task_args,
+                                "objective": objective,
+                                "expected_target": expected_target,
+                            }
+                            return {"accepted": True, "task_id": task_id, "action_number": self._action_number}
+                    else:
+                        self._clear_credentials()
+                        self._config = config
+                        self._profile_name = profile_name
+                        self._draft_credentials = credentials
+                except Exception:
+                    credentials.clear()
+                    raise
+            elif not self._snapshot.get("model_configured") and not self._restore_saved_credentials():
+                raise ValueError("Model is not configured; select a saved profile or pass model.json")
+            if not self.start_task(wf, task_args, objective, expected_target=expected_target):
+                raise ValueError("Failed to start task")
+            self.panel.message("user", objective)
+            return {"accepted": True, "task_id": task_id, "action_number": self._action_number}
+
+        if action == "send":
+            if not enabled["send"]:
+                raise ValueError("Send is unavailable in the current task state")
+            text = args.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("Message text must be non-empty")
+            if model_config is not None:
+                config, credentials, profile_name = load_model_config(model_config, self._read_settings)
+                try:
+                    if self._snapshot.get("controller") and semantic_inputs(config) != semantic_inputs(self._config):
+                        raise ValueError("An active CAD task keeps its original model settings; pause to update its key")
+                    if self._snapshot.get("model_configured"):
+                        same_model = (
+                            config == self._config
+                            and profile_name == self._profile_name
+                            and self._key_hash(credentials) == self._active_key_hash
+                        )
+                        if same_model:
+                            credentials.clear()
+                        elif self._busy:
+                            if semantic_inputs(config) != semantic_inputs(self._config):
+                                raise ValueError("Cannot switch models while the worker is busy")
+                            raise ValueError("Cannot update model credentials while the worker is busy")
+                        else:
+                            if not self.action("configure", {"config": config, "credentials": credentials}):
+                                raise ValueError("Failed to queue model configuration update")
+                            self._pending_config = config
+                            self._pending_profile = profile_name
+                            self._pending_followup = {
+                                "task_id": task_id,
+                                "configure_action": self._action_number,
+                                "kind": "send",
+                                "text": text,
+                            }
+                            return {"accepted": True, "task_id": task_id, "action_number": self._action_number}
+                    else:
+                        self._clear_credentials()
+                        self._config = config
+                        self._profile_name = profile_name
+                        self._draft_credentials = credentials
+                except Exception:
+                    credentials.clear()
+                    raise
+            elif not self._snapshot.get("model_configured") and not self._restore_saved_credentials():
+                raise ValueError("Model is not configured; select a saved profile or pass model.json")
+            prev_action = self._action_number
+            if not self.send(text):
+                raise ValueError("Failed to dispatch message")
+            if self._action_number == prev_action:
+                return to_json_value({
+                    "accepted": True,
+                    "completed": True,
+                    "queued": True,
+                    "action": "supplement",
+                    "task_id": task_id,
+                    "action_number": None,
+                    "busy": self._busy,
+                    "snapshot": self._snapshot,
+                })
+            return {"accepted": True, "task_id": task_id, "action_number": self._action_number}
+
+        raise ValueError("Unknown cli_ui_action: " + str(action))
+
+    def cli_ui_wait(self, params):
+        task_id = params.get("task_id")
+        action_number = params.get("action_number")
+        if action_number is not None:
+            key = (task_id, action_number)
+            entry = self._completions.get(key)
+            if entry is not None:
+                followup_num = entry.get("followup_action_number")
+                if followup_num is not None:
+                    followup_entry = self._completions.get((task_id, followup_num))
+                    if followup_entry is not None:
+                        return to_json_value(followup_entry)
+                    if self._worker_failed:
+                        return to_json_value({
+                            "action_status": "completed",
+                            "ok": False,
+                            "task_id": task_id,
+                            "action_number": followup_num,
+                            "error": {"code": "worker_failed", "message": "Source worker exited unexpectedly"},
+                            "snapshot": self._snapshot,
+                        })
+                    return {
+                        "action_status": "waiting_user_or_in_flight" if self._dialog_wait else "in_flight",
+                        "task_id": task_id,
+                        "action_number": followup_num,
+                        "waiting_user": bool(self._dialog_wait),
+                        "busy": self._busy,
+                        "snapshot": to_json_value(self._snapshot),
+                    }
+                return to_json_value(entry)
+            if self._worker_failed:
+                return to_json_value({
+                    "action_status": "completed",
+                    "ok": False,
+                    "task_id": task_id,
+                    "action_number": action_number,
+                    "error": {"code": "worker_failed", "message": "Source worker exited unexpectedly"},
+                    "snapshot": self._snapshot,
+                })
+            matches_current = (
+                (task_id is None and self._action == "exec_fixed")
+                or (task_id is not None and task_id == self._task_id())
+            )
+            if not matches_current or action_number != self._action_number:
+                raise ValueError("Unknown task_id or action_number for cli_ui_wait")
+            if self._dialog_wait:
+                return {
+                    "action_status": "waiting_user_or_in_flight",
+                    "task_id": task_id,
+                    "action_number": action_number,
+                    "waiting_user": True,
+                    "close_phase": self._close_phase.value if self._close_phase else None,
+                    "busy": self._busy,
+                    "snapshot": to_json_value(self._snapshot),
+                }
+            if self._busy:
+                return {
+                    "action_status": "in_flight",
+                    "task_id": task_id,
+                    "action_number": action_number,
+                    "busy": True,
+                    "snapshot": to_json_value(self._snapshot),
+                }
+            raise ValueError("No matching in-flight or completed action")
+
+        if (
+            not isinstance(task_id, str)
+            or not task_id
+            or (
+                task_id not in self._task_close_terminals
+                and task_id != self._task_id()
+                and not any(k[0] == task_id for k in self._completions)
+            )
+        ):
+            raise ValueError("Unknown task_id for cli_ui_wait")
+        stored_terminal = self._task_close_terminals.get(task_id)
+        if stored_terminal is not None:
+            return to_json_value(stored_terminal)
+        if task_id != self._task_id():
+            for (k_task, _k_num), row in reversed(list(self._completions.items())):
+                if k_task == task_id and row.get("action") == "close":
+                    return to_json_value({**row, "action_status": "completed"})
+            raise ValueError("Close terminal is unavailable for superseded task_id")
+        if self._worker_failed:
+            return project_close_terminal(
+                task_id=task_id,
+                snapshot=self._snapshot,
+                task_open=self._task_open,
+                journal_metadata=self._journal_cache.get("metadata"),
+                worker_failed=True,
+            )
+        if self._dialog_wait:
+            return {
+                "action_status": "waiting_user_or_in_flight",
+                "task_id": task_id,
+                "waiting_user": True,
+                "close_phase": self._close_phase.value if self._close_phase else None,
+                "busy": self._busy,
+                "snapshot": to_json_value(self._snapshot),
+            }
+        if self._close_intent is not None or self._busy:
+            return {
+                "action_status": "in_flight",
+                "task_id": task_id,
+                "close_phase": self._close_phase.value if self._close_phase else None,
+                "busy": self._busy,
+                "snapshot": to_json_value(self._snapshot),
+            }
+        last_close = None
+        for (k_task, _k_num), row in reversed(list(self._completions.items())):
+            if k_task == task_id and row.get("results") and row["results"][-1].get("function") == "agent_close_session":
+                last_close = row["results"][-1]["value"]
+                break
+        if last_close is None and self._results and self._results[-1].get("function") == "agent_close_session":
+            last_close = self._results[-1]["value"]
+        return project_close_terminal(
+            task_id=task_id,
+            snapshot=self._snapshot,
+            task_open=self._task_open,
+            last_close=last_close,
+            journal_metadata=self._journal_cache.get("metadata"),
+            worker_failed=False,
+        )
+
+    def cli_exec_command(self, params):
+        command = params.get("command")
+        if command not in FIXED_TOOLS:
+            raise ValueError("Unknown or unsupported fixed command: " + str(command))
+        if not self._can_act() or self._close_intent is not None:
+            raise ValueError("Source worker is busy, closing or blocked by an open dialog")
+        mode = self._snapshot.get("mode")
+        if mode in ("chat", "cad") or (mode != "fixed" and bool(self._snapshot.get("controller"))):
+            raise ValueError("Finish the active model session before running fixed CAD commands")
+        task_id = params.get("task_id")
+        workflow = params.get("workflow")
+        if workflow is not None and workflow not in WORKFLOWS:
+            raise ValueError("Unknown CAD workflow: " + str(workflow))
+        expected_target = params.get("expected_target")
+        if expected_target is not None and command != "agent_open_session":
+            raise ValueError("expected_target is only accepted by agent_open_session")
+        args = params.get("args")
+        args = {} if args is None else args
+        if not isinstance(args, dict):
+            raise ValueError("Command args must be a JSON object")
+
+        has_fixed_session = mode == "fixed" and bool(self._snapshot.get("controller"))
+        if command == "agent_ping" and not has_fixed_session:
+            if task_id is not None and (not self._task_open or task_id != self._task_id()):
+                raise ValueError("task_id does not match an open blank task")
+            p_task = self._presentation_task if (task_id is not None and self._task_open) else 0
+            if self._worker is None:
+                self._completions = {k: v for k, v in self._completions.items() if k[0] is not None}
+            worker = self._ensure_worker()
+            self._action_number = worker.submit(
+                "exec_fixed",
+                {"command": "agent_ping", "workflow": workflow or "stp2cad", "args": {}},
+                presentation_task=p_task,
+            )
+            self._busy = True
+            self._action = "exec_fixed"
+            self._presented.clear()
+            self._status_notice = None
+            self._render()
+            return {"accepted": True, "task_id": task_id, "action_number": self._action_number}
+
+        if command == "agent_open_session":
+            if has_fixed_session or self._snapshot.get("controller"):
+                raise ValueError("Finish the retained task before opening another session")
+            if workflow is None:
+                raise ValueError("workflow is required for agent_open_session")
+            auto_opened = False
+            if self._task_open:
+                if not isinstance(task_id, str) or task_id != self._task_id():
+                    raise ValueError("An open task already exists; pass its matching task_id or end it first")
+            else:
+                if task_id is not None:
+                    raise ValueError("task_id must be omitted when opening a new fixed task")
+                if not self.new_task():
+                    raise ValueError("Cannot open a new fixed task in the current UI state")
+                auto_opened = True
+            task_id = self._task_id()
+            self._reset_views()
+            self._results = ()
+            self._progress = None
+            self._auto_opened_fixed_task = self._presentation_task if auto_opened else None
+            if not self.action("exec_fixed", {
+                "command": "agent_open_session",
+                "workflow": workflow,
+                "args": args,
+                "expected_target": expected_target,
+            }):
+                if auto_opened:
+                    self._task_ended()
+                    self._auto_opened_fixed_task = None
+                raise ValueError("Failed to queue agent_open_session")
+            return {"accepted": True, "task_id": task_id, "action_number": self._action_number}
+
+        if not has_fixed_session:
+            raise ValueError("Open a fixed session first with agent_open_session")
+        if task_id is not None and task_id != self._task_id():
+            raise ValueError("task_id does not match the active fixed task")
+        if not self.action("exec_fixed", {"command": command, "workflow": workflow, "args": args}):
+            raise ValueError("Failed to queue fixed command")
+        return {"accepted": True, "task_id": self._task_id(), "action_number": self._action_number}

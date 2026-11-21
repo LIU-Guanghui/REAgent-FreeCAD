@@ -2,7 +2,9 @@
 
 import os
 
-from REAgent.host.process_state import require_document, operation_stage, PROCESS
+import FreeCADGui as Gui
+
+from REAgent.host.process_state import require_document, operation_stage, sync_temp_doc_state, PROCESS
 from REAgent.host.validation.structure import result_state
 from REAgent.host.file_digest import file_sha256
 from REAgent.host.workspace.model import workspace
@@ -40,19 +42,6 @@ def _new_fcstd_path(value, owned_checkpoint_path=None):
     return path
 
 
-def existing_fcstd_path(value):
-    if not isinstance(value, str) or not value:
-        raise ValueError("resume_path must be a non-empty absolute path")
-    if not os.path.isabs(value):
-        raise ValueError("resume_path must be an absolute path")
-    path = os.path.normpath(value)
-    if os.path.splitext(path)[1].lower() != ".fcstd":
-        raise ValueError("resume_path must use the .FCStd extension")
-    if not os.path.isfile(path):
-        raise ValueError("Reconstruction FCStd does not exist: %s" % path)
-    return path
-
-
 class PersistenceOperations:
     def contribute(self):
         return {'agent_save': self._save}
@@ -78,9 +67,21 @@ class PersistenceOperations:
         owned_path = binding["saved_path"] if same_file_path(binding["saved_path"], document.FileName) else None
         path = _new_fcstd_path(path, owned_checkpoint_path=owned_path)
         operation_stage("persistence", mutating=True)
-        if document.FileName and same_file_path(path, document.FileName): document.save()
-        else: document.saveAs(path)
+        gui_doc = Gui.getDocument(document.Name)
+        if document.FileName and same_file_path(path, document.FileName):
+            if gui_doc is not None:
+                if not gui_doc.save():
+                    raise RuntimeError("FreeCAD GUI document save did not complete")
+            else:
+                document.save()
+        else:
+            document.saveAs(path)
+            gui_doc = Gui.getDocument(document.Name)
+            if gui_doc is not None and getattr(gui_doc, "Modified", False) and same_file_path(path, document.FileName):
+                if not gui_doc.save():
+                    raise RuntimeError("FreeCAD GUI document save sync did not complete")
         binding["saved_path"] = path
+        sync_temp_doc_state(document, saved_path=path)
         # The write has happened. A failed readback only leaves applicability unknown.
         try:
             current_revision = target_view_revision(document, group)

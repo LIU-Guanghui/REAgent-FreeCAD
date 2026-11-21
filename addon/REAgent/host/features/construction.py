@@ -7,6 +7,7 @@ from REAgent.host.workspace.properties import valid_name
 from REAgent.host.validation.structure import single_solid_summary, result_state
 from REAgent.host.workspace.model import enforce_single_solid_body, session_bodies, copy_world_shape
 from REAgent.host.workspace.properties import metadata, native_link
+from REAgent.protocol.features import WORKSPACE_CONTRACT
 
 
 def history_context(document, group, request, *, require_solid, sketch=False):
@@ -129,12 +130,13 @@ def create_body(document, name, *, main=False):
     name = valid_name(name, "body")
     if document.getObject(name) is not None:
         raise ValueError("Body name already exists: " + name)
-    body = document.addObject("PartDesign::Body", name)
-    if body.Name != name or body.TypeId != "PartDesign::Body":
+    body_type = WORKSPACE_CONTRACT["type_id"]
+    body = document.addObject(body_type, name)
+    if body.Name != name or body.TypeId != body_type:
         raise RuntimeError("Native Body creation did not retain its requested identity")
     enforce_single_solid_body(body)
     if main:
-        body.Label = "Target"
+        body.Label = WORKSPACE_CONTRACT["label"]
         body.addProperty("App::PropertyStringList", "REAgentBodyNames", "REAgent")
         body.setEditorMode("REAgentBodyNames", 1)
     return body

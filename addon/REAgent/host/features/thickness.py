@@ -1,8 +1,8 @@
 """Native Skin Thickness with explicit openings, side and corner join."""
 
 from REAgent.host.workspace.properties import fixed_dressup_false, number_readback, set_bool, set_enum, set_number
-from REAgent.host.features.support.construction import history_context, shape_readback
-from REAgent.host.features.support.references import current_faces, link_sub_readback, set_face_base
+from REAgent.host.features.construction import history_context, shape_readback
+from REAgent.host.features.references import current_faces, link_sub_readback, set_face_base
 
 _JOIN = {"arc": "Arc", "intersection": "Intersection"}
 

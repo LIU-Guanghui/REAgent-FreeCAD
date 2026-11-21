@@ -1,7 +1,7 @@
 """Native constant-radius Fillet on explicit current predecessor edges."""
 
 from REAgent.host.workspace.properties import fixed_dressup_false, number_readback, set_number
-from REAgent.host.features.support.references import edge_dressup_context, edge_dressup_readback, set_dressup_base
+from REAgent.host.features.references import edge_dressup_context, edge_dressup_readback, set_dressup_base
 
 
 class FilletOperations:

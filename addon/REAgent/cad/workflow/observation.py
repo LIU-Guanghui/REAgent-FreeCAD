@@ -100,7 +100,7 @@ def _page_model_entities(value, readback_fields):
         value.pop("model_projection")
 
 
-def _view_input(args, record, started, ctx):
+def _read_input_image(args, record, started, ctx):
     index, region = args["index"], args.get("region")
     if index > len(record["inputs"]):
         raise ValueError("Choose a reference image index shown in the current task inputs")
@@ -120,7 +120,7 @@ def _view_input(args, record, started, ctx):
     view = {"index": index, "filename": item["filename"], "region": region,
             "revision": item["revision"], "image_id": image_id, "size_bytes": len(data),
             "width_px": width, "height_px": height}
-    ctx.emit(record, "input.view_prepared", "agent_view_input",
+    ctx.emit(record, "input.view_prepared", "agent_read_image",
              {key: value for key, value in view.items() if key not in ("revision", "image_id")},
              started, role="agent")
     ctx.guard_journal(record)
@@ -128,32 +128,36 @@ def _view_input(args, record, started, ctx):
     return {"input_view": view, "actor": (context.get("execution") or {}).get("actor", "external")}
 
 
+def _read_evidence_image(args, record, started, ctx):
+    registration = record["evidence_facts"].get(args["evidence_id"], {}).get("image_registration")
+    if registration is None:
+        raise ValueError("Image evidence is not registered to the current task")
+    delivery, content, previews = read_registered_images(
+        registration, args["artifact_key"])
+    context = ctx.call_context.get()
+    context["image_content"] = content
+    value = {"evidence_id": args["evidence_id"], "role": registration["role"],
+             "actor": registration["actor"], "reader_actor": (context.get("execution") or {}).get("actor", "external"),
+             "document": registration["document"],
+             "revision": registration["revision"], "paired_revisions": registration.get("paired_revisions"),
+             "initial_views": registration.get("initial_views"), "image_delivery": delivery,
+             "images": registration["frames"],
+             "image_previews": previews, "capture_id": registration["capture_id"],
+             "capture_number": registration["capture_number"], "historical": True,
+             "source_basis": "registered_capture_revision", "cad_access": False}
+    ctx.emit(record, "observation.read_back", "agent_read_image", {"evidence_id": args["evidence_id"],
+          "artifact_key": args["artifact_key"], "image_count": len(content), "cad_access": False},
+          started, role=registration["role"])
+    return value
+
+
 def run(name, args, record, started, ctx):
     _call = ctx.call
     _emit = ctx.emit
-    if name == "agent_view_input":
-        return _view_input(args, record, started, ctx)
-    if name == "agent_read_evidence":
-        registration = record["evidence_facts"].get(args["evidence_id"], {}).get("image_registration")
-        if registration is None:
-            raise ValueError("Image evidence is not registered to the current task")
-        delivery, content, previews = read_registered_images(
-            registration, args["artifact_key"])
-        context = ctx.call_context.get()
-        context["image_content"] = content
-        value = {"evidence_id": args["evidence_id"], "role": registration["role"],
-                 "actor": registration["actor"], "reader_actor": (context.get("execution") or {}).get("actor", "external"),
-                 "document": registration["document"],
-                 "revision": registration["revision"], "paired_revisions": registration.get("paired_revisions"),
-                 "initial_views": registration.get("initial_views"), "image_delivery": delivery,
-                 "images": registration["frames"],
-                 "image_previews": previews, "capture_id": registration["capture_id"],
-                 "capture_number": registration["capture_number"], "historical": True,
-                 "source_basis": "registered_capture_revision", "cad_access": False}
-        _emit(record, "observation.read_back", name, {"evidence_id": args["evidence_id"],
-              "artifact_key": args["artifact_key"], "image_count": len(content), "cad_access": False},
-              started, role=registration["role"])
-        return value
+    if name == "agent_read_image":
+        if "index" in args:
+            return _read_input_image(args, record, started, ctx)
+        return _read_evidence_image(args, record, started, ctx)
     if name == "agent_observe":
         context = ctx.call_context.get()
         if context is None:
@@ -224,4 +228,4 @@ def run(name, args, record, started, ctx):
 
 
 def contribute():
-    return {name: run for name in ('agent_observe', 'agent_read_evidence', 'agent_view_input')}
+    return {name: run for name in ('agent_observe', 'agent_read_image')}

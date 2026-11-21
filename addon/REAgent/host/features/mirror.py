@@ -1,8 +1,8 @@
 """Native tool-shape mirror with caller-ordered sources and an explicit plane."""
 
 from REAgent.host.workspace.properties import fixed_dressup_false, set_enum
-from REAgent.host.features.support.construction import shape_readback
-from REAgent.host.features.support.transforms import set_transform_reference, set_transform_sources, transform_context, transform_plane, transform_reference_readback, transform_sources_readback
+from REAgent.host.features.construction import shape_readback
+from REAgent.host.features.transforms import set_transform_reference, set_transform_sources, transform_context, transform_plane, transform_reference_readback, transform_sources_readback
 
 
 class MirrorOperations:

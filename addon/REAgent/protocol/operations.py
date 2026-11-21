@@ -74,15 +74,14 @@ OPERATION_SPECS = {
             "operation": nullable(string("Operation identifier")),
         },
     ),
-    "agent_start_session": operation(
+    "agent_open_session": operation(
         "session",
-        "Create a role-local workspace bound to the allocated artifacts. Source uses STP, STL or DXF. Resume requires the original STP reference.",
+        "Create a role-local workspace bound to the allocated artifacts. Source uses STP, STL or DXF.",
         ("source", "target"),
         "committed",
         {
             "document": _DOCUMENT,
             "source_path": string("Absolute STP, STL or DXF source path"),
-            "resume_path": nullable(string("Existing Target FCStd checkpoint")),
             "artifacts": SESSION_ARTIFACTS_SCHEMA,
             "linear_tolerance_mm": number("Linear tolerance in millimetres"),
             "angular_tolerance_deg": number("Angular tolerance in degrees"),
@@ -158,7 +157,7 @@ for _name, _properties, _required, _effect in (
 ):
     OPERATION_SPECS[_name] = operation("modeling" if _name != "agent_save" else "persistence",
         ("Save the structurally known Target, including an in_progress model, to its allocated model_path. "
-         "Allocation excludes the resume checkpoint; only a file already saved by this session can be updated. "
+         "Only a file already saved by this session can be updated. "
          "saved_to reports an actual save, independently of geometry validation and journal persistence."
          if _name == "agent_save" else "Native " + _name.replace("_", " ")), ("target",), _effect,
         {"document": _DOCUMENT, "session_id": TEXT_SCHEMA, **_properties},

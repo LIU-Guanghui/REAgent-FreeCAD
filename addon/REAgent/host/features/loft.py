@@ -3,7 +3,7 @@
 from functools import partial
 
 from REAgent.host.workspace.properties import metadata
-from REAgent.host.features.support.construction import distinct_section_planes, history_context, profile_readback, section_or_path, set_profile, shape_readback, whole_sketch_link
+from REAgent.host.features.construction import distinct_section_planes, history_context, profile_readback, section_or_path, set_profile, shape_readback, whole_sketch_link
 
 _LOFT_TYPES = {
     "PartDesign_AdditiveLoft": "PartDesign::AdditiveLoft",

@@ -31,7 +31,7 @@ def artifact_paths(stem, output_dir, number=0):
             "journal_path": str(Path(output_dir) / artifact_filename(basename, "journal"))}
 
 
-def claim_artifacts(artifacts, resume_path=None):
+def claim_artifacts(artifacts):
     """Return the selected family and its open, exclusively created journal."""
     directory = Path(artifacts["output_dir"])
     directory.mkdir(parents=True, exist_ok=True)
@@ -43,8 +43,6 @@ def claim_artifacts(artifacts, resume_path=None):
         selected = {**artifacts, "basename": basename,
                     "model_path": str(directory / artifact_filename(basename, "model")),
                     "journal_path": str(directory / artifact_filename(basename, "journal"))}
-        if resume_path and same_path(selected["model_path"], resume_path):
-            continue
         try:
             reservation = Path(selected["journal_path"]).open("x", encoding="utf-8")
         except FileExistsError:

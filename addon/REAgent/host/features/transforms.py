@@ -6,8 +6,8 @@ from REAgent.host.validation.structure import single_solid_summary
 from REAgent.host.validation.tolerance import ir_tolerance_contract
 from REAgent.host.workspace.model import body_objects, predecessor_shape
 from REAgent.host.workspace.properties import metadata
-from REAgent.host.features.support.construction import history_context
-from REAgent.host.features.support.references import current_faces, role_object
+from REAgent.host.features.construction import history_context
+from REAgent.host.features.references import current_faces, role_object
 
 _TRANSFORM_TYPES = ("PartDesign::Mirrored", "PartDesign::LinearPattern",
                     "PartDesign::PolarPattern", "PartDesign::MultiTransform",

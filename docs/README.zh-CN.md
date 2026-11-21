@@ -50,24 +50,46 @@ Copy-Item -LiteralPath '.\addon\REAgent' -Destination 'C:\Program Files\FreeCAD 
 4. **观察与调整：** 在对话区查看进展，通过 **Image** 浏览观察图片，通过 **Journal** 查看操作日志。可以在对话框发送普通消息来调整模型。
 5. **保存结果：** 在 Target 进程中检查特征树与参数编辑，在 Source 面板点击 **Save**，确认保存成功后点击 **End task**。
 
-## 系统架构
+## CLI 调用示例
 
-完整 Addon 位于 `addon/REAgent/`。`InitGui.py` 注册工作台，将各 FreeCAD 进程绑定为 Source 或 Target，两端都在 GUI 主线程运行本机 Bridge。
+**REAgent** 提供命令行接口（CLI），可通过 `python -m REAgent` 调用。
 
-```text
-Source 面板（GUI 主线程）
-    |
-    v
-Source worker: application/ -> agent/ <-> model/ <-> 模型服务
-                               |
-                               v
-                               cad/
-                               |
-                               +-- 本机 Bridge --> Source host/（GUI 主线程）
-                               |                 只读观察
-                               |
-                               +-- 本机 Bridge --> Target host/（GUI 主线程）
-                                                 原生建模
+先按上文保存模型配置，再运行下列 Python 脚本。按实际安装位置修改 `freecad_dir`。示例启动 Source 和 Target 窗口，使用返回的实例 ID 执行 `text2cad`，创建一个边长 10 mm 的实心立方体。
+
+```python
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+freecad_dir = Path(r"C:\Program Files\FreeCAD 1.1")
+cli_command = [str(freecad_dir / "bin" / "python.exe"), "-m", "REAgent"]
+cli_env = {**os.environ, "PYTHONPATH": str(freecad_dir / "Mod")}
+
+def run_cli(*args):
+    output = subprocess.check_output([*cli_command, *args,],env=cli_env,)
+    return json.loads(output)
+
+instances = run_cli("lifecycle", "start_instances","--freecad-exe", str(freecad_dir / "bin" / "FreeCAD.exe"),)["result"]
+source_args = ("--source-instance-id", instances["source"]["instance_id"])
+
+task_id = run_cli("ui", "new_task", *source_args,)["task_id"]
+task_args = ("--task-id", task_id, *source_args)
+
+run_cli(
+    "ui", "start_task", *task_args,
+    "--workflow", "text2cad",
+    "--target-instance-id", instances["target"]["instance_id"],
+    "--output-dir", tempfile.mkdtemp(prefix="reagent-box-"),
+    "--objective", "Create a solid 10 mm × 10 mm × 10 mm box at the origin.",
+)
+
+saved = run_cli("ui", "save", *task_args,)["result"]["last_saved_checkpoint"]
+print(saved["saved_to"])
+
+end = run_cli("ui", "end_task", *task_args)
+print(end["result"]["reason"])
 ```
 
 ## 许可证

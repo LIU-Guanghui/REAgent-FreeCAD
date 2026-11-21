@@ -1,21 +1,22 @@
-"""Create/resume native workspaces in the user-bound GUI processes."""
+"""Create native workspaces in the user-bound GUI processes."""
 
 import os
 
 import FreeCAD as App
 
 from REAgent.host.analysis.measurements import summarize_shape
-from REAgent.host.features.support.construction import create_body
+from REAgent.host.features.construction import create_body
 from REAgent.host.file_digest import file_sha256
 from REAgent.host.workspace.properties import add_read_only_string
-from REAgent.host.process_state import operation_stage, PROCESS
+from REAgent.host.process_state import operation_stage, register_temp_doc, PROCESS
 from REAgent.host.workspace.properties import valid_name
 from REAgent.protocol.artifacts import ARTIFACT_NUMBER_LIMIT, artifact_basename, artifact_filename
 from REAgent.protocol.definitions import NATIVE_SOURCE_EXTENSIONS
-from REAgent.host.validation.tolerance import ir_tolerance_contract, resolve_tolerance_contract
+from REAgent.protocol.features import WORKSPACE_CONTRACT
+from REAgent.host.validation.tolerance import resolve_tolerance_contract
 from REAgent.host.view.presentation import style_source_document
 from REAgent.host.workspace.model import compact_json, native_source_path, read_mesh, read_source_snapshot, workspace
-from REAgent.host.workspace.persistence import existing_fcstd_path, same_file_path
+from REAgent.host.workspace.persistence import same_file_path
 from REAgent.host.workspace.state import NativeSourceReference
 
 
@@ -34,8 +35,6 @@ def _session_artifact_identity(params, source_path):
         expected = os.path.join(directory, artifact_filename(artifacts["basename"], kind))
         if not os.path.isabs(artifacts[key]) or not same_file_path(expected, artifacts[key]):
             raise ValueError("Artifact path differs from the shared naming contract: " + key)
-    if params.get("resume_path") and same_file_path(artifacts["model_path"], params["resume_path"]):
-        raise ValueError("Resume output must differ from its input checkpoint")
     return artifacts
 
 
@@ -79,7 +78,7 @@ def _read_drawing(document, path, revision):
 
 def _bind_session(session_id, document, source_revision, artifacts):
     if not isinstance(session_id, str) or not session_id:
-        raise ValueError("start_session requires a session_id binding")
+        raise ValueError("open_session requires a session_id binding")
     if session_id in PROCESS.SESSION_BINDINGS:
         raise ValueError("Session is already bound in this FreeCAD process")
     task = PROCESS.ACTIVE_TASK
@@ -183,12 +182,12 @@ def _attach_starting_document(document):
 
 class SessionOperations:
     def contribute(self):
-        return {'agent_start_session': self._start_session, 'agent_close_session': self._close_session}
+        return {'agent_open_session': self._start_session, 'agent_close_session': self._close_session}
 
     def _start_session(self, params):
         session_id = params.get("session_id")
         if not isinstance(session_id, str) or not session_id:
-            raise _binding_error("start_session requires a session_id binding")
+            raise _binding_error("open_session requires a session_id binding")
         if PROCESS.ACTIVE_TASK is not None or PROCESS.SESSION_BINDINGS:
             raise _binding_error("This GUI retains an active or unresolved task")
         task = {"session_id": session_id, "role": PROCESS.INSTANCE_ROLE,
@@ -215,7 +214,7 @@ class SessionOperations:
         role = PROCESS.INSTANCE_ROLE
         session_id = params.get("session_id")
         if not isinstance(session_id, str) or not session_id:
-            raise _binding_error("start_session requires a session_id binding")
+            raise _binding_error("open_session requires a session_id binding")
         if session_id in PROCESS.SESSION_BINDINGS:
             raise _binding_error("Session is already bound in this FreeCAD process")
         if any(doc.HasPendingTransaction for doc in App.listDocuments().values()):
@@ -237,33 +236,6 @@ class SessionOperations:
         elif role == "source":
             raise ValueError("A Source workspace requires STP, STL or DXF")
         artifacts = _session_artifact_identity(params, source_path)
-        resume = params.get("resume_path")
-        if resume:
-            if role != "target" or source_kind != "stp":
-                raise ValueError("Resume requires a Target and its explicit STP source")
-            path = existing_fcstd_path(resume)
-            if any(same_file_path(doc.FileName, path) for doc in App.listDocuments().values()):
-                raise ValueError("Checkpoint is already open in this process")
-            operation_stage("native_execution", mutating=True)
-            document = App.openDocument(path)
-            _attach_starting_document(document)
-            try:
-                group = workspace(document)
-                if not same_file_path(getattr(group, "SourceFile", None), source_path):
-                    raise ValueError("Checkpoint SourceFile differs from explicit source_path")
-                snapshot = read_source_snapshot(group.SourceFile)
-                tolerance = ir_tolerance_contract(group)
-                tip_name = group.Tip.Name if group.Tip else None
-                _bind_session(session_id, document, snapshot.SourceSHA256, artifacts)
-                return {"document": document.Name, "source_path": source_path,
-                        "source_revision": snapshot.SourceSHA256, "source_revision_basis": "step_sha256",
-                        "checkpoint_path": document.FileName, "artifacts": dict(artifacts),
-                        "tolerance_contract": tolerance,
-                        "main_body": group.Name,
-                        "tip": tip_name}
-            except Exception:
-                App.closeDocument(document.Name)
-                raise
         shape = mesh = summary = revision = revision_basis = None
         if source_kind == "stp":
             snapshot = read_source_snapshot(source_path)
@@ -302,7 +274,7 @@ class SessionOperations:
                 if source_kind != "drawing":
                     source.setEditorMode("Placement", 1)
             else:
-                group = create_body(document, "REAgentWorkspace", main=True)
+                group = create_body(document, WORKSPACE_CONTRACT["name"], main=True)
                 if source_path:
                     add_read_only_string(group, "SourceFile", source_path, "REAgent")
                 add_read_only_string(group, "ToleranceContractJSON", compact_json(tolerance), "REAgent")
@@ -311,10 +283,11 @@ class SessionOperations:
                 style_source_document(source)
             document.commitTransaction()
             _bind_session(session_id, document, revision, artifacts)
+            register_temp_doc(session_id, document)
             return {"document": document.Name, "source_path": source_path,
                     "source_revision": revision, "source_revision_basis": revision_basis,
                     "tolerance_contract": tolerance, "checkpoint_path": None, "artifacts": dict(artifacts),
-                    "main_body": "REAgentWorkspace" if role == "target" else None}
+                    "main_body": WORKSPACE_CONTRACT["name"] if role == "target" else None}
         except Exception:
             if document.HasPendingTransaction:
                 document.abortTransaction()

@@ -10,11 +10,12 @@ from REAgent.host.process_state import require_document, PROCESS
 from REAgent.host.file_digest import file_sha256
 from REAgent.host.numeric import vector_dict
 from REAgent.protocol.definitions import NATIVE_SOURCE_EXTENSIONS
+from REAgent.protocol.features import WORKSPACE_CONTRACT
 
 
 def workspace(document):
-    group = document.getObject("REAgentWorkspace")
-    if (group is None or group.TypeId != "PartDesign::Body"
+    group = document.getObject(WORKSPACE_CONTRACT["name"])
+    if (group is None or group.TypeId != WORKSPACE_CONTRACT["type_id"]
             or not all(hasattr(group, key) for key in
                        ("REAgentBodyNames", "Origin", "ToleranceContractJSON"))):
         raise ValueError("Document has no native REAgent workspace; old checkpoints are not supported")
@@ -32,7 +33,8 @@ def session_bodies(group):
         if not isinstance(name, str) or not name:
             raise ValueError("Invalid tool Body registration name")
         body = group.Document.getObject(name)
-        if body is group or body is None or body.Document is not group.Document or body.TypeId != "PartDesign::Body":
+        if (body is group or body is None or body.Document is not group.Document
+                or body.TypeId != WORKSPACE_CONTRACT["type_id"]):
             raise ValueError("Invalid tool Body registration")
         if body in bodies:
             raise ValueError("Duplicate tool Body registration")
@@ -239,7 +241,7 @@ def comparison_inputs_state(group):
         if set(states) & {"invalid", "error", "touched"}:
             raise ValueError("Comparison input requires a valid recompute: " + obj.Name + " " + repr(states))
         excluded = []
-        if obj.TypeId == "PartDesign::Body":
+        if obj.TypeId == WORKSPACE_CONTRACT["type_id"]:
             if obj.Tip is None or obj.Tip not in obj.Group:
                 raise ValueError("Comparison input Body has no owned Tip: " + obj.Name)
             excluded.extend(obj.Group)
@@ -265,7 +267,7 @@ def comparison_inputs_state(group):
                         inputs.append(value)
             if getattr(obj, "ExpressionEngine", []) and any(link in excluded for link in obj.OutList):
                 raise ValueError("Cannot separate container expression inputs from history links: " + obj.Name)
-        if obj.TypeId == "PartDesign::Body" and obj.Tip not in inputs:
+        if obj.TypeId == WORKSPACE_CONTRACT["type_id"] and obj.Tip not in inputs:
             inputs.append(obj.Tip)
         placement = obj.getGlobalPlacement() if hasattr(obj, "Placement") else None
         frame = None if placement is None else (
@@ -351,7 +353,7 @@ def source_objects(document_name):
     source = document.getObject("Source")
     if source is None or source.TypeId not in ("Part::Feature", "Mesh::Feature", "App::DocumentObjectGroup"):
         raise KeyError("Reconstruction Source object not found")
-    if document.getObject("REAgentWorkspace") is not None:
+    if document.getObject(WORKSPACE_CONTRACT["name"]) is not None:
         raise ValueError("Source document must not contain a Target workspace")
     if source.TypeId == "Mesh::Feature" and not source.Mesh.CountFacets:
         raise ValueError("Source mesh has no facets")

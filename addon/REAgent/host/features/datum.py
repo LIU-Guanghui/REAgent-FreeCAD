@@ -8,7 +8,7 @@ from REAgent.host.analysis.measurements import summarize_shape
 from REAgent.protocol.features import DATUM_TYPES
 from REAgent.host.workspace.model import placement_summary, result_shape, session_bodies
 from REAgent.host.workspace.properties import encode, metadata, same_placement
-from REAgent.host.features.support.references import role_object
+from REAgent.host.features.references import role_object
 
 _CS_ROLES = {
     "origin": ("Origin", "App::Point"),

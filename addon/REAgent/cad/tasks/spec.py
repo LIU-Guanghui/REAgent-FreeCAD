@@ -58,4 +58,4 @@ def require_input_view(record, observations):
     viewed = observations.get("input_view", {})
     if (viewed.get("scope") != "model_request_completed"
             or viewed.get("revision") not in {item["revision"] for item in record["inputs"]}):
-        raise ValueError("Use agent_view_input and receive the selected reference before modeling")
+        raise ValueError("Use agent_read_image with index and receive the selected reference before modeling")

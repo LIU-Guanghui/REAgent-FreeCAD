@@ -13,12 +13,10 @@ def allowed_tools(workflow, scope=None):
     names = set(MODEL_TOOLS)
     if not workflow.compares_stp:
         names.discard("agent_validate")
-    if not workflow.image_inputs:
-        names.discard("agent_view_input")
     if not workflow.requires_images:
-        names.difference_update(("agent_read_evidence", "agent_set_evidence_retention"))
+        names.difference_update(("agent_read_image", "agent_set_evidence_retention"))
     if scope == "target_edit":
-        names.difference_update(("agent_validate", "agent_finish_reconstruction", "agent_view_input"))
+        names.difference_update(("agent_validate", "agent_finish_reconstruction"))
     elif scope is not None:
         names.discard("agent_resume_reconstruction")
     return names
@@ -111,7 +109,11 @@ def model_spec(workflow, scope, name, *, type_id=None):
                 props["name"]["enum"] = [item for item in props["name"]["enum"] if item in available]
             if "role" in props and not workflow.native_source:
                 props["role"]["enum"] = ["target"]
-    if name == "agent_get_guidance":
+    if name == "agent_read_image" and (not workflow.image_inputs or scope == "target_edit"):
+        spec["input_schema"] = next(
+            branch for branch in schema["oneOf"] if "evidence_id" in branch["properties"]
+        )
+    if name == "agent_get_knowledge":
         schema["properties"]["knowledge_id"]["enum"] = [asset.knowledge_id for asset in knowledge_assets(workflow)]
     if name == "agent_read_freecad_log" and not workflow.native_source:
         schema["properties"]["role"]["enum"] = ["target"]
@@ -124,8 +126,14 @@ def guard(record, name, args, context):
     scope = context["scope"] if model else None
     if context and context["binding"] != record["session_id"]:
         raise ValueError("Execution context belongs to a different task")
-    if name == "agent_view_input" and not workflow.image_inputs:
-        raise ValueError("The current task has no reference image files")
+    if name == "agent_read_image":
+        if "index" in args:
+            if not workflow.image_inputs:
+                raise ValueError("The current task has no reference image files")
+            if model and scope == "target_edit":
+                raise ValueError("Reference image viewing is unavailable during target_edit")
+        elif not workflow.requires_images:
+            raise ValueError("The current task has no image observation evidence")
     if name == "agent_observe" and not _observation_allowed(
             workflow, scope, args["role"], args["kind"], observation_query(args)):
         raise ValueError("Observation is unavailable for the current role and CAD action")

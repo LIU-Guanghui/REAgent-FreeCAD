@@ -19,7 +19,7 @@ def evidence_issue(fact, role, document, revision):
         return "is not registered in this task"
     if fact["role"] != role or fact["document"] != document:
         return f"does not belong to the bound {role.title()} document"
-    if fact["revision"] != revision:
+    if not isinstance(revision, str) or not revision or fact["revision"] != revision:
         return f"belongs to a different {role.title()} revision"
     if (fact["kind"] in IMAGE_OBSERVATION_KINDS
             and fact["image_delivery"]["status"] != "prepared"):
@@ -130,13 +130,16 @@ class WorkflowContext:
                 raise ValueError("The native Source changed or closed. Start a new task from the reference file.")
 
     def stage_target_state_evidence(self, record, value, *, revision):
-        if record["blocked"]:
+        if record["blocked"] or not isinstance(revision, str) or not revision:
             return
         context = self.call_context.get()
         evidence_id = "target-state-" + context["operation_id"].removeprefix("op-")
         fact = {"role": "target", "document": record["target_document"], "kind": TARGET_STATE_EVIDENCE,
-                "revision": revision, "object": value["tip"],
+                "revision": revision,
                 "actor": (context.get("execution") or {}).get("actor", "external")}
+        tip = value.get("tip")
+        if isinstance(tip, str) and tip.strip():
+            fact["object"] = tip
         context["pending_evidence"] = (record, evidence_id, fact)
         value["evidence_id"] = evidence_id
 
@@ -185,7 +188,7 @@ class WorkflowContext:
                 if "document_state" in value:
                     value["document_state"]["target_writes_blocked"] = bool(record.get("blocked"))
                 if method in FEATURE_SPECS and value.get("status") == "committed":
-                    self.stage_target_state_evidence(record, value, revision=value["revision_after"])
+                    self.stage_target_state_evidence(record, value, revision=value.get("revision_after"))
             return value
         except Exception as exc:
             if method == "agent_close_session":

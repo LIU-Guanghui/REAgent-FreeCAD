@@ -20,9 +20,9 @@ from .pipe import _PIPE_FIXED_ENUMS
 from .primitives import validate_family
 from .revolve import reference_axis
 from .thickness import _JOIN
-from .support.construction import closed_profile, distinct_section_planes, section_or_path, whole_sketch_link
-from .support.references import current_faces, dressup_edges, role_object
-from .support.transforms import transform_axis, transform_plane, transform_sources
+from .construction import closed_profile, distinct_section_planes, section_or_path, whole_sketch_link
+from .references import current_faces, dressup_edges, role_object
+from .transforms import transform_axis, transform_plane, transform_sources
 
 
 _SCALARS = {

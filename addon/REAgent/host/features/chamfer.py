@@ -1,7 +1,7 @@
 """Native equal/two-distance Chamfer on explicit current predecessor edges."""
 
 from REAgent.host.workspace.properties import fixed_dressup_false, number_readback, set_bool, set_enum, set_number
-from REAgent.host.features.support.references import edge_dressup_context, edge_dressup_readback, set_dressup_base
+from REAgent.host.features.references import edge_dressup_context, edge_dressup_readback, set_dressup_base
 
 _MODES = {"equal_distance": "Equal distance", "two_distances": "Two distances"}
 

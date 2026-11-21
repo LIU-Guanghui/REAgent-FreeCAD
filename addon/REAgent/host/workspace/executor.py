@@ -7,7 +7,7 @@ import uuid
 
 from REAgent.host.analysis.measurements import summarize_shape, shape_summary_consistent
 from REAgent.host.file_digest import file_sha256
-from REAgent.host.process_state import operation_stage, stamp_failure, PROCESS
+from REAgent.host.process_state import operation_stage, stamp_failure, sync_temp_doc_state, PROCESS
 from REAgent.host.validation.structure import result_state
 from REAgent.host.view.presentation import present_result, presentation_snapshot, restore_presentation
 from REAgent.host.workspace.model import body_objects, owned_objects, result_display_plan, session_bodies, target_state, copy_world_shape
@@ -308,6 +308,7 @@ class ExecutorOperations:
                     or list(document.RedoNames) != redo_committed):
                 raise RuntimeError("Committed readback changed native history")
             observed = observed_committed
+            sync_temp_doc_state(document)
             return {"command": command, "status": "committed", "transaction": transaction,
                     "result_body": group.Name, "tip_before": before["result"],
                     "tip": group.Tip.Name if group.Tip else None,
@@ -358,6 +359,8 @@ class ExecutorOperations:
                 for name in redo_before:
                     self._native_history.pop((document.Name, name), None)
             _record_failed_operation_recovery(document, exc)
+            if redo_before != redo_after:
+                sync_temp_doc_state(document)
             raise
 
     def contribute(self):
@@ -476,6 +479,7 @@ class ExecutorOperations:
                 if (revision_before_display != presentation["edit_revisions"][index]
                         or geometry_digest(owned_geometry_state(group)) != presentation["edit_shapes"][index]):
                     raise RuntimeError("History move did not restore recorded edit properties and geometry")
+            sync_temp_doc_state(document)
             return {**summary, "revision_after": revision_before_display}
         except Exception as exc:
             stamp_failure(exc)

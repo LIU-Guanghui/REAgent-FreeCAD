@@ -1,8 +1,24 @@
 """Native feature request definitions and cross-field relations."""
 
+from types import MappingProxyType
+
 from REAgent.protocol.definitions import NAME_SCHEMA, TEXT_SCHEMA, _DOCUMENT, operation
 from REAgent.protocol.observations import edge_ref_schema, face_ref_schema
 from REAgent.json_schema import RequestValidationError, array, boolean, branch, conditional_form, integer, number, object_schema, string
+
+WORKSPACE_CONTRACT = MappingProxyType({
+    "type_id": "PartDesign::Body",
+    "name": "REAgentWorkspace",
+    "label": "Target",
+    "origin": "native",
+    "result": "main_body_tip",
+    "tool_body_registry": "non_link_names",
+    "body_result": "single_solid",
+    "independent_solids": "native_partdesign_boolean",
+    "placement_values": "body_local",
+    "geometry_observations_and_comparison": "document_global",
+    "document_container_policy": "main_body_or_registered_tool_body",
+})
 
 FEATURE_SPECS = {}
 
@@ -707,7 +723,7 @@ _SKETCH_OPERATIONS = _compact_sketch_form({"oneOf": [
 ]})
 
 EDIT_FEATURE_TYPES = {
-    "PartDesign::Body": "PartDesign_Body",
+    WORKSPACE_CONTRACT["type_id"]: "PartDesign_Body",
     "Sketcher::SketchObject": "Sketcher_EditSketch",
     **{type_id: name for name, type_id in DATUM_TYPES.items()},
     **{spec["type_id"]: name for name, spec in PRIMITIVE_COMMANDS.items()},
@@ -725,7 +741,7 @@ _EDIT_COMMON = {
 
 
 def _edit_fields(type_id, command):
-    if type_id == "PartDesign::Body":
+    if type_id == WORKSPACE_CONTRACT["type_id"]:
         return {"label": {"type": "string", "minLength": 1, "maxLength": 120}, **_EDIT_PLACEMENT}
     if type_id == "Sketcher::SketchObject":
         return {**_EDIT_PLACEMENT, "attachment": {"oneOf": [

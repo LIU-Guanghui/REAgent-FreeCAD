@@ -3,8 +3,8 @@
 from functools import partial
 
 from REAgent.host.workspace.properties import fixed_dressup_false, metadata, number_readback, set_bool, set_enum, set_number
-from REAgent.host.features.support.construction import shape_readback
-from REAgent.host.features.support.transforms import set_transform_reference, set_transform_sources, transform_axis, transform_context, transform_reference_readback, transform_sources_readback
+from REAgent.host.features.construction import shape_readback
+from REAgent.host.features.transforms import set_transform_reference, set_transform_sources, transform_axis, transform_context, transform_reference_readback, transform_sources_readback
 
 _PATTERN_TYPES = {
     "PartDesign_LinearPattern": ("PartDesign::LinearPattern", "Direction"),

@@ -19,9 +19,128 @@ class ProcessState:
         self.SESSION_BINDINGS = {}
         # One process-local receipt confirms an idempotent end after a lost reply.
         self.LAST_ENDED_TASK = None
+        # Track native Documents created by REAgent in this process for exact temp cleanup.
+        self.SESSION_TEMP_DOCS = {}
+        self.TEMP_DOC_OBSERVER = None
 
 
 PROCESS = ProcessState()
+
+
+class _TempDocObserver:
+    """Track external mutations or history changes on REAgent-created documents."""
+
+    def _mark_external(self, doc):
+        if PROCESS.ACTIVE_OPERATION is not None or doc is None:
+            return
+        entry = PROCESS.SESSION_TEMP_DOCS.get(id(doc))
+        if entry is not None and entry.get("document") is doc:
+            entry["externally_modified"] = True
+
+    def slotCreatedObject(self, obj):
+        self._mark_external(getattr(obj, "Document", None))
+
+    def slotDeletedObject(self, obj):
+        self._mark_external(getattr(obj, "Document", None))
+
+    def slotChangedObject(self, obj, _prop=None):
+        self._mark_external(getattr(obj, "Document", None))
+
+    def slotUndoDocument(self, doc):
+        self._mark_external(doc)
+
+    def slotRedoDocument(self, doc):
+        self._mark_external(doc)
+
+    def slotCommitTransaction(self, doc):
+        self._mark_external(doc)
+
+    def slotDeletedDocument(self, doc):
+        if doc is not None:
+            PROCESS.SESSION_TEMP_DOCS.pop(id(doc), None)
+        _detach_temp_doc_observer_if_empty()
+
+
+def _ensure_temp_doc_observer():
+    if PROCESS.TEMP_DOC_OBSERVER is None:
+        observer = _TempDocObserver()
+        App.addDocumentObserver(observer)
+        PROCESS.TEMP_DOC_OBSERVER = observer
+
+
+def _detach_temp_doc_observer_if_empty():
+    if not PROCESS.SESSION_TEMP_DOCS and PROCESS.TEMP_DOC_OBSERVER is not None:
+        observer = PROCESS.TEMP_DOC_OBSERVER
+        try:
+            App.removeDocumentObserver(observer)
+        except Exception:
+            pass
+        PROCESS.TEMP_DOC_OBSERVER = None
+
+
+def register_temp_doc(session_id, document):
+    PROCESS.SESSION_TEMP_DOCS[id(document)] = {
+        "session_id": session_id,
+        "document": document,
+        "document_name": document.Name,
+        "saved_path": None,
+        "externally_modified": False,
+        "last_undo": list(document.UndoNames),
+        "last_redo": list(document.RedoNames),
+        "last_objects": [obj.Name for obj in document.Objects],
+    }
+    _ensure_temp_doc_observer()
+
+
+def sync_temp_doc_state(document, *, saved_path=None):
+    entry = PROCESS.SESSION_TEMP_DOCS.get(id(document))
+    if entry is None or entry.get("document") is not document:
+        return
+    if saved_path is not None:
+        entry["saved_path"] = saved_path
+    if not entry.get("externally_modified"):
+        entry["last_undo"] = list(document.UndoNames)
+        entry["last_redo"] = list(document.RedoNames)
+        entry["last_objects"] = [obj.Name for obj in document.Objects]
+
+
+def cleanup_unmodified_temp_docs(*, session_ids=None, gui=None):
+    live_docs = list(App.listDocuments().values())
+    for doc_id, entry in list(PROCESS.SESSION_TEMP_DOCS.items()):
+        doc = entry.get("document")
+        if not any(live is doc for live in live_docs):
+            PROCESS.SESSION_TEMP_DOCS.pop(doc_id, None)
+            continue
+        if session_ids is not None and entry.get("session_id") not in session_ids:
+            continue
+        if entry.get("externally_modified"):
+            continue
+        if (
+            entry.get("saved_path")
+            or getattr(doc, "FileName", "")
+            or getattr(doc, "HasPendingTransaction", False)
+        ):
+            continue
+        name = getattr(doc, "Name", None)
+        if not name or name in PROCESS.AUDIT_BLOCKS:
+            continue
+        if gui is not None:
+            try:
+                gui_doc = gui.getDocument(name)
+                if gui_doc is not None and gui_doc.getInEdit() is not None:
+                    continue
+            except Exception:
+                continue
+        if (
+            list(doc.UndoNames) != entry.get("last_undo")
+            or list(doc.RedoNames) != entry.get("last_redo")
+            or [obj.Name for obj in doc.Objects] != entry.get("last_objects")
+        ):
+            continue
+        if App.listDocuments().get(name) is doc:
+            App.closeDocument(name)
+        PROCESS.SESSION_TEMP_DOCS.pop(doc_id, None)
+    _detach_temp_doc_observer_if_empty()
 
 
 def active_task_state():

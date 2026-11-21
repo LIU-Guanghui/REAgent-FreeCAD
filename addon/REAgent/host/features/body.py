@@ -1,7 +1,8 @@
 """Native tool-Body command in the bound Target session."""
 
 from REAgent.host.workspace.model import session_bodies
-from REAgent.host.features.support.construction import create_body
+from REAgent.host.features.construction import create_body
+from REAgent.protocol.features import WORKSPACE_CONTRACT
 
 
 class BodyOperations:
@@ -28,7 +29,7 @@ class BodyOperations:
 
         def readback(document, group, body, state):
             if (document.getObject(name) is not body or body not in session_bodies(group)
-                    or body.Tip is not None or body.TypeId != "PartDesign::Body"):
+                    or body.Tip is not None or body.TypeId != WORKSPACE_CONTRACT["type_id"]):
                 raise RuntimeError("Tool Body creation or registration did not read back")
             if "AllowCompound" in body.PropertiesList and bool(body.AllowCompound):
                 raise RuntimeError("Tool Body unexpectedly permits compound results")

@@ -24,7 +24,7 @@ class BridgeServer:
     def running(self):
         return self._listener is not None
 
-    def __init__(self, role, *, assert_release):
+    def __init__(self, role, *, assert_release, controls=None, ping_extra=None):
         if role not in ROLE_PORTS:
             raise ValueError("Bridge role must be source or target")
         self.assert_release = assert_release
@@ -34,6 +34,9 @@ class BridgeServer:
         self._listener = None
         self._timer = None
         self._clients = {}
+        self._controls = dict(controls) if controls is not None else {}
+        self._ping_extra = dict(ping_extra) if ping_extra is not None else {}
+        self._stopping = False
         self.operations = assemble_operations(role, self.port)
 
     def start(self):
@@ -70,6 +73,9 @@ class BridgeServer:
         App.Console.PrintMessage("[REAgent] %s\n" % message)
         return message
 
+    def set_stopping(self, value=True):
+        self._stopping = bool(value)
+
     def stop(self):
         self.assert_release()
         if self._timer is not None:
@@ -77,6 +83,7 @@ class BridgeServer:
             self._timer = None
         for client in list(self._clients):
             self._close_client(client)
+        self._stopping = False
         if self._listener is not None:
             self._listener.close()
             self._listener = None
@@ -157,6 +164,23 @@ class BridgeServer:
                 failure.error_code = "instance_changed"
                 failure.error_class = "precondition"
                 raise failure
+            if self._stopping and method != "agent_ping":
+                raise RuntimeError("Bridge role stop is already in progress")
+            control = self._controls.get(method)
+            if control is not None:
+                application = QtCore.QCoreApplication.instance()
+                if application is None or QtCore.QThread.currentThread() != application.thread():
+                    raise RuntimeError("Bridge controls must run on the GUI main thread")
+                result = control(params)
+                self._send(
+                    client,
+                    {
+                        "id": request_id,
+                        "ok": True,
+                        "result": result,
+                    },
+                )
+                return
             result = self._dispatch(method, params)
             self._send(
                 client,
@@ -202,7 +226,7 @@ class BridgeServer:
         if PROCESS.ACTIVE_OPERATION is not None:
             raise ValueError("An operation is still executing; retry after its response")
         task = PROCESS.ACTIVE_TASK
-        if (method != "agent_start_session" and "session_id" in params
+        if (method != "agent_open_session" and "session_id" in params
                 and not (method == "agent_close_session" and ended_receipt(params) is not None)):
             if (task is None or task["session_id"] != params["session_id"]
                     or task["role"] != PROCESS.INSTANCE_ROLE or task["instance_id"] != PROCESS.INSTANCE_ID):
@@ -235,6 +259,8 @@ class BridgeServer:
         }
         try:
             value = handler(params)
+            if method == "agent_ping":
+                value = {**value, **self._ping_extra, "stopping": self._stopping, "cli_controls": sorted(self._controls)}
             if self.role == "target" and effect == "none" and method == "agent_observe":
                 value["document_state"] = self.operations.diagnostic_state(params["document"])
             return value

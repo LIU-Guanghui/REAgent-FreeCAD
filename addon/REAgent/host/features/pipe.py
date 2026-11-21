@@ -3,7 +3,7 @@
 from functools import partial
 
 from REAgent.host.workspace.properties import metadata
-from REAgent.host.features.support.construction import history_context, profile_readback, section_or_path, set_profile, shape_readback, whole_sketch_link
+from REAgent.host.features.construction import history_context, profile_readback, section_or_path, set_profile, shape_readback, whole_sketch_link
 
 _PIPE_TYPES = {
     "PartDesign_AdditivePipe": "PartDesign::AdditivePipe",

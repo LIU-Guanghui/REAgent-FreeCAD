@@ -5,6 +5,7 @@ import math
 import FreeCAD as App
 
 from REAgent.host.workspace.model import is_origin_object
+from REAgent.protocol.features import WORKSPACE_CONTRACT
 import re
 
 _CODECS = {
@@ -42,7 +43,7 @@ def metadata(obj, prop, *, body_edit=False):
                 or editor == 1 or (isinstance(editor, (tuple, list)) and "ReadOnly" in editor))
     driven = any(pair[0] == prop or pair[0].startswith(prop + ".")
                  for pair in getattr(obj, "ExpressionEngine", []))
-    root = obj.Document.getObject("REAgentWorkspace")
+    root = obj.Document.getObject(WORKSPACE_CONTRACT["name"])
     origin_owned = root is not None and is_origin_object(root, obj)
     boolean_tools = obj.TypeId == "PartDesign::Boolean" and prop == "Group"
     reason = (

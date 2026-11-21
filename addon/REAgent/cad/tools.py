@@ -12,6 +12,7 @@ from REAgent.protocol.definitions import (
 )
 from REAgent.protocol.operations import OPERATION_SPECS, request_side_effect
 from REAgent.json_schema import array, branch, integer, number, object_schema, string, validate_input_schema, validate_schema_definition
+from REAgent.cad.command_names import FIXED_FLOW_TOOLS, FIXED_TOOLS, MODEL_COMMANDS
 from REAgent.cad.knowledge import _ASSETS
 
 SESSION = {"session_id": TEXT_SCHEMA}
@@ -70,30 +71,54 @@ TOOLS = {
         "List available commands and tools, read an exact input schema by name, or check bound runtime status. "
         "A native command lookup returns the input_schema for agent_execute_command.arguments.",
         {"request": {}, **SESSION}, ("request",)),
-    "agent_get_guidance": tool("Read a knowledge card or its catalog; cards are guidance, not executable parameter contracts.",
+    "agent_get_knowledge": tool("Read a knowledge card or its catalog; cards are guidance, not executable parameter contracts.",
                          {"knowledge_id": string("Knowledge card", [a.knowledge_id for a in _ASSETS]), **SESSION}, ()),
-    "agent_start_session": tool("Start the selected CAD workflow and allocate its artifacts before native workspace creation. STP resume requires the explicit source_path and a new output file.", {}, ()),
+    "agent_open_session": tool("Start the selected CAD workflow and allocate its artifacts before native workspace creation.", {}, ()),
     "agent_get_state": tool(
         "Read current Target objects, result, native undo/redo and a page of registered evidence. "
         "A current Target state readback supplies a target-state evidence_id for native writes.",
         {**SESSION, "evidence_offset": {"type": "integer", "minimum": 0},
          "evidence_limit": {"type": "integer", "minimum": 1, "maximum": 128}}, ("session_id",)),
-    "agent_read_evidence": tool("Read the complete registered final PNG group without CAD access. artifact_key selects its group; initial views return both boards. Revalidate original path, hash and dimensions. Target revisions are historical. Never restores missing files or clears write blocks.",
-                               {**SESSION, "evidence_id": {**TEXT_SCHEMA, "description": "Registered image group ID, shown as observation_id in model results."},
-                                "artifact_key": TEXT_SCHEMA},
-                               ("session_id", "evidence_id", "artifact_key")),
-    "agent_journal": tool(
+    "agent_read_image": {
+        "description": (
+            "Read one registered image without CAD access: either a user-bound reference image by 1-based index "
+            "(image2cad), or a registered observation PNG group by evidence_id (shown as observation_id in model results) "
+            "and artifact_key (initial views return both boards). Observation reads revalidate original path, hash and "
+            "dimensions; Target revisions are historical and never restore missing files or clear write blocks. "
+            "Independent image reads can share a response."
+        ),
+        "input_schema": {
+            "type": "object",
+            "oneOf": [
+                object_schema({
+                    **SESSION,
+                    "index": integer("One-based reference image index from task inputs", 1),
+                    "region": array(
+                        "Optional [left, top, right, bottom] in the displayed image",
+                        {**number("Normalized coordinate"), "minimum": 0, "maximum": 1},
+                        minimum=4, maximum=4,
+                    ),
+                    "long_edge_px": integer(
+                        "Render or resize the view within this edge in pixels, default 2048",
+                        512, 2560,
+                    ),
+                }, ("session_id", "index")),
+                object_schema({
+                    **SESSION,
+                    "evidence_id": {
+                        **TEXT_SCHEMA,
+                        "description": "Registered image group ID, shown as observation_id in model results.",
+                    },
+                    "artifact_key": TEXT_SCHEMA,
+                }, ("session_id", "evidence_id", "artifact_key")),
+            ],
+        },
+    },
+    "agent_manage_journal": tool(
         "Read original bounded session events or explicitly flush them to the bound output_dir and unique journal path. "
         "No CAD access; available in failed startup, unknown native write and closed/journal_pending states when the worker is idle. "
         "An ended session is released after Source cleanup and its journal are confirmed; human End task/Stop can abandon unconfirmed Target cleanup. "
         "Recorded event loss or cleanup residue cannot be recovered by flush. Never infers model recovery or migrates the log.", {}, ()),
-    "agent_view_input": tool(
-        "View one user-bound reference image as PNG. Omit region for the whole image, or select a crop in top-left normalized coordinates. Independent image reads can share a response.",
-        {**SESSION, "index": integer("One-based reference image index from task inputs", 1),
-         "region": array("Optional [left, top, right, bottom] in the displayed image",
-                         {**number("Normalized coordinate"), "minimum": 0, "maximum": 1}, minimum=4, maximum=4),
-         "long_edge_px": integer("Render or resize the view within this edge in pixels, default 2048", 512, 2560)},
-        ("session_id", "index")),
     "agent_observe": tool("Get role-local revision-bound evidence. "
                     f"Image capture kinds ({', '.join(IMAGE_OBSERVATION_KINDS)}) must be the only tool call in a response, "
                     "even for Source; captures temporarily change presentation and write PNG files. "
@@ -127,13 +152,8 @@ _start = {"document": NAME_SCHEMA,
           }, ("index", "filename", "path", "revision")), minimum=1),
           "linear_tolerance_mm": {"type": "number", "exclusiveMinimum": 0},
           "angular_tolerance_deg": {"type": "number", "exclusiveMinimum": 0}}
-TOOLS["agent_start_session"]["input_schema"] = {"type": "object", "oneOf": [
-    object_schema(_start, ("output_dir",)),
-    object_schema({"document": NAME_SCHEMA, "resume_path": TEXT_SCHEMA, "source_path": TEXT_SCHEMA,
-             "observation_policy": SESSION_OBSERVATION_POLICY_SCHEMA,
-             "output_dir": OUTPUT_DIR_SCHEMA}, ("resume_path", "source_path", "output_dir")),
-]}
-TOOLS["agent_journal"]["input_schema"] = {"oneOf": [
+TOOLS["agent_open_session"]["input_schema"] = object_schema(_start, ("output_dir",))
+TOOLS["agent_manage_journal"]["input_schema"] = {"oneOf": [
     object_schema({**SESSION, "action": string("Journal action", ("read",)),
              "after_sequence": {"type": "integer", "minimum": 0},
              "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, ("session_id", "action")),
@@ -156,10 +176,16 @@ TOOLS["agent_observe"]["input_schema"] = {"type": "object", "oneOf": [
 ]}
 TOOLS["agent_observe"]["description"] += " " + VIEW_EVIDENCE_CONTRACT["image_retention"]
 # Journal flush includes an explicit output path; keep the whole control human-only.
-HUMAN_ONLY = frozenset(("agent_start_session", "agent_save", "agent_close_session", "agent_journal"))
+HUMAN_ONLY = frozenset(("agent_open_session", "agent_save", "agent_close_session", "agent_manage_journal"))
 if not HUMAN_ONLY <= TOOLS.keys():
     raise RuntimeError("Human-only tools differ from the internal tool catalog")
-MODEL_COMMANDS = tuple(name for name in TOOLS if not name.startswith("agent_"))
+if (
+    set(FIXED_FLOW_TOOLS) != {name for name in TOOLS if name.startswith("agent_") and name != "agent_finish_reconstruction"}
+    or set(MODEL_COMMANDS) != {name for name in TOOLS if not name.startswith("agent_")}
+    or len(FIXED_FLOW_TOOLS) != 14
+    or set(FIXED_FLOW_TOOLS) & set(MODEL_COMMANDS)
+):
+    raise RuntimeError("Fixed-mode tool sets differ from the internal tool catalog")
 MODEL_ONLY = {
     "agent_execute_command": tool(
         "Execute a native CAD command with its arguments. Use agent_get_capabilities to read the command's input_schema. "
@@ -180,7 +206,10 @@ MODEL_ONLY = {
 MODEL_TOOLS = (*tuple(name for name in TOOLS if name not in HUMAN_ONLY), *MODEL_ONLY)
 _capability_queries = [
     branch("kind", "catalog", {}),
-    branch("kind", "tool", {"name": string("Model tool", tuple(n for n in MODEL_TOOLS if n != "EditFeature"))}),
+    branch("kind", "tool", {"name": string(
+        "Tool or command name",
+        tuple(dict.fromkeys(n for n in (*FIXED_TOOLS, *MODEL_TOOLS) if n != "EditFeature")),
+    )}),
     branch("kind", "tool", {"name": string("Native in-place edit", ("EditFeature",)),
                             "type_id": string("Observed native TypeId", tuple(EDIT_FEATURE_TYPES))}),
     branch("kind", "runtime", {"role": string("Role", ("source", "target", "both"))}),
@@ -197,11 +226,7 @@ for spec in (*TOOLS.values(), *MODEL_ONLY.values()):
     validate_schema_definition(spec["input_schema"])
 
 
-def model_schema(name, *, type_id=None):
-    """Hide only this request object's bindings, including its oneOf forms."""
-    if name not in MODEL_TOOLS:
-        raise ValueError("Tool is not available to the model: %s" % name)
-    spec = MODEL_ONLY[name] if name in MODEL_ONLY else TOOLS[name]
+def _projected_schema(spec, name, *, type_id=None, hidden=None):
     schema = spec["input_schema"]
     if type_id is not None:
         if name != "EditFeature" or type_id not in EDIT_FEATURE_TYPES:
@@ -209,7 +234,43 @@ def model_schema(name, *, type_id=None):
         # Each full native branch already contains the common top-level guards.
         schema = next(branch for branch in schema["oneOf"]
                       if branch["properties"]["type_id"]["enum"] == [type_id])
-    return _project_bindings(schema, {"document", "session_id"})
+    return _project_bindings(schema, {"document", "session_id"} if hidden is None else hidden)
+
+
+def fixed_tool(name, *, type_id=None):
+    """Project one fixed-mode tool or native command without mutating TOOLS."""
+    if name not in FIXED_TOOLS:
+        raise ValueError("Tool is not available in fixed mode: %s" % name)
+    hidden = {"session_id"} if name == "agent_open_session" else None
+    spec = {**TOOLS[name], "input_schema": _projected_schema(TOOLS[name], name, type_id=type_id, hidden=hidden)}
+    if name == "agent_open_session":
+        props = dict(spec["input_schema"]["properties"])
+        props.pop("inputs", None)
+        props["paths"] = array(
+            "One to six existing absolute reference image paths (image2cad)",
+            TEXT_SCHEMA,
+            minimum=1,
+            maximum=6,
+        )
+        spec["input_schema"] = {**spec["input_schema"], "properties": props}
+    if name == "agent_get_capabilities":
+        schema = spec["input_schema"]
+        forms = []
+        for form in schema["oneOf"]:
+            props = form["properties"]["request"]["properties"]
+            if "name" in props:
+                props["name"]["enum"] = [item for item in props["name"]["enum"] if item in FIXED_TOOLS]
+            forms.append(form)
+        spec["input_schema"] = {**schema, "oneOf": forms}
+    return spec
+
+
+def model_schema(name, *, type_id=None):
+    """Hide only this request object's bindings, including its oneOf forms."""
+    if name not in MODEL_TOOLS:
+        raise ValueError("Tool is not available to the model: %s" % name)
+    spec = MODEL_ONLY[name] if name in MODEL_ONLY else TOOLS[name]
+    return _projected_schema(spec, name, type_id=type_id)
 
 
 def model_tool(name, *, type_id=None):

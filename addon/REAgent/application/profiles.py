@@ -1,8 +1,10 @@
-"""Pure named-profile parsing, semantic comparison and detached draft values."""
+"""Pure named-profile parsing, semantic comparison and credential decryption."""
 
 import json
+import os
 
 from REAgent.agent import settings
+from REAgent.application.credentials import open_key
 
 _EMPTY_PROFILES = '{"selected":"","items":[]}'
 _CONFIG_FIELDS = ("provider", "base_url", "model", "context_tokens", "output_tokens", "reasoning_effort")
@@ -80,3 +82,51 @@ def read_profiles(value):
         return profiles, data["selected"]
     except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
         raise ValueError("Saved model profiles are invalid; the stored value has not been overwritten.") from None
+
+
+def saved_settings(read_settings):
+    """Restore only the current format, without probing or creating a worker."""
+    profiles, name = read_profiles(read_settings())
+    if name not in profiles:
+        return None
+    row = profiles[name]
+    config = validate_config(config_values(row))
+    credentials = None
+    if os.name == "nt" and row.get("protected_key"):
+        connection = profile_connection(row["provider"], row["base_url"])
+        credentials = {"api_key": open_key(row["protected_key"], connection["credential_binding"])}
+    return config, credentials, name
+
+
+def load_model_config(model_data, read_settings):
+    """Validate explicit model.json parameters and decrypt its saved profile API key."""
+    if not isinstance(model_data, dict):
+        raise ValueError("model.json must be a JSON object")
+    required = {"profile", *_CONFIG_FIELDS}
+    if set(model_data) != required:
+        missing = sorted(required - set(model_data))
+        extra = sorted(set(model_data) - required)
+        parts = []
+        if missing:
+            parts.append("missing fields: " + ", ".join(missing))
+        if extra:
+            parts.append("unknown fields: " + ", ".join(extra))
+        raise ValueError("Invalid model configuration (" + "; ".join(parts) + ")")
+    profile_name = model_data["profile"]
+    if not isinstance(profile_name, str) or not profile_name.strip():
+        raise ValueError("Model profile name must be a non-empty string")
+    config = validate_config(config_values(model_data))
+    connection = profile_connection(config["provider"], config["base_url"])
+    stored = read_settings() if callable(read_settings) else read_settings
+    profiles, _selected = read_profiles(stored)
+    if profile_name not in profiles:
+        raise ValueError("Saved model profile was not found: " + profile_name)
+    row = profiles[profile_name]
+    row_connection = profile_connection(row["provider"], row["base_url"])
+    if row_connection["credential_binding"] != connection["credential_binding"]:
+        raise ValueError("Saved profile credential binding does not match model provider and base_url")
+    protected = row.get("protected_key")
+    if not protected:
+        raise ValueError("Saved model profile has no saved API key: " + profile_name)
+    api_key = open_key(protected, connection["credential_binding"])
+    return config, {"api_key": api_key}, profile_name

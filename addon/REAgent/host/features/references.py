@@ -7,7 +7,7 @@ from REAgent.host.validation.structure import single_solid_summary
 from REAgent.host.validation.tolerance import ir_tolerance_contract
 from REAgent.host.workspace.model import predecessor_shape
 from REAgent.host.workspace.properties import metadata
-from REAgent.host.features.support.construction import history_context, shape_readback
+from REAgent.host.features.construction import history_context, shape_readback
 
 
 def dressup_edges(body, group, request, tip, *, shape=None):
